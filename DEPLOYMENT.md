@@ -256,15 +256,35 @@ being boosted: if you do not see it, the user does not hold `editor` (check
 ```
 GET /status     # cheap liveness probe
 GET /healthz    # 200 while every school with pooled classes is being polled, else 503
-GET /metrics    # Prometheus text format
 ```
 
-`/healthz` reports per school the pooled class count, how far the recon scan has
-covered through the target horizon, poll counters, and how long ago the last
-**successful** class poll was. A poll that never reached the school server does
-not count, so a proxy that is up but serving stale timetables is reported as
-degraded instead of looking healthy — point your container healthcheck at
-`/healthz`, and use `/status` for liveness.
+`/healthz` answers 200 while the proxy is serving and every school with a
+non-empty pool is being polled, and 503 when one has gone stale. A poll that
+never reached the school server does not count, so a proxy that is up but serving
+stale timetables is reported as degraded instead of looking healthy — point your
+container healthcheck at `/healthz`, and use `/status` for liveness.
+
+What `/healthz` does **not** return is the per-school detail: school name, class
+count, scan progress, poll counters. That used to be public JSON, and anyone who
+could reach the hostname got the whole picture in one unauthenticated GET. The
+public probe now returns only the verdict and the shape — `status`, `uptime_sec`,
+how many schools are watched, how many are behind. The reasons are withheld too,
+because some of them quote class counts.
+
+The full view is on the gated listener:
+
+```sh
+docker run -p 127.0.0.1:9109:9109 ... \
+  -metrics-addr :9109          # inside a container
+untis-server -metrics-addr 127.0.0.1:9109 ...   # on the host
+curl -s 127.0.0.1:9109/healthz   # the per-school detail
+curl -s 127.0.0.1:9109/metrics   # Prometheus text
+```
+
+That address serves `/healthz` and `/metrics` and nothing else, so a bind to
+loopback or a private network is the whole access control — no credentials to
+distribute, and it cannot be reached from outside by accident. Omit
+`-metrics-addr` and neither endpoint exists.
 
 `run.sh` polls `/healthz` and prints the code it got.
 

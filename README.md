@@ -89,6 +89,7 @@ process down at boot.
 | `-poll-interval` | `60s` | how often the change-detector polls each class |
 | `-ntfy-base` | `https://ntfy.sh` | ntfy server for push delivery (any ntfy, incl. self-hosted) |
 | `-public-base` | — | externally reachable base URL (scheme+host) for the click-through link on notifications |
+| `-metrics-addr` | *(empty)* | bind address for the Prometheus endpoint; empty means `/metrics` is not served at all |
 | `-admin` | — | comma-separated usernames bootstrapped as admins once |
 | `-year-start` / `-year-end` | auto | school-year bounds |
 | `-recon-refresh` | `21` | days a class's recon scan horizon may lag before it is re-enumerated |
@@ -279,8 +280,29 @@ subscription.
 ```
 GET /status      # cheap liveness probe
 GET /healthz     # 200 while every school with pooled classes is being polled, else 503
-GET /metrics     # Prometheus text format
 GET /me          # the signed-in user's effective permission level
+```
+
+`/metrics` is deliberately not in that list. The Prometheus endpoint labels every
+series with the school name and reports the pool size and poll counters beside
+it — not secrets, but a free inventory of the deployment. It used to be a bare
+route on this handler, so anyone who could reach a public hostname got all of it
+in one unauthenticated GET. It is now off unless you ask for it, and then it
+listens somewhere else entirely:
+
+```sh
+untis-server -metrics-addr 127.0.0.1:9109 ...   # scrape from the host
+docker run -p 127.0.0.1:9109:9109 ...          # inside a container
+```
+
+It serves `/metrics` and the detailed `/healthz`, and nothing else.
+
+`/healthz` is on the public handler because a healthcheck needs it, but it
+returns only the verdict and the shape — `status`, `uptime_sec`, how many schools
+are watched, how many are behind. The per-school detail it used to return
+(school name, class count, scan progress, poll counters) was public JSON, and the
+reason strings quote class counts, so both moved to the gated listener along with
+`/metrics`. `/status` names no school and stays as it is.
 ```
 
 `/healthz` reports per school the pooled class count, how far the recon scan has

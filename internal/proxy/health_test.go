@@ -12,10 +12,13 @@ import (
 	"time"
 )
 
+// healthz is the per-school view, which is served by the gated handler. The
+// tests below were written against that content, so they exercise it where it
+// now lives rather than the school-less public summary.
 func healthz(t *testing.T, p *Proxy) *httptest.ResponseRecorder {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	p.handleHealthz(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	p.handleHealthzDetail(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	return rec
 }
 
@@ -317,5 +320,122 @@ func TestHealthz_RecoveredThenFailingIsDegraded(t *testing.T) {
 	p.pollOnce("testschool")
 	if code := healthz(t, p).Code; code != http.StatusOK {
 		t.Errorf("code = %d after recovery, want 200", code)
+	}
+}
+
+// TestMetricsNotOnPublicHandler: the metrics name the school on every series,
+// so they must not be reachable on the handler the tunnel exposes. Before
+// -metrics-addr existed, /metrics was a bare route here and answered anyone who
+// asked, which handed out the school name and pool size in one GET.
+func TestMetricsNotOnPublicHandler(t *testing.T) {
+	p, _ := newTestProxy(t)
+	h := p.Handler()
+	for _, path := range []string{"/metrics", "/metrics/"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("public handler GET %s = %d, want 404 — the metrics must only be served by MetricsHandler", path, rec.Code)
+		}
+		if body := rec.Body.String(); strings.Contains(body, "untis_pool_classes") || strings.Contains(body, p.opts.School) {
+			t.Errorf("public handler GET %s leaked metrics or the school name: %s", path, body)
+		}
+	}
+}
+
+// TestMetricsHandlerIsSeparateAndSelfContained: the opt-in handler serves the
+// metrics, and serves nothing else — it is a second listener, so it must not
+// become a back door to the admin dashboard or the proxy.
+func TestMetricsHandlerIsSeparateAndSelfContained(t *testing.T) {
+	p, _ := newTestProxy(t)
+	h := p.MetricsHandler()
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("metrics handler GET /metrics = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "untis_up") {
+		t.Errorf("metrics handler did not serve the metrics: %s", rec.Body.String())
+	}
+
+	for _, path := range []string{"/", "/admin", "/admin/", "/me", "/status"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("metrics handler GET %s = %d, want 404 — it must serve /metrics and nothing else", path, rec.Code)
+		}
+	}
+}
+
+// TestPublicHealthzNamesNoSchool: /healthz is a public liveness probe, so it
+// must reach the same 200/503 verdict as the detailed view while naming nobody.
+// It used to return the whole per-school array — school, class count, scan
+// state, poll counters — to anyone who asked. An earlier version of this test
+// asserted on the string "untis_pool_classes", a Prometheus metric name that
+// JSON never contains, so it passed while the school name was still on the
+// wire. Assert on the value instead.
+func TestPublicHealthzNamesNoSchool(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertSchool("testschool"); err != nil {
+		t.Fatalf("seed school: %v", err)
+	}
+	seedClassOwner(t, st, "owen", 7, 5000)
+	rec := httptest.NewRecorder()
+	p.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	// A pooled class that has never been polled is degraded, and the public probe
+	// must reach that same verdict — otherwise stripping the detail would have
+	// quietly turned a failing proxy into a passing healthcheck.
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /healthz = %d, want 503 (body %s)", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "testschool") {
+		t.Errorf("public /healthz named the school: %s", body)
+	}
+	// A count of schools is fine; the names and the per-school figures are not.
+	for _, want := range []string{`"status":"degraded"`, `"schools":1`, `"degraded":1`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("public /healthz body missing %s: %s", want, body)
+		}
+	}
+	// The reason strings quote class counts, so they stay on the gated view.
+	if strings.Contains(body, "classes") || strings.Contains(body, "pollRuns") {
+		t.Errorf("public /healthz leaked per-school figures: %s", body)
+	}
+}
+
+// TestGatedHealthzKeepsTheDetail: the per-school view still exists, behind the
+// gate, so an operator who bound the address can still get it.
+func TestGatedHealthzKeepsTheDetail(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertSchool("testschool"); err != nil {
+		t.Fatalf("seed school: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	p.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("gated GET /healthz = %d, want 200", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, p.opts.School) {
+		t.Errorf("gated /healthz lost the per-school detail it exists for: %s", body)
+	}
+}
+
+// TestStatusAndHealthzStayPublic: /status and /healthz stay on the public
+// handler, because a tunnel or an uptime check needs them. Neither may carry the
+// school name.
+func TestStatusAndHealthzStayPublic(t *testing.T) {
+	p, _ := newTestProxy(t)
+	h := p.Handler()
+	for _, path := range []string{"/status", "/healthz"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("public handler GET %s = %d, want 200", path, rec.Code)
+		}
+		body := rec.Body.String()
+		if strings.Contains(body, "untis_pool_classes") || strings.Contains(body, p.opts.School) {
+			t.Errorf("public handler GET %s exposed pool metrics or the school name: %s", path, body)
+		}
 	}
 }

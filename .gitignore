@@ -19,3 +19,9 @@ credentials.txt
 # can contain live credentials and personal data. Never commit them.
 opencode-chat.md
 *.chat.md
+# Match the naming variants too. These tools rename the export between runs
+# (underscores, plurals, a trailing timestamp), so a pattern that pins one exact
+# filename silently stops covering them — and a transcript is exactly the file
+# you would not notice staging, because it looks like notes.
+opencode*chat*.md
+*[Cc][Hh][Aa][Tt]*.md

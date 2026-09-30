@@ -282,7 +282,6 @@ func (p *Proxy) Handler() http.Handler {
 	mux.HandleFunc("/WebUntis/api/", p.handleREST)
 	mux.HandleFunc("/status", p.handleStatus)
 	mux.HandleFunc("/healthz", p.handleHealthz)
-	mux.HandleFunc("/metrics", p.handleMetrics)
 	mux.HandleFunc("/me", p.handleMe)
 	mux.HandleFunc("POST /api/calendar/token", p.handleCalendarToken)
 	mux.HandleFunc("GET /api/calendar/{token}", p.handleCalendarICS)
@@ -296,6 +295,24 @@ func (p *Proxy) Handler() http.Handler {
 	mux.HandleFunc("/admin", p.handleAdminDashboard)
 	mux.HandleFunc("/admin/login", p.handleAdminLogin)
 	mux.HandleFunc("/admin/", p.handleAdmin)
+	return mux
+}
+
+// MetricsHandler serves the Prometheus endpoint and nothing else. It is a
+// separate handler on a separate listener rather than a route on Handler(),
+// because the metrics carry the school name as a label on every series and the
+// pool size and poll counters beside it. That is not a secret, but it is a free
+// inventory of the deployment for anyone who can reach a public hostname, and it
+// was reachable without authentication. Binding it to loopback or a private
+// network puts the boundary at the network layer, where a scraper does not need
+// credentials and cannot be reached from outside by accident.
+//
+// Nothing registers it until -metrics-addr is set, so the default deployment
+// serves no metrics at all rather than serving them to the world.
+func (p *Proxy) MetricsHandler() http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/metrics", p.handleMetrics)
+	mux.HandleFunc("/healthz", p.handleHealthzDetail)
 	return mux
 }
 

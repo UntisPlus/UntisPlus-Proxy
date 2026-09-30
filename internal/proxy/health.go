@@ -102,9 +102,51 @@ func (p *Proxy) health() (all []schoolHealth, ok bool) {
 	return all, ok
 }
 
-// handleHealthz answers 200 while the proxy is serving and every school with a
-// non-empty pool is being polled, and 503 when a school has gone stale.
+// handleHealthz is the public liveness probe. It answers 200 while the proxy is
+// serving and every school with a non-empty pool is being polled, and 503 when a
+// school has gone stale — the same verdict the detailed endpoint gives, so it
+// works unchanged as a container healthcheck.
+//
+// It deliberately does not include the per-school view. That view names the
+// school and reports its class count, scan state and poll counters, which is a
+// free inventory of the deployment; in JSON it went out to anyone who could
+// reach the address, with no auth. The name and the numbers behind it live on
+// the gated handler instead, where a bind address keeps them off the public one.
+//
+// What stays here is the verdict and the shape: whether the proxy is ok, how
+// many schools are being watched, and how many of them are behind. That is
+// enough for a healthcheck or a tunnel probe and says nothing about who or how
+// big. The reasons are not included either — some of them quote class counts.
 func (p *Proxy) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	schools, ok := p.health()
+	code := http.StatusOK
+	status := "ok"
+	if !ok {
+		code = http.StatusServiceUnavailable
+		status = "degraded"
+	}
+	degraded := 0
+	for _, s := range schools {
+		if s.Degraded {
+			degraded++
+		}
+	}
+	body, _ := json.Marshal(map[string]any{
+		"status":     status,
+		"uptime_sec": int64(time.Since(startedAt).Seconds()),
+		"schools":    len(schools),
+		"degraded":   degraded,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
+	_, _ = w.Write(body)
+}
+
+// handleHealthzDetail is the full per-school health view, on the gated handler.
+// The reasons are the school-agnostic text from schoolHealth; the names, counts
+// and scan state are not.
+func (p *Proxy) handleHealthzDetail(w http.ResponseWriter, r *http.Request) {
 	schools, ok := p.health()
 	code := http.StatusOK
 	status := "ok"
@@ -124,8 +166,9 @@ func (p *Proxy) handleHealthz(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMetrics exposes the same health in Prometheus text format for
-// container monitoring. No auth: it carries counts and names only, and a
-// deployment that disagrees can simply not scrape it.
+// container monitoring. It is only registered on the gated handler: it carries
+// the school name as a label on every series, so it must never be reachable on
+// the address a tunnel publishes.
 func (p *Proxy) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	schools, ok := p.health()
 	var b []byte

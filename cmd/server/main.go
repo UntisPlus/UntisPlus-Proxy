@@ -40,6 +40,7 @@ func main() {
 	ntfyBase := flag.String("ntfy-base", "https://ntfy.sh", "base URL for ntfy push delivery (self-hosted ntfy server)")
 	publicBase := flag.String("public-base", "", "externally reachable base URL (scheme+host) for click-through links in notifications")
 	admin := flag.String("admin", "", "comma-separated usernames to bootstrap as admins (once)")
+	metricsAddr := flag.String("metrics-addr", "", "bind address for the Prometheus endpoint, e.g. 127.0.0.1:9109; empty disables /metrics entirely, which is the default because the metrics name the school")
 	reconRefresh := flag.Int("recon-refresh", 21, "days a class's recon scan horizon may lag before it is re-enumerated")
 	reconRescan := flag.Bool("recon-rescan", false, "re-enumerate every pooled class from the year start on boot instead of resuming")
 
@@ -133,12 +134,28 @@ func main() {
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
 
+	// The metrics endpoint gets its own listener so it can be bound to loopback
+	// or a private network without putting it on the address the tunnel exposes.
+	var metricsSrv *http.Server
+	if *metricsAddr != "" {
+		metricsSrv = &http.Server{Addr: *metricsAddr, Handler: p.MetricsHandler()}
+		log.Printf("metrics listening on %s (not exposed on %s)", *metricsAddr, *addr)
+		go func() {
+			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("metrics server: %v", err)
+			}
+		}()
+	}
+
 	select {
 	case <-ctx.Done():
 		log.Printf("shutting down")
 		shutCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		_ = srv.Shutdown(shutCtx)
+		if metricsSrv != nil {
+			_ = metricsSrv.Shutdown(shutCtx)
+		}
 	case err := <-errc:
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("server: %v", err)
