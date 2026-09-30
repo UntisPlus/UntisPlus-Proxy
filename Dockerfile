@@ -8,7 +8,11 @@ RUN go mod download
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
 
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/untis-server ./cmd/server && \
+# The version is compiled in, so the image knows what it is without a runtime
+# flag or environment variable that could disagree with the tag it is published
+# under. Plain `docker build .` leaves it "dev".
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.buildVersion=${VERSION}" -o /out/untis-server ./cmd/server && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/untis-seed ./cmd/seed && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/untis-perm ./cmd/perm && \
     CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/untisctl ./cmd/untisctl
@@ -28,10 +32,9 @@ ENV UNTIS_ADDR=:8509 \
     UNTIS_SCHOOL="" \
     UNTIS_DB=/data/untis.db \
     UNTIS_ENV=prod \
-    UNTIS_VERSION=dev \
     UNTIS_POLL_INTERVAL=60s \
     UNTIS_NTFY_BASE=https://ntfy.sh \
     UNTIS_RECON_REFRESH=21
 
 EXPOSE 8509
-CMD ["sh", "-c", "untis-server -addr \"$UNTIS_ADDR\" -db \"$UNTIS_DB\" -env \"$UNTIS_ENV\" -version \"$UNTIS_VERSION\" -poll-interval \"$UNTIS_POLL_INTERVAL\" -recon-refresh \"$UNTIS_RECON_REFRESH\""]
+CMD ["sh", "-c", "untis-server -addr \"$UNTIS_ADDR\" -db \"$UNTIS_DB\" -env \"$UNTIS_ENV\" -poll-interval \"$UNTIS_POLL_INTERVAL\" -recon-refresh \"$UNTIS_RECON_REFRESH\""]

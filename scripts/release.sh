@@ -12,7 +12,9 @@
 #               Required when PUSH=1: there is deliberately no default, so a
 #               release cannot be pushed to whichever account happens to be
 #               logged in.
-#   VERSION     tag pushed to Docker Hub (default: exact git tag, else "dev")
+#   VERSION     tag pushed to Docker Hub (default: exact git tag, else "dev").
+#               Compiled into the binary, so /status reports it without anyone
+#               having to set an environment variable that can disagree.
 #   PUSH        set to 0 to skip docker push / git push
 #   BACKUP_DB   path to the live database; set it to take a VACUUM INTO backup
 #               before shipping (upgrades run migrations that cannot be undone)
@@ -65,7 +67,7 @@ fi
 
 echo "==> [5/5] ship ${IMAGE}:${VERSION}"
 echo "==> docker build"
-docker build -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" .
+docker build --build-arg VERSION="${VERSION}" -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" .
 echo "==> docker push"
 docker push "${IMAGE}:${VERSION}"
 docker push "${IMAGE}:latest"

@@ -3,15 +3,21 @@
 #   cp .env.example .env      # set UNTIS_SCHOOL and UNTIS_IMAGE_REPO
 #   docker compose -f compose.nas.yaml up -d
 #
-# UNTIS_IMAGE_REPO is the registry repository WITHOUT a tag, e.g.
-# <your-namespace>/untisplus-proxy. It is required: there is no default, so a
-# deployment can never silently pull from whichever account published the image
-# first. The tag is appended here rather than being written into .env, so
-# UNTIS_VERSION below drives both what is pulled and what /status reports — the
-# two cannot drift.
+# Two values have no default and are required, both below:
+#   UNTIS_SCHOOL      the WebUntis login name — the key all data is stored under
+#   UNTIS_IMAGE_REPO  the registry repository to pull, WITHOUT a tag
+#
+# Everything else has a default, so the common case is just those two. The image
+# knows its own version: it is compiled in, and GET /status reports it. There is
+# no version variable here, so nothing can disagree with the tag the image was
+# published under.
+#
+# Expose it with whatever fronts the NAS — a reverse proxy or a tunnel on the
+# host. UNTIS_PUBLIC_BASE is the only thing the proxy needs to know about that,
+# and only to build the click-through link on notifications.
 services:
   untis-proxy:
-    image: "${UNTIS_IMAGE_REPO:?set UNTIS_IMAGE_REPO in .env, e.g. <your-namespace>/untisplus-proxy}:${UNTIS_VERSION:-latest}"
+    image: "${UNTIS_IMAGE_REPO:?set UNTIS_IMAGE_REPO in .env, e.g. <your-namespace>/untisplus-proxy}:latest"
     container_name: untis-proxy
     restart: unless-stopped
     ports:
@@ -19,18 +25,15 @@ services:
     environment:
       UNTIS_ADDR: ":8509"
       UNTIS_SCHOOL: "${UNTIS_SCHOOL:?set UNTIS_SCHOOL in .env — it is the key all data is stored under}"
-      UNTIS_DB: "/data/untis.db"
       UNTIS_ENV: "${UNTIS_ENV:-prod}"
-      UNTIS_VERSION: "${UNTIS_VERSION:-latest}"
       UNTIS_POLL_INTERVAL: "${UNTIS_POLL_INTERVAL:-60s}"
+      # Any ntfy, including a self-hosted one. Individual topics can override
+      # this with a per-topic baseUrl in the admin dashboard.
       UNTIS_NTFY_BASE: "${UNTIS_NTFY_BASE:-https://ntfy.sh}"
+      # Externally reachable base URL (scheme + host), used for the click-through
+      # link on notifications. Empty is fine; links are then relative.
       UNTIS_PUBLIC_BASE: "${UNTIS_PUBLIC_BASE:-}"
     volumes:
+      # The image already defaults the database to /data/untis.db, which is
+      # where this mount lands, so there is nothing to configure here.
       - ./data:/data
-    # Expose through a reverse proxy / tunnel on the host if you run one. The
-    # hostname is a variable, not a literal, so the file is reusable and does
-    # not advertise one person's domain.
-    labels:
-      - "dockflare.enable=${UNTIS_DOCKFLARE:-false}"
-      - "dockflare.hostname=${UNTIS_HOSTNAME:-untis-proxy.local}"
-      - "dockflare.service=http://untis-proxy:8509"

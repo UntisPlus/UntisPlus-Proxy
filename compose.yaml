@@ -20,9 +20,7 @@ services:
       UNTIS_ADDR: ":8509"
       UNTIS_SERVER: "${UNTIS_SERVER:-}"
       UNTIS_SCHOOL: "${UNTIS_SCHOOL:?set UNTIS_SCHOOL in .env — it is the key all data is stored under}"
-      UNTIS_DB: "/data/untis.db"
       UNTIS_ENV: "${UNTIS_ENV:-dev}"
-      UNTIS_VERSION: "${UNTIS_VERSION:-dev}"
       UNTIS_POLL_INTERVAL: "${UNTIS_POLL_INTERVAL:-60s}"
       # Self-hosted ntfy: set this, then give each topic a baseUrl override in
       # the dashboard if you want per-topic servers.

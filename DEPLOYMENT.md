@@ -100,15 +100,17 @@ services:
     environment:
       UNTIS_ADDR: ":8509"
       UNTIS_ENV: "prod"
-      UNTIS_VERSION: "v1.4.1"
       UNTIS_POLL_INTERVAL: "60s"
+      UNTIS_NTFY_BASE: "https://ntfy.sh"
+      UNTIS_PUBLIC_BASE: ""
     volumes:
       - ./data:/data
-    labels:
-      - dockflare.enable=true
-      - dockflare.hostname=${UNTIS_HOSTNAME:-untis-proxy.local}
-      - dockflare.service=http://untis-proxy:8509
 ```
+
+That is the shape of it; see `compose.nas.yaml` for the real file, which takes
+`UNTIS_SCHOOL` and `UNTIS_IMAGE_REPO` from `.env` and refuses to start without
+them. There is no version setting: the image knows its own version, and
+`GET /status` reports it.
 
 `compose.yaml` is the local-build variant (builds from the Dockerfile and joins
 the `cloudflare-net` / `npm_network` external networks).
@@ -157,7 +159,9 @@ The public URL runs through a **cloudflared (Cloudflare Tunnel)** container in
 labels themselves.
 
 1. In Cloudflare **Zero Trust → Networks → Tunnels**, create a tunnel and add a
-   public hostname (set `UNTIS_HOSTNAME`, e.g. `untis-proxy.example.com`) → `http://localhost:8509`.
+   public hostname (e.g. `untis-proxy.example.com`) → `http://localhost:8509`.
+   Then set `UNTIS_PUBLIC_BASE` to that same `https://` URL in `.env`, so the
+   click-through link on notifications is absolute rather than a relative path.
 2. Run cloudflared on the NAS with that tunnel's token:
    ```sh
    docker run -d --name untis-tunnel --network host --restart unless-stopped \

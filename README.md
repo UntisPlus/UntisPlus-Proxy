@@ -84,7 +84,7 @@ process down at boot.
 | `-server` | *(empty)* | fallback upstream host — normally left empty, since the host is auto-resolved per school via WebUntis school search |
 | `-school` | **required** | school login name (the key data is stored under); no default — the proxy refuses to start without it |
 | `-env` | `dev` | deployment mode: `dev` / `beta` / `prod` |
-| `-version` | `dev` | reported build version |
+| `-version` | build version | reported build version; compiled in by the release build, so the image needs no version variable |
 | `-ttl` | `5m` | timetable cache TTL |
 | `-poll-interval` | `60s` | how often the change-detector polls each class |
 | `-ntfy-base` | `https://ntfy.sh` | ntfy server for push delivery (any ntfy, incl. self-hosted) |

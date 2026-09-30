@@ -18,6 +18,12 @@ import (
 	"untis-proxy/internal/untis"
 )
 
+// buildVersion is the version the binary reports. Release builds overwrite it
+// with -ldflags "-X main.buildVersion=<tag>", so an image knows what it is
+// without anyone having to pass a flag or set an environment variable that can
+// disagree with the tag it was published under. Plain `go build` leaves it "dev".
+var buildVersion = "dev"
+
 func main() {
 	// 8509 is the default for both native runs and the Docker image; the
 	// container can still override it with UNTIS_ADDR.
@@ -29,7 +35,7 @@ func main() {
 	yearStart := flag.String("year-start", "", "school year start override (default: auto-derived)")
 	yearEnd := flag.String("year-end", "", "school year end override (default: auto-derived)")
 	env := flag.String("env", "", "deployment mode (dev|beta|prod); defaults to UNTIS_ENV, else dev")
-	version := flag.String("version", "dev", "reported build version")
+	version := flag.String("version", buildVersion, "reported build version (baked in at build time; override only for a local build)")
 	poll := flag.Duration("poll-interval", 60*time.Second, "timetable change-detection poll interval")
 	ntfyBase := flag.String("ntfy-base", "https://ntfy.sh", "base URL for ntfy push delivery (self-hosted ntfy server)")
 	publicBase := flag.String("public-base", "", "externally reachable base URL (scheme+host) for click-through links in notifications")
