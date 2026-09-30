@@ -10,9 +10,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -306,6 +309,84 @@ func TestPollDiscoversClassChangeAndBumpsVersion(t *testing.T) {
 	p.pollOnce("testschool")
 	if v := st.ClassVersion("testschool", 5000); v != 1 {
 		t.Errorf("ClassVersion = %d after an unchanged poll, want 1", v)
+	}
+}
+
+// TestCancelledLessonNotifiesOnce is the end-to-end version of the store-level
+// regression: poll repeatedly with the lesson absent upstream and count the
+// ntfy posts that actually leave the process. Before the fix this grew by one
+// per poll for as long as the lesson was still in the future.
+func TestCancelledLessonNotifiesOnce(t *testing.T) {
+	var mu sync.Mutex
+	var posts []string
+	ntfySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &body)
+		mu.Lock()
+		posts = append(posts, fmt.Sprint(body["message"]))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ntfySrv.Close()
+
+	// the lesson is four days out, so it is well inside the fetch window
+	// and therefore on the path that used to re-notify forever
+	future := time.Now().AddDate(0, 0, 4)
+	f := &fakeUpstream{}
+	f.setTimetable(t, []map[string]any{{
+		"id":            10,
+		"startDateTime": future.Format("2006-01-02") + " 08:00:00",
+		"endDateTime":   future.Format("2006-01-02") + " 08:45:00",
+		"subject":       "MATH",
+		"elements":      []any{map[string]any{"id": 5009, "type": "TEACHER"}},
+	}})
+
+	p, st := newFakeProxyUpstream(t, f)
+	if err := st.UpsertUser(&store.User{Username: "owen", School: "testschool", Method: "key",
+		PersonType: 5, PersonID: 7, ClassID: 5000, Password: "replayable"}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := st.AddNtfyTopic(&store.NtfyTopic{School: "testschool", Topic: "changes",
+		BaseURL: ntfySrv.URL, Enabled: true}); err != nil {
+		t.Fatalf("add ntfy topic: %v", err)
+	}
+
+	p.pollOnce("testschool") // the lesson is present
+	// upstream cancels it
+	f.setTimetable(t, nil)
+
+	p.pollOnce("testschool") // the cancellation: one notification
+	time.Sleep(50 * time.Millisecond)
+
+	// Count from here: the ADDED notification above is correct and expected.
+	// What must not happen is a second one for the same cancellation.
+	mu.Lock()
+	atCancel := len(posts)
+	cancelMsg := ""
+	if atCancel > 0 {
+		cancelMsg = posts[atCancel-1]
+	}
+	mu.Unlock()
+
+	for i := 0; i < 5; i++ {
+		p.pollOnce("testschool")          // unchanged: must be silent
+		time.Sleep(20 * time.Millisecond) // let any goroutine finish
+	}
+
+	mu.Lock()
+	got := len(posts)
+	mu.Unlock()
+
+	if got != atCancel {
+		t.Errorf("ntfy posts grew from %d to %d across 5 unchanged polls — the same cancellation is being re-sent. Messages: %q",
+			atCancel, got, posts)
+	}
+	if !strings.Contains(cancelMsg, "removed") {
+		t.Errorf("notification does not look like a cancellation: %q", cancelMsg)
+	}
+	if v := st.ClassVersion("testschool", 5000); v != 2 {
+		t.Errorf("ClassVersion = %d, want 2 (add + cancel, then steady)", v)
 	}
 }
 

@@ -123,6 +123,101 @@ func TestDropRemovedBefore(t *testing.T) {
 	}
 }
 
+// TestRemovedIsReportedOnce covers a cancellation that has not happened yet.
+// The removal loop must not re-report it on every later poll, or a single
+// cancelled lesson sends one notification per poll until its start date passes.
+func TestRemovedIsReportedOnce(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	// today is 2026-08-29. A lesson four days out is the furthest a period can
+	// be in the fetch window, so it is the longest this can repeat for.
+	const today = "2026-08-29"
+	future := []PeriodRow{
+		{PeriodID: 7, Start: "2026-09-02T08:00Z", End: "2026-09-02T08:45Z", Subject: "Mathe", Room: "R204"},
+	}
+	if _, err := st.ReplaceClassSnapshot("s", 2, future, 1, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// The cancellation. This is the one and only time it may be reported.
+	changed, err := st.ReplaceClassSnapshot("s", 2, nil, 2, today)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("cancellation: changed = %d, want 1", changed)
+	}
+	pending, ver, err := st.PendingChanges("s", 2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].PeriodID != 7 || pending[0].Kind != "REMOVED" {
+		t.Fatalf("cancellation: pending = %+v, want period 7 REMOVED", pending)
+	}
+	if ver != 2 {
+		t.Fatalf("version = %d, want 2", ver)
+	}
+
+	// Every later poll sees the same thing: still absent upstream. Nothing changed.
+	for i := int64(3); i <= 8; i++ {
+		changed, err := st.ReplaceClassSnapshot("s", 2, nil, i, today)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed != 0 {
+			pending, _, _ := st.PendingChanges("s", 2, i-1)
+			t.Fatalf("poll %d: changed = %d and %d rows pending, want 0/0 — the same cancellation is being re-reported",
+				i, changed, len(pending))
+		}
+		if ver := st.ClassVersion("s", 2); ver != 2 {
+			t.Fatalf("poll %d: version = %d, want 2 (must not advance)", i, ver)
+		}
+	}
+
+	// The record itself must survive, so clients asking for the full history
+	// still learn the lesson was cancelled. It is hidden from PendingChanges
+	// only because its mod version is no longer current.
+	all, _, err := st.PendingChanges("s", 2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 || all[0].Kind != "REMOVED" {
+		t.Fatalf("full history = %+v, want the REMOVED row to still be readable", all)
+	}
+	if all[0].ModVer != 2 {
+		t.Errorf("REMOVED row mod version = %d, want 2 (the version it was first reported at)", all[0].ModVer)
+	}
+}
+
+// TestRemovedAgedOutIsStillDropped guards the interaction with the window: a
+// removal whose start date has passed should still disappear rather than linger.
+func TestRemovedAgedOutIsStillDropped(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	if _, err := st.ReplaceClassSnapshot("s", 2, []PeriodRow{
+		{PeriodID: 7, Start: "2026-08-28T08:00Z", End: "2026-08-28T08:45Z", Subject: "Mathe"},
+	}, 1, ""); err != nil {
+		t.Fatal(err)
+	}
+	// cancelled, and it started yesterday
+	if changed, err := st.ReplaceClassSnapshot("s", 2, nil, 2, "2026-08-29"); err != nil {
+		t.Fatal(err)
+	} else if changed != 0 {
+		t.Fatalf("yesterday's removal should not be reported, changed = %d", changed)
+	}
+	if all, _, _ := st.PendingChanges("s", 2, 0); len(all) != 0 {
+		t.Fatalf("full history = %+v, want empty", all)
+	}
+}
+
 func TestClassTokenCreatedByRoundTrip(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

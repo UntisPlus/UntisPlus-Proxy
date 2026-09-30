@@ -1303,7 +1303,7 @@ func (s *Store) ListUsers() ([]*User, error) {
 // upstream logins) with a person ID, ordered by class then display name.
 // Teachers and unlogged-in accounts are excluded so the admin student picker
 // never overlaps the teacher/room/subject pickers. Unrecorded-school accounts
-// (school='') count for any school.
+// (school=”) count for any school.
 func (s *Store) ListStudents(school string) ([]*User, error) {
 	rows, err := s.db.Query(`SELECT `+userCols+`
 		FROM users WHERE person_id > 0 AND person_type = 5 AND (school=? OR school='')
@@ -1503,7 +1503,7 @@ func (s *Store) UpdateClassTokenDays(token string, days int) (int64, error) {
 
 // ListElementsWithNames returns every persisted element ID and its name,
 // grouped by element type (CLASS, TEACHER, ROOM, SUBJECT). Rows from
-// unrecorded schools (school='') count for every school. Used by the admin
+// unrecorded schools (school=”) count for every school. Used by the admin
 // search picker so the dashboard never needs a live upstream call.
 func (s *Store) ListElementsWithNames(school string) (map[string]map[int64]string, error) {
 	rows, err := s.db.Query(
@@ -1847,6 +1847,24 @@ func (s *Store) ReplaceClassSnapshot(school string, classID int64, next []Period
 		}
 		// silently drop past periods that left the window
 		if dropRemovedBefore != "" && len(r.Start) >= 10 && r.Start[:10] < dropRemovedBefore {
+			continue
+		}
+		// A period already recorded as REMOVED is still missing upstream, so
+		// there is nothing new to report. Re-insert it with its ORIGINAL mod
+		// version so /api/timetable/changes can still see it, but do not stamp
+		// the new version and do not count it as changed.
+		//
+		// Without this, every poll re-stamped the row with the current version
+		// and returned changed>0, so one cancelled lesson that had not yet
+		// happened re-notified forever: once a minute, all day, per matching
+		// subscription. The dropRemovedBefore guard above does not save us,
+		// because it only covers periods whose start is already past — and a
+		// cancellation is exactly a period that is today or later.
+		if r.Kind == "REMOVED" {
+			if _, err := tx.Exec(`INSERT INTO timetable_changes (school,class_id,period_id,kind,start,end,subject,room,teacher,description,mod_ver)
+				VALUES (?,?,?,?,?,?,?,?,?,?,?)`, school, classID, pid, r.Kind, r.Start, r.End, r.Subject, r.Room, r.Teacher, r.Description, r.ModVer); err != nil {
+				return 0, err
+			}
 			continue
 		}
 		r.Kind = "REMOVED"
