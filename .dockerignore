@@ -1,6 +1,15 @@
 bin/
 data/
 untis.db
+*.db-journal
+*.db-wal
+*.db-shm
 *.log
 .git/
 .tunnel-token
+# The live configuration: real school, upstream host, and whatever secrets the
+# deployment keeps here. The Dockerfile only COPYs cmd/ and internal/, so it
+# never reaches a layer, but the build context is uploaded to the daemon whole —
+# which matters the moment the build runs on a remote or rootless builder.
+.env
+.env.*
