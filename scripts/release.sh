@@ -8,7 +8,7 @@
 #   PUSH=0 ./scripts/release.sh          # just the local gate (compile+test)
 #
 # Env overrides:
-#   IMAGE       Docker Hub repository, e.g. <your-namespace>/untis-proxy.
+#   IMAGE       Docker Hub repository, e.g. <your-namespace>/untisplus-proxy.
 #               Required when PUSH=1: there is deliberately no default, so a
 #               release cannot be pushed to whichever account happens to be
 #               logged in.
@@ -33,7 +33,7 @@ VERSION="${VERSION:-$(git describe --tags --exact-match 2>/dev/null || echo dev)
 PUSH="${PUSH:-1}"
 
 if [ "$PUSH" = "1" ] && [ -z "$IMAGE" ]; then
-  echo "error: IMAGE is required to push, e.g. IMAGE=<your-namespace>/untis-proxy $0" >&2
+  echo "error: IMAGE is required to push, e.g. IMAGE=<your-namespace>/untisplus-proxy $0" >&2
   echo "       (there is no default: a release must not land in whichever account" >&2
   echo "        happens to be logged in). Use PUSH=0 for the local gate only." >&2
   exit 2

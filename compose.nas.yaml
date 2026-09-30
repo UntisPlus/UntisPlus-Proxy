@@ -4,14 +4,14 @@
 #   docker compose -f compose.nas.yaml up -d
 #
 # UNTIS_IMAGE_REPO is the registry repository WITHOUT a tag, e.g.
-# <your-namespace>/untis-proxy. It is required: there is no default, so a
+# <your-namespace>/untisplus-proxy. It is required: there is no default, so a
 # deployment can never silently pull from whichever account published the image
 # first. The tag is appended here rather than being written into .env, so
 # UNTIS_VERSION below drives both what is pulled and what /status reports — the
 # two cannot drift.
 services:
   untis-proxy:
-    image: "${UNTIS_IMAGE_REPO:?set UNTIS_IMAGE_REPO in .env, e.g. <your-namespace>/untis-proxy}:${UNTIS_VERSION:-latest}"
+    image: "${UNTIS_IMAGE_REPO:?set UNTIS_IMAGE_REPO in .env, e.g. <your-namespace>/untisplus-proxy}:${UNTIS_VERSION:-latest}"
     container_name: untis-proxy
     restart: unless-stopped
     ports:

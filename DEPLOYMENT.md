@@ -92,7 +92,7 @@ Docker Hub, no build on the NAS):
 ```yaml
 services:
   untis-proxy:
-    image: <your-namespace>/untis-proxy:latest
+    image: <your-namespace>/untisplus-proxy:latest
     container_name: untis-proxy
     restart: unless-stopped
     ports:
@@ -100,7 +100,7 @@ services:
     environment:
       UNTIS_ADDR: ":8509"
       UNTIS_ENV: "prod"
-      UNTIS_VERSION: "v1.4.0"
+      UNTIS_VERSION: "v1.4.1"
       UNTIS_POLL_INTERVAL: "60s"
     volumes:
       - ./data:/data
@@ -128,7 +128,7 @@ the `cloudflare-net` / `npm_network` external networks).
    Skip this to start empty (the pool re-scans on boot, but perms/tokens are
    lost).
 
-3. **Start** — it pulls <your-namespace>/untis-proxy:latest automatically:
+3. **Start** — it pulls <your-namespace>/untisplus-proxy:latest automatically:
    ```sh
    docker compose -f compose.nas.yaml up -d
    ```
@@ -171,9 +171,9 @@ labels themselves.
 ## Building and pushing the image
 
 ```sh
-docker build -t <your-namespace>/untis-proxy:latest -t <your-namespace>/untis-proxy:v1.4.0 .
-docker push <your-namespace>/untis-proxy:latest
-docker push <your-namespace>/untis-proxy:v1.4.0
+docker build -t <your-namespace>/untisplus-proxy:latest -t <your-namespace>/untisplus-proxy:v1.4.1 .
+docker push <your-namespace>/untisplus-proxy:latest
+docker push <your-namespace>/untisplus-proxy:v1.4.1
 ```
 
 Usually done for you by [the release gate](#the-release-gate).
@@ -195,7 +195,7 @@ PUSH=0 BACKUP_DB=data/untis.db ./scripts/release.sh           # local gate + bac
 
 | Env | Default | Meaning |
 |---|---|---|
-| `IMAGE` | *required* | Docker Hub repository, without a tag, e.g. `<your-namespace>/untis-proxy` — no default, so a release cannot land in whichever account is logged in 
+| `IMAGE` | *required* | Docker Hub repository, without a tag, e.g. `<your-namespace>/untisplus-proxy` — no default, so a release cannot land in whichever account is logged in 
 | `VERSION` | exact git tag, else `dev` | tag pushed to Docker Hub |
 | `PUSH` | `1` | set to `0` to skip docker push / git push |
 | `BACKUP_DB` | unset | live database to back up before shipping |
