@@ -173,5 +173,7 @@ Use a throwaway user (`testtier`) — create, then remove at the end.
 - [ ] 12.3 auto-register-on-first-login is unit-covered (`TestMultiSchoolAutoRegisterAndPoolIsolation`) — no live second school to trigger
 
 ## 13. Packaging
-- [ ] 13.1 `/status` reports `v1.4.0`
-- [ ] 13.2 `docker images <your-namespace>/untis-proxy` shows v1.4.0 + latest (pushed)
+- [ ] 13.1 `/status` reports the published tag, and **not** `dev` — a plain
+      `go build` reports `dev`, so `dev` means the version was never compiled in
+- [ ] 13.2 `docker images <your-namespace>/untisplus-proxy` shows the release tag +
+      `latest` (pushed)

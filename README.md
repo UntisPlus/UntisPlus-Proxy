@@ -37,7 +37,7 @@ that school — own pool, recon, caches, change polling — with no restart.
 - [`untisctl` — operator CLI](#untisctl--operator-cli)
 - [Provisioning new students](#provisioning-new-students)
 - [Internals worth knowing](#internals-worth-knowing)
-- [Further docs](#further-docs)
+- [Docs](#docs)
 
 ---
 
@@ -573,14 +573,35 @@ permission — see [the `-db` note](#configuration) and
 
 ---
 
-## Further docs
+## Docs
 
-| Doc | Contents |
+Everything is in a `.md` file in this repository. Reference material first —
+those describe how the current code behaves and are kept in step with it.
+
+| Doc | Read it for |
 |---|---|
-| [`DEPLOYMENT.md`](DEPLOYMENT.md) | running it, Docker, the tunnel, backups, the log, ops troubleshooting |
-| [`docs/ADMIN-WEBHOOKS-NTFY.md`](docs/ADMIN-WEBHOOKS-NTFY.md) | full `/admin/*` API reference |
-| [`docs/APP-INTEGRATION.md`](docs/APP-INTEGRATION.md) | how the Android app talks to the proxy |
-| [`docs/GOD-API-PLAN.md`](docs/GOD-API-PLAN.md) | planned upstream API coverage |
-| [`FEATURE-CHECKLIST.md`](FEATURE-CHECKLIST.md) | what is implemented |
-| [`MANUAL-QA-CHECKLIST.md`](MANUAL-QA-CHECKLIST.md) | manual test pass |
-| [`TESTING-CHECKLIST.md`](TESTING-CHECKLIST.md) | test coverage checklist |
+| [`DEPLOYMENT.md`](DEPLOYMENT.md) | running it, Docker, the tunnel, `-metrics-addr`, backups, the log, ops troubleshooting |
+| [`docs/APP-INTEGRATION.md`](docs/APP-INTEGRATION.md) | the contract for a client that wants live changes |
+| [`docs/ADMIN-WEBHOOKS-NTFY.md`](docs/ADMIN-WEBHOOKS-NTFY.md) | full `/admin/*` API, ntfy, multi-school |
+| [`docs/GOD-API-PLAN.md`](docs/GOD-API-PLAN.md) | the Basic/Reconstruction/Boosted/Editor permission tiers and planned upstream API coverage |
+
+Then the checklists. These are **dated records of test passes, not living
+specs** — a `[x]` means it passed on the date it was run against the version named
+in its heading, not that it passes today. Re-run them rather than trusting a tick,
+and check the version before comparing output.
+
+| Doc | Read it for |
+|---|---|
+| [`FEATURE-CHECKLIST.md`](FEATURE-CHECKLIST.md) | what is implemented, and when |
+| [`MANUAL-QA-CHECKLIST.md`](MANUAL-QA-CHECKLIST.md) | the manual pass, step by step — **the one to follow for a new deploy** |
+| [`TESTING-CHECKLIST.md`](TESTING-CHECKLIST.md) | API surface walk-through, coverage checklist |
+
+Two conventions, so a stale number cannot quietly pass as current:
+
+- Anything version-specific is written as **`<published tag>` or `dev`**, never a
+  literal tag. `dev` in `/status` means the version was not compiled in; a real tag
+  means it was.
+- Anything about **which endpoints are public** is asserted from the public
+  address. `/status` and `/healthz` are there; `/metrics` and the per-school
+  health detail are not, unless `-metrics-addr` is set. See
+  [`DEPLOYMENT.md`](DEPLOYMENT.md#health-and-monitoring).

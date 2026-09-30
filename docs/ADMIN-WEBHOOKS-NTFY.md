@@ -1,7 +1,10 @@
 # Admin Dashboard · Webhooks · ntfy · Multi-School
 
 Status: implemented in v1.4.0. This doc covers the new surfaces only; the tiered
-permission model stays as described in `GOD-API-PLAN.md`.
+permission model stays as described in [`GOD-API-PLAN.md`](GOD-API-PLAN.md).
+
+For the app-side contract see [`APP-INTEGRATION.md`](APP-INTEGRATION.md); for
+running the thing, [`../DEPLOYMENT.md`](../DEPLOYMENT.md).
 
 ## Admin dashboard
 

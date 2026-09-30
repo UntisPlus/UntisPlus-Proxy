@@ -4,7 +4,7 @@ Tick every box. Anything that fails is a bug; note it under the section and
 report it with the exact command + response.
 
 - **Beta base URL:** `http://localhost:8509`
-- **Server process:** `pgrep -a untis-server` · **log:** `tail -f /tmp/opencode/untis-server.log`
+- **Server process:** `pgrep -a untis-server` · **log:** `tail -f bin/untis-server.log`
 - **DB:** `data/untis.db` (live beta data — do not delete rows)
 - **Backup first:** `go run ./cmd/untisctl -db data/untis.db backup`
 
@@ -26,17 +26,41 @@ Legend: `[ ]` untested · `[x]` passed · `[!]` failed (write what you saw)
 
 ## 1. Liveness and operations (no auth)
 
-- [ ] `GET /status` → 200, `status:"ok"`, uptime counting up
-- [ ] `GET /healthz` → **200**, and for each school: `classes`, `scanScanned`, `scanStale`, `scanTarget`,
-      `pollRuns`, `pollChanges`, `pollFails: 0`, `lastPollAgoSec` < ~90, `lastSuccessfulPollAgoSec` < ~90,
-      `degraded: false`, no `reasons`
-- [ ] `GET /metrics` → 200, `Content-Type: text/plain`, and contains all of:
-      `untis_up 1`, `untis_uptime_seconds`, `untis_school_degraded{school=…} 0`,
+These three are the only endpoints that need no auth, and two of them are
+deliberately thin. The per-school view — school name, class count, scan progress,
+poll counters — is not on them any more; it is on the gated listener, because it
+was being published on whatever address a tunnel exposes.
+
+- [ ] `GET /status` → 200, `status:"ok"`, uptime counting up, and `version` is the
+      published tag rather than `dev` (a plain `go build` reports `dev`; that is
+      the signal that the version was not compiled in)
+- [ ] `GET /healthz` → **200**, and the body is the aggregate only:
+      `status:"ok"`, `uptime_sec`, `schools` as a **count**, `degraded` as a count
+- [ ] `GET /healthz` contains **no school name** and no `pollRuns` / `classes`
+      keys. This is the regression check for the leak: if a name shows up here it
+      is back on the public address
+- [ ] `GET /metrics` → **404**. The endpoint is not served unless `-metrics-addr`
+      is set, so a 404 is the passing result
+- [ ] Break the upstream (or stop the school server), wait for a poll to fail →
+      `GET /healthz` → **503** with `degraded` ≥ 1. The public probe must still
+      reach the verdict after the detail was stripped, or a broken proxy would
+      look healthy to a healthcheck
+- [ ] With `-metrics-addr 127.0.0.1:9109` set, `GET 127.0.0.1:9109/healthz` → the
+      full per-school view: `school`, `classes`, `scanScanned`, `scanStale`,
+      `scanTarget`, `pollRuns`, `pollChanges`, `pollFails: 0`,
+      `lastPollAgoSec` < ~90, `lastSuccessfulPollAgoSec` < ~90, `degraded: false`,
+      no `reasons`
+- [ ] `GET 127.0.0.1:9109/metrics` → 200, `Content-Type: text/plain`, and contains
+      all of: `untis_up 1`, `untis_uptime_seconds`, `untis_school_degraded{school=…} 0`,
       `untis_pool_classes`, `untis_recon_classes_scanned`, `untis_recon_classes_stale`,
       `untis_poll_runs_total`, `untis_poll_changes_total`, `untis_poll_failures_total`,
       `untis_poll_last_age_seconds`, `untis_poll_last_success_age_seconds`
-- [ ] `GET /healthz` twice, 65s apart → `pollRuns` increased by the number of pooled classes
-- [ ] `tail -20 /tmp/opencode/untis-server.log` → no panic, no repeated errors
+- [ ] The gated listener serves nothing but those two: `GET 127.0.0.1:9109/admin`,
+      `/status`, `/`, `/metrics` twice → 404 for everything except `/metrics` and
+      `/healthz`
+- [ ] `GET 127.0.0.1:9109/healthz` twice, 65s apart → `pollRuns` increased by the
+      number of pooled classes
+- [ ] `tail -20 bin/untis-server.log` → no panic, no repeated errors
 
 ## 2. Admin dashboard
 

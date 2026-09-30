@@ -2,6 +2,11 @@
 
 Status: implemented and committed. Decline/stale notes removed.
 
+Related: [`ADMIN-WEBHOOKS-NTFY.md`](ADMIN-WEBHOOKS-NTFY.md) for the admin
+surfaces built on these tiers, and
+[`APP-INTEGRATION.md`](APP-INTEGRATION.md) for what a client is allowed to see at
+each level.
+
 ## Goal
 
 Tiered permission model for the untis-proxy backend:

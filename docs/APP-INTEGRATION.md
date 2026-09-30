@@ -3,6 +3,12 @@
 Status: implemented in v1.4.0. This is the contract for the Android app
 (BetterPlus-Android) and any other client that wants live timetable changes.
 
+Admin and webhook/ntfy surfaces are in
+[`ADMIN-WEBHOOKS-NTFY.md`](ADMIN-WEBHOOKS-NTFY.md); the permission tiers are in
+[`GOD-API-PLAN.md`](GOD-API-PLAN.md). The endpoints that need no auth are
+`/status`, `/healthz` and — only with `-metrics-addr` set — `/metrics`; see
+[`../DEPLOYMENT.md`](../DEPLOYMENT.md#health-and-monitoring).
+
 ## Login note (v1.4.0)
 
 The proxy login (`getUserData2017` / `keyLogin`) accepts the **base32 shared
