@@ -1,0 +1,36 @@
+# untis-proxy on a NAS: pulls the prebuilt image, no build on the host.
+#
+#   cp .env.example .env      # set UNTIS_SCHOOL and UNTIS_IMAGE_REPO
+#   docker compose -f compose.nas.yaml up -d
+#
+# UNTIS_IMAGE_REPO is the registry repository WITHOUT a tag, e.g.
+# <your-namespace>/untis-proxy. It is required: there is no default, so a
+# deployment can never silently pull from whichever account published the image
+# first. The tag is appended here rather than being written into .env, so
+# UNTIS_VERSION below drives both what is pulled and what /status reports — the
+# two cannot drift.
+services:
+  untis-proxy:
+    image: "${UNTIS_IMAGE_REPO:?set UNTIS_IMAGE_REPO in .env, e.g. <your-namespace>/untis-proxy}:${UNTIS_VERSION:-latest}"
+    container_name: untis-proxy
+    restart: unless-stopped
+    ports:
+      - "${UNTIS_PORT:-8509}:8509"
+    environment:
+      UNTIS_ADDR: ":8509"
+      UNTIS_SCHOOL: "${UNTIS_SCHOOL:?set UNTIS_SCHOOL in .env — it is the key all data is stored under}"
+      UNTIS_DB: "/data/untis.db"
+      UNTIS_ENV: "${UNTIS_ENV:-prod}"
+      UNTIS_VERSION: "${UNTIS_VERSION:-latest}"
+      UNTIS_POLL_INTERVAL: "${UNTIS_POLL_INTERVAL:-60s}"
+      UNTIS_NTFY_BASE: "${UNTIS_NTFY_BASE:-https://ntfy.sh}"
+      UNTIS_PUBLIC_BASE: "${UNTIS_PUBLIC_BASE:-}"
+    volumes:
+      - ./data:/data
+    # Expose through a reverse proxy / tunnel on the host if you run one. The
+    # hostname is a variable, not a literal, so the file is reusable and does
+    # not advertise one person's domain.
+    labels:
+      - "dockflare.enable=${UNTIS_DOCKFLARE:-false}"
+      - "dockflare.hostname=${UNTIS_HOSTNAME:-untis-proxy.local}"
+      - "dockflare.service=http://untis-proxy:8509"

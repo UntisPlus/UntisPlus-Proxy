@@ -1,0 +1,59 @@
+# untis-proxy — local build, for development.
+#
+#   cp .env.example .env      # set UNTIS_SCHOOL first
+#   docker compose up -d
+#
+# Settings come from a .env file next to this one (see .env.example). Every
+# value below has a default except UNTIS_SCHOOL, which has none on purpose: it
+# is the key all data is stored under, so the stack refuses to start rather than
+# guess and serve the wrong school. Compose itself reports the missing value
+# before the container is ever created.
+services:
+  untis-proxy:
+    build: .
+    image: untis-proxy:latest
+    container_name: untis-proxy
+    restart: unless-stopped
+    ports:
+      - "${UNTIS_PORT:-8509}:8509"
+    environment:
+      UNTIS_ADDR: ":8509"
+      UNTIS_SERVER: "${UNTIS_SERVER:-}"
+      UNTIS_SCHOOL: "${UNTIS_SCHOOL:?set UNTIS_SCHOOL in .env — it is the key all data is stored under}"
+      UNTIS_DB: "/data/untis.db"
+      UNTIS_ENV: "${UNTIS_ENV:-dev}"
+      UNTIS_VERSION: "${UNTIS_VERSION:-dev}"
+      UNTIS_POLL_INTERVAL: "${UNTIS_POLL_INTERVAL:-60s}"
+      # Self-hosted ntfy: set this, then give each topic a baseUrl override in
+      # the dashboard if you want per-topic servers.
+      UNTIS_NTFY_BASE: "${UNTIS_NTFY_BASE:-https://ntfy.sh}"
+      # Externally reachable base URL, used for the click-through link on
+      # notifications. Leave empty locally; set it when you put a tunnel in
+      # front, otherwise links resolve to a relative path.
+      UNTIS_PUBLIC_BASE: "${UNTIS_PUBLIC_BASE:-}"
+    volumes:
+      - ./data:/data
+    networks:
+      - untis
+
+# Optional: join the tunnel / reverse-proxy network this host already runs.
+# Both are declared `external`, so a machine without them fails to start this
+# file. Comment the block out (or use an override) unless that is the case.
+#
+#   docker network create untis-external-net
+#   docker compose -f compose.yaml -f compose.external-net.yaml up -d
+#
+# networks:
+#   cloudflare-net:
+#     external: true
+#   npm_network:
+#     external: true
+# networks:
+#   untis:
+#   cloudflare-net:
+#     external: true
+#   npm_network:
+#     external: true
+
+networks:
+  untis:

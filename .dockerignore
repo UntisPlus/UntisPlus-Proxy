@@ -1,0 +1,6 @@
+bin/
+data/
+untis.db
+*.log
+.git/
+.tunnel-token

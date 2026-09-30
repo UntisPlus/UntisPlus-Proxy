@@ -1,0 +1,21 @@
+# runtime data
+data/
+*.db
+*.db-*
+
+# Let's Encrypt keys / certs
+le/
+
+# build artifacts & logs
+bin/
+*.log
+
+# secrets
+credentials.txt
+.tunnel-token
+.env
+
+# raw agent/chat transcripts: these get pasted tool output and log lines, which
+# can contain live credentials and personal data. Never commit them.
+opencode-chat.md
+*.chat.md

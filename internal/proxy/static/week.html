@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Name}} · Stundenplan</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg:#0f1115; --card:#181b22; --line:#2a2e39; --fg:#e8eaed; --dim:#9aa0ae;
+    --accent:#4a8cff; --warn:#f0a742; --bad:#f87171; --good:#4ade80;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f7f9; --card:#ffffff; --line:#e2e5ea; --fg:#15171c; --dim:#5c6370; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.45 system-ui,-apple-system,sans-serif; }
+  .wrap { max-width:720px; margin:0 auto; padding:1rem .9rem 3rem; }
+  header { padding:.4rem 0 1rem; }
+  h1 { font-size:1.25rem; margin:0 0 .25rem; }
+  .sub { color:var(--dim); font-size:.82rem; }
+  .sub a { color:var(--accent); }
+  .day { background:var(--card); border:1px solid var(--line); border-radius:12px; margin:0 0 .8rem; overflow:hidden; }
+  .day.today { border-color:var(--accent); }
+  .day h2 { font-size:.95rem; margin:0; padding:.55rem .8rem; border-bottom:1px solid var(--line);
+            display:flex; justify-content:space-between; align-items:baseline; gap:.5rem; }
+  .day.today h2 { color:var(--accent); }
+  .day h2 .rel { font-weight:400; font-size:.76rem; color:var(--dim); }
+  table { width:100%; border-collapse:collapse; }
+  td { padding:.5rem .8rem; border-bottom:1px solid var(--line); vertical-align:top; font-size:.9rem; }
+  tr:last-child td { border-bottom:0; }
+  td.time { width:5.4rem; color:var(--dim); white-space:nowrap; font-variant-numeric:tabular-nums; font-size:.82rem; }
+  td.who { color:var(--dim); font-size:.8rem; }
+  .subj { font-weight:600; }
+  .flag { display:inline-block; font-size:.72rem; padding:.05rem .35rem; border-radius:5px; margin-right:.3rem;
+          border:1px solid currentColor; }
+  .flag.cancelled { color:var(--bad); }
+  .flag.exam { color:var(--warn); }
+  .flag.subst { color:var(--accent); }
+  .free { padding:.6rem .8rem; color:var(--dim); font-size:.85rem; }
+  footer { color:var(--dim); font-size:.76rem; padding-top:1rem; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>{{.Name}}</h1>
+    <div class="sub">
+      {{.WeekLabel}} &middot; {{.Timezone}}
+      {{if .ICSURL}} &middot; <a href="{{.ICSURL}}">iCal-Feed</a>{{end}}
+    </div>
+  </header>
+
+  {{range .Days}}
+  <section class="day{{if .Today}} today{{end}}">
+    <h2><span>{{.Label}}</span><span class="rel">{{if .Today}}heute{{else}}{{.Relative}}{{end}}</span></h2>
+    {{if .Lessons}}
+    <table>
+      {{range .Lessons}}
+      <tr>
+        <td class="time">{{.TimeRange}}</td>
+        <td>
+          {{if .Cancelled}}<span class="flag cancelled">entfällt</span>{{end}}
+          {{if .Exam}}<span class="flag exam">{{.ExamLabel}}</span>{{end}}
+          {{if .Substitution}}<span class="flag subst">Vertretung</span>{{end}}
+          <span class="subj">{{.Subject}}</span>
+          <div class="who">{{.Detail}}</div>
+          {{if .Notes}}<div class="who">{{.Notes}}</div>{{end}}
+        </td>
+      </tr>
+      {{end}}
+    </table>
+    {{else}}
+    <div class="free">keine Stunden</div>
+    {{end}}
+  </section>
+  {{else}}
+  <section class="day"><div class="free">Für diese Woche liegen keine Stunden vor.</div></section>
+  {{end}}
+
+  <footer>
+    {{if .Version}}Stand: Version {{.Version}} &middot; {{end}}
+    Aktualisiert {{.RenderedAt}}<br>
+    Der Link ist dein Geheimnis — wer ihn kennt, sieht diesen Plan.
+  </footer>
+</div>
+</body>
+</html>

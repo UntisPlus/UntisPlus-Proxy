@@ -1,0 +1,1 @@
+error while interpolating services.untis-proxy.image: required variable UNTIS_IMAGE_REPO is missing a value: set UNTIS_IMAGE_REPO in .env, e.g. <your-namespace>/untis-proxy

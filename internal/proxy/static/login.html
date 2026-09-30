@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>untis-proxy admin &middot; login</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh; display: flex;
+         align-items: center; justify-content: center; background:#111216; color:#e6e6e6; }
+  form { width: min(320px, 90vw); background:#1c1e26; border:1px solid #2a2d37; border-radius:10px;
+         padding:1.4rem; display:flex; flex-direction:column; gap:.7rem; }
+  h1 { font-size:1.1rem; margin:0 0 .2rem; font-weight:600; }
+  label { font-size:.78rem; color:#9aa0ae; display:flex; flex-direction:column; gap:.3rem; }
+  input { background:#14161c; border:1px solid #353947; color:#e6e6e6; border-radius:6px; padding:.5rem .6rem; }
+  button { background:#3b82f6; border:0; color:white; border-radius:6px; padding:.55rem; cursor:pointer; font-size:.86rem; }
+  button:disabled { opacity:.5; cursor:default; }
+  .err { color:#f87171; font-size:.8rem; min-height:1rem; }
+  .hint { color:#9aa0ae; font-size:.74rem; }
+  code { background:#14161c; padding:.1rem .3rem; border-radius:4px; }
+</style>
+</head>
+<body>
+<form id="f" autocomplete="on">
+  <h1>untis-proxy admin</h1>
+  <label>Untis username
+    <input id="user" name="user" autocomplete="username" required>
+  </label>
+  <label>6-digit code (from your TOTP app)
+    <input id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code"
+           pattern="[0-9]{6}" maxlength="6" placeholder="123456" required>
+  </label>
+  <button id="btn" type="submit">Sign in</button>
+  <div class="err" id="err"></div>
+  <div class="hint">Logs in through the same <code>getUserData2017</code> call the app uses, so it only
+  succeeds for real accounts. Admin access is then restricted to users holding the
+  <code>admin</code> flag.</div>
+</form>
+<script>
+const f = document.getElementById('f');
+const btn = document.getElementById('btn');
+const err = document.getElementById('err');
+const user = document.getElementById('user');
+const otp = document.getElementById('otp');
+try { user.value = localStorage.getItem('admin_user') || ''; } catch (e) {}
+
+f.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  err.textContent = '';
+  btn.disabled = true;
+  btn.textContent = 'Signing in…';
+  try {
+    const body = {
+      id: 1, jsonrpc: '2.0', method: 'getUserData2017',
+      params: [{ auth: { clientTime: Date.now(), user: user.value, otp: otp.value } }],
+    };
+    let r;
+    try {
+      r = await fetch('/WebUntis/jsonrpc_intern.do', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (e) {
+      throw new Error('network error: ' + e.message);
+    }
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || (j && j.error)) {
+      throw new Error((j && j.error && j.error.message) || ('login failed (HTTP ' + r.status + ')'));
+    }
+    const s = await fetch('/admin/status', { credentials: 'include' });
+    if (s.ok) {
+      try { localStorage.setItem('admin_user', user.value); } catch (e) {}
+      location.href = '/admin';
+    } else if (s.status === 403) {
+      err.textContent = 'Signed in, but this account is not an admin.';
+    } else {
+      throw new Error('session not accepted (HTTP ' + s.status + ')');
+    }
+  } catch (e) {
+    err.textContent = e.message || 'login failed';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sign in';
+  }
+});
+</script>
+</body>
+</html>

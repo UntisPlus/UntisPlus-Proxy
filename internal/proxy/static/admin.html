@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>untis-proxy admin</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem;
+         background: #111216; color: #e6e6e6; }
+  h1 { font-size: 1.3rem; margin-top: 0; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .6rem; margin-bottom: 1.2rem; }
+  .card { background: #1c1e26; border: 1px solid #2a2d37; border-radius: 8px; padding: .7rem .9rem; }
+  .card .num { font-size: 1.6rem; font-weight: 600; }
+  .card .lbl { font-size: .78rem; color: #9aa0ae; }
+  section { background: #1c1e26; border: 1px solid #2a2d37; border-radius: 8px; padding: .8rem 1rem; margin-bottom: 1rem; }
+  h2 { font-size: 1rem; margin: 0 0 .6rem; }
+  table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+  th, td { text-align: left; padding: .35rem .4rem; border-bottom: 1px solid #262933; }
+  th { color: #9aa0ae; font-weight: 500; }
+  button { background: #3b82f6; border: 0; color: white; border-radius: 6px; padding: .35rem .7rem; cursor: pointer; font-size: .8rem; }
+  button.danger { background: #dc2626; }
+  button.mini { padding: .15rem .4rem; font-size: .72rem; }
+  input, select { background: #14161c; border: 1px solid #353947; color: #e6e6e6; border-radius: 6px; padding: .35rem .5rem; }
+  .row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  .pickwrap { position: relative; display: inline-block; }
+  .pickmenu { position: absolute; top: 100%; left: 0; right: 0; z-index: 10; background: #14161c;
+              border: 1px solid #353947; border-radius: 6px; max-height: 16rem; overflow: auto; display: none; }
+  .pickitem { padding: .35rem .5rem; cursor: pointer; font-size: .8rem; }
+  .pickitem:hover { background: #2a2d37; }
+  .pickitem.dim { color: #9aa0ae; cursor: default; }
+  pre.log { background:#0d0f14; padding:.6rem; border-radius:6px; max-height:16rem; overflow:auto; font-size:.76rem; }
+</style>
+</head>
+<body>
+<h1>untis-proxy&nbsp;admin</h1>
+<div class="row" style="margin-bottom:.6rem">
+  <button onclick="refreshAll()" style="margin-bottom:.4rem">refresh all</button>
+  <span id="refreshHint" style="font-size:.72rem;color:#9aa0ae"></span>
+</div>
+
+<div class="cards" id="cards"></div>
+
+<section>
+  <h2>Users <button class="mini" onclick="loadUsers()">refresh</button></h2>
+  <div class="row" style="margin-bottom:.5rem">
+    <input id="uName" placeholder="username">
+    <button onclick="addUser()">promote to admin</button>
+  </div>
+  <table id="users"><thead><tr><th>user</th><th>class</th><th>school</th><th>admin</th><th>recon</th><th>boosted</th><th>editor</th><th></th></tr></thead><tbody></tbody></table>
+</section>
+
+<section>
+  <h2>Schools <button class="mini" onclick="loadSchools()">refresh</button></h2>
+  <div class="row" style="margin-bottom:.5rem">
+    <input id="sName" placeholder="school login name">
+    <button onclick="addSchool()">register</button>
+  </div>
+  <table id="schools"><thead><tr><th>school</th><th>added</th><th>last seen</th></tr></thead><tbody></tbody></table>
+</section>
+
+<section>
+  <h2>Webhooks <button class="mini" onclick="loadWebhooks()">refresh</button></h2>
+  <div class="row" style="margin-bottom:.5rem">
+    <select id="whSchool"></select>
+    <select id="whType">
+      <option value="">all (school-wide)</option>
+      <option value="CLASS">class</option>
+      <option value="STUDENT">student</option>
+      <option value="TEACHER">teacher</option>
+      <option value="ROOM">room</option>
+      <option value="SUBJECT">subject</option>
+    </select>
+    <span class="pickwrap"><input id="whElIn" placeholder="search element…" style="width:14rem">
+      <input type="hidden" id="whElVal" value="0"><input type="hidden" id="whElName"><div class="pickmenu" id="whElMenu"></div></span>
+    <input id="whUrl" placeholder="https://.../hook" style="flex:1">
+    <input id="whSecret" placeholder="secret (optional)" style="width:12rem">
+    <button onclick="addWebhook()">add</button>
+  </div>
+  <table id="webhooks"><thead><tr><th>school</th><th>element</th><th>url</th><th>by</th><th></th></tr></thead><tbody></tbody></table>
+</section>
+
+<section>
+  <h2>ntfy topics <button class="mini" onclick="loadNtfy()">refresh</button></h2>
+  <div class="row" style="margin-bottom:.5rem">
+    <select id="ntfySchool"></select>
+    <select id="ntfyType">
+      <option value="">all (school-wide)</option>
+      <option value="CLASS">class</option>
+      <option value="STUDENT">student</option>
+      <option value="TEACHER">teacher</option>
+      <option value="ROOM">room</option>
+      <option value="SUBJECT">subject</option>
+    </select>
+    <span class="pickwrap"><input id="ntfyElIn" placeholder="search element…" style="width:14rem">
+      <input type="hidden" id="ntfyElVal" value="0"><input type="hidden" id="ntfyElName"><div class="pickmenu" id="ntfyElMenu"></div></span>
+    <input id="ntfyTopic" placeholder="topic" style="flex:1">
+    <input id="ntfyBase" placeholder="server (optional, e.g. https://ntfy.myserver.de)" style="width:16rem">
+    <button onclick="addNtfy()">add</button>
+  </div>
+  <table id="ntfy"><thead><tr><th>school</th><th>element</th><th>topic</th><th>server</th><th>by</th><th></th></tr></thead><tbody></tbody></table>
+</section>
+
+<section id="tokensSection">
+  <h2>Calendar tokens <button class="mini" onclick="loadTokens()">refresh</button></h2>
+  <div class="row" style="margin-bottom:.5rem">
+    <select id="tokSchool"></select>
+    <select id="tokType">
+      <option value="CLASS">class</option>
+      <option value="STUDENT">student</option>
+      <option value="TEACHER">teacher</option>
+      <option value="ROOM">room</option>
+      <option value="SUBJECT">subject</option>
+    </select>
+    <span class="pickwrap"><input id="tokElIn" placeholder="search element…" style="width:16rem">
+      <input type="hidden" id="tokElVal"><input type="hidden" id="tokElName"><div class="pickmenu" id="tokElMenu"></div></span>
+    <input id="tokDays" type="number" value="30" min="1" max="365" style="width:5rem" title="lookahead days">
+    <button onclick="addToken()">create</button>
+  </div>
+  <table id="tokens"><thead><tr><th>token</th><th>element</th><th>type</th><th>id</th><th>created</th><th>by</th><th>days</th><th></th></tr></thead><tbody></tbody></table>
+</section>
+
+<section>
+  <h2>Pool <button class="mini" onclick="loadPool()">refresh</button></h2>
+  <div class="row" style="margin-bottom:.5rem">
+    <select id="poolSchool"></select>
+  </div>
+  <table id="pool"><thead><tr><th>class</th><th>name</th><th>owner</th></tr></thead><tbody></tbody></table>
+</section>
+
+<div id="logCard"><section><h2>Recent activity</h2><pre class="log" id="log"></pre></section></div>
+
+<script>
+let status;
+const $ = function(id){ return document.getElementById(id); };
+function log(msg){ const e=$('log'); e.textContent = (new Date().toISOString().slice(11,19))+' '+msg+'\n'+e.textContent; }
+
+async function api(method, path, body){
+  const opts = {method: method, headers: {}};
+  if(body){ opts.headers['Content-Type']='application/json'; opts.body=JSON.stringify(body); }
+  const r = await fetch('/admin/'+path, opts);
+  if(!r.ok && r.status===401){ $('cards').innerHTML='<div class="card"><div class="lbl">Not authorized</div></div>'; throw new Error('unauthorized'); }
+  return r.json();
+}
+
+function card(lbl, num){ return '<div class="card"><div class="num">'+num+'</div><div class="lbl">'+lbl+'</div></div>'; }
+
+async function renderCards(){
+  status = await api('GET','status');
+  const c = $('cards'); c.innerHTML='';
+  c.insertAdjacentHTML('beforeend', card('users', status.users));
+  c.insertAdjacentHTML('beforeend', card('admins', status.admins));
+  c.insertAdjacentHTML('beforeend', card('pool classes', status.pool));
+  c.insertAdjacentHTML('beforeend', card('schools', status.schools));
+  c.insertAdjacentHTML('beforeend', card('tokens', status.tokens));
+  c.insertAdjacentHTML('beforeend', card('webhooks', status.webhooks));
+  c.insertAdjacentHTML('beforeend', card('ntfy topics', status.ntfyTopics));
+  c.insertAdjacentHTML('beforeend', card('recon', status.recon));
+  c.insertAdjacentHTML('beforeend', card('boosted', status.boosted));
+  c.insertAdjacentHTML('beforeend', card('editors', status.editors));
+  for(const id of ['whSchool','ntfySchool','tokSchool','poolSchool']) fillSchoolSelect(id);
+  $('poolSchool').addEventListener('change', loadPool);
+}
+
+function makePicker(o){
+  const inp=$(o.input), menu=$(o.menu), hidden=o.hidden?$(o.hidden):null;
+  let timer=null;
+  function school(){ const s=o.schoolSel?$(o.schoolSel):null; return s?s.value:'testschool'; }
+  async function search(){
+    const q=inp.value.trim();
+    try {
+      const d=await api('GET','search?school='+encodeURIComponent(school())+'&type='+(o.type||'CLASS')+'&q='+encodeURIComponent(q));
+      menu.innerHTML='';
+      if(o.allLabel){ const a=document.createElement('div'); a.className='pickitem';
+        a.textContent=o.allLabel;
+        a.onclick=function(){ if(hidden) hidden.value='0'; inp.value=''; menu.style.display='none'; if(o.onpick) o.onpick(0,''); };
+        menu.appendChild(a); }
+      for(const r of d.results){
+        const it=document.createElement('div'); it.className='pickitem';
+        it.textContent=(o.type==='CLASS'?'':' '+r.type)+' '+r.name+' (#'+r.id+')';
+        it.onclick=function(){ if(hidden) hidden.value=r.id; inp.value=r.name; menu.style.display='none'; if(o.onpick) o.onpick(r.id,r.name); };
+        menu.appendChild(it);
+      }
+      if(!d.results.length && !o.allLabel){ const e=document.createElement('div'); e.className='pickitem dim'; e.textContent='no match'; menu.appendChild(e); }
+      menu.style.display = menu.childElementCount ? 'block' : 'none';
+    } catch(e){}
+  }
+  inp.addEventListener('input', function(){ clearTimeout(timer); timer=setTimeout(search, 180); });
+  inp.addEventListener('focus', search);
+  inp.addEventListener('blur', function(){ setTimeout(function(){ menu.style.display='none'; }, 150); });
+  inp.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); search(); } });
+  const sel=o.schoolSel?$(o.schoolSel):null;
+  if(sel) sel.addEventListener('change', function(){ if(hidden) hidden.value='0'; inp.value=''; });
+}
+
+function fillSchoolSelect(id){
+  const sel=$(id); sel.innerHTML='';
+  (status.schools||[]).forEach(function(s){ const o=document.createElement('option'); o.value=s.name; o.textContent=s.name; sel.appendChild(o); });
+  if(!sel.options.length){ const o=document.createElement('option'); o.value='testschool'; o.textContent='testschool'; sel.appendChild(o); }
+}
+
+async function loadUsers(){
+  const d = await api('GET','users');
+  const tb=$('users').querySelector('tbody'); tb.innerHTML='';
+  for(const u of d.users){
+    const tr=document.createElement('tr');
+    tr.innerHTML=
+      '<td>'+u.username+'</td><td>'+u.classId+' '+(u.className||'')+'</td><td>'+u.school+'</td>'+
+      '<td><button class="mini '+(u.admin?'danger':'')+'" onclick="setAdmin(\''+u.username+'\','+(!u.admin)+')">'+(u.admin?'on':'off')+'</button></td>'+
+      '<td><button class="mini '+(u.reconAllowed?'danger':'')+'" onclick="setPerm(\''+u.username+'\',\'recon\','+(!u.reconAllowed)+')">'+(u.reconAllowed?'on':'off')+'</button></td>'+
+      '<td><button class="mini '+(u.boosted?'danger':'')+'" onclick="setPerm(\''+u.username+'\',\'boosted\','+(!u.boosted)+')">'+(u.boosted?'on':'off')+'</button></td>'+
+      '<td><button class="mini '+(u.editor?'danger':'')+'" onclick="setPerm(\''+u.username+'\',\'editor\','+(!u.editor)+')">'+(u.editor?'on':'off')+'</button></td>'+
+      '<td><button class="mini danger" onclick="delUser(\''+u.username+'\')">del</button></td>';
+    tb.appendChild(tr);
+  }
+}
+
+async function addUser(){
+  const name=$('uName').value.trim(); if(!name) return;
+  await api('POST','users',{username:name, admin:true}); $('uName').value='';
+  log('promoted '+name); loadUsers(); renderCards();
+}
+async function setAdmin(u,v){ await api('POST','users/'+u,{admin:v}); loadUsers(); renderCards(); }
+async function setPerm(u,f,v){ await api('POST','users/'+u,{feature:f,allowed:v}); loadUsers(); renderCards(); }
+async function delUser(u){ if(!confirm('delete '+u+'?')) return; await api('DELETE','users/'+u); log('deleted '+u); loadUsers(); renderCards(); }
+
+async function loadSchools(){
+  const d=await api('GET','schools');
+  const tb=$('schools').querySelector('tbody'); tb.innerHTML='';
+  for(const s of d.schools){ const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+s.name+'</td><td>'+new Date(s.addedAt*1000||0).toLocaleDateString()+'</td><td>'+new Date(s.lastSeen*1000||0).toLocaleString()+'</td>'; tb.appendChild(tr); }
+}
+async function addSchool(){ const n=$('sName').value.trim(); if(!n) return; await api('POST','schools/'+n); $('sName').value=''; log('registered '+n); loadSchools(); renderCards(); }
+
+function elementCell(el){
+  if(!el || !el.elementType) return 'all';
+  const name=el.name||('#'+el.elementId);
+  return el.elementType.toLowerCase()+' '+name;
+}
+async function loadWebhooks(){
+  const d=await api('GET','webhooks');
+  const tb=$('webhooks').querySelector('tbody'); tb.innerHTML='';
+  for(const w of d.webhooks){ const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+w.school+'</td><td>'+elementCell(w)+'</td><td style="word-break:break-all">'+w.url+'</td><td>'+(w.createdBy||'')+'</td>'+
+      '<td><button class="mini" onclick="testWh('+w.id+',this)">test</button> <button class="mini danger" onclick="delWh('+w.id+')">del</button></td>'; tb.appendChild(tr); }
+}
+async function testWh(id,btn){
+  btn.disabled=true; btn.textContent='…';
+  try {
+    const d=await api('POST','webhooks/'+id+'/test');
+    log('webhook '+id+' test: '+(d.ok?('delivered, HTTP '+d.status):('FAILED: '+(d.error||'no response'))));
+  } catch(e){ log('webhook '+id+' test error: '+e.message); }
+  btn.disabled=false; btn.textContent='test';
+}
+async function addWebhook(){
+  const type=$('whType').value;
+  await api('POST','webhooks',{school:$('whSchool').value,elementType:type,elementId:parseInt($('whElVal').value)||0,url:$('whUrl').value.trim(),secret:$('whSecret').value.trim()});
+  $('whUrl').value=''; $('whSecret').value=''; log('added webhook'); loadWebhooks(); renderCards();
+}
+async function delWh(id){ await api('DELETE','webhooks/'+id); loadWebhooks(); renderCards(); }
+
+async function loadNtfy(){
+  const d=await api('GET','ntfy');
+  const tb=$('ntfy').querySelector('tbody'); tb.innerHTML='';
+  for(const n of d.topics){ const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+n.school+'</td><td>'+elementCell(n)+'</td><td style="word-break:break-all">'+n.topic+'</td><td>'+(n.baseUrl||'(default)')+'</td><td>'+(n.createdBy||'')+'</td>'+
+      '<td><button class="mini" onclick="testNtfy('+n.id+',this)">test</button> <button class="mini danger" onclick="delNtfy('+n.id+')">del</button></td>'; tb.appendChild(tr); }
+}
+async function addNtfy(){
+  const type=$('ntfyType').value;
+  await api('POST','ntfy',{school:$('ntfySchool').value,elementType:type,elementId:parseInt($('ntfyElVal').value)||0,topic:$('ntfyTopic').value.trim(),baseUrl:$('ntfyBase').value.trim()});
+  $('ntfyTopic').value=''; $('ntfyBase').value=''; log('added ntfy topic'); loadNtfy(); renderCards();
+}
+async function delNtfy(id){ await api('DELETE','ntfy/'+id); loadNtfy(); renderCards(); }
+async function testNtfy(id,btn){
+  btn.disabled=true; btn.textContent='…';
+  try {
+    const d=await api('POST','ntfy/'+id+'/test');
+    log('ntfy '+id+' test: '+(d.ok
+      ? ('delivered to '+d.server+'/'+d.topic+', HTTP '+d.status)
+      : ('FAILED: '+(d.error||('HTTP '+d.status)))));
+  } catch(e){ log('ntfy '+id+' test error: '+e.message); }
+  btn.disabled=false; btn.textContent='test';
+}
+
+async function loadTokens(){
+  const d=await api('GET','tokens');
+  if(!d.tokens){ $('tokensSection').style.display='none'; return; }
+  $('tokensSection').style.display='';
+  const tb=$('tokens').querySelector('tbody'); tb.innerHTML='';
+  for(const t of d.tokens){ const tr=document.createElement('tr');
+    tr.innerHTML='<td style="font-family:monospace;font-size:.72rem">'+t.token+'</td><td>'+(t.elementName||'')+'</td><td>'+t.elementType+'</td><td>'+t.elementId+'</td>'+
+      '<td>'+(t.createdAt?new Date(t.createdAt*1000).toLocaleDateString():'')+'</td><td>'+(t.createdBy||'')+'</td><td>'+t.days+'</td>'+
+      '<td><button class="mini" title="copy .ics url" onclick="copyTokenUrl(\''+t.token+'\')">ics</button> '+
+      '<button class="mini" onclick="editToken(\''+t.token+'\',\''+(t.elementName||t.token).replace(/'/g,"\\'")+'\')">edit</button> '+
+      '<button class="mini danger" onclick="revokeToken(\''+t.token+'\')">revoke</button></td>'; tb.appendChild(tr); }
+}
+async function revokeToken(tk){ await api('DELETE','tokens/'+tk); log('revoked '+tk); loadTokens(); }
+
+function copyTokenUrl(tk){
+  const url=location.origin+'/api/calendar/'+tk+'.ics';
+  copyText(url);
+  log('copied '+url);
+}
+function copyText(text){
+  if(navigator.clipboard && navigator.clipboard.writeText){ navigator.clipboard.writeText(text); return; }
+  const ta=document.createElement('textarea'); ta.value=text; document.body.appendChild(ta); ta.select();
+  try { document.execCommand('copy'); } catch(e){} document.body.removeChild(ta);
+}
+async function addToken(){
+  const id=parseInt($('tokElVal').value)||0, type=$('tokType').value, days=parseInt($('tokDays').value)||30;
+  if(!id){ log('search and pick an element first'); return; }
+  const d=await api('POST','tokens',{school:$('tokSchool').value,elementType:type,elementId:id,days:days});
+  if(d.error){ log('create token failed: '+d.error); return; }
+  log('token "'+d.name+'" created — '+d.url);
+  copyText(d.url);
+  $('tokElIn').value=''; $('tokElVal').value=''; $('tokElName').value='';
+  loadTokens(); renderCards();
+}
+async function editToken(tk,name){
+  const days=prompt('new lookahead days for "'+(name||tk)+'":', '30');
+  if(days===null) return;
+  const n=parseInt(days);
+  if(!n||n<1||n>365){ log('days must be between 1 and 365'); return; }
+  const d=await api('POST','tokens/'+tk,{days:n});
+  log(d.updated?('token updated to '+n+' days'):('update failed: '+(d.error||'not found')));
+  loadTokens();
+}
+
+async function loadPool(){
+  const sc=$('poolSchool').value || 'testschool';
+  const d=await api('GET','pool/'+sc);
+  const tb=$('pool').querySelector('tbody'); tb.innerHTML='';
+  for(const c of d.pool){ const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+c.id+'</td><td>'+c.name+'</td><td>'+c.owner+'</td>'; tb.appendChild(tr); }
+}
+
+async function refreshAll(){
+  const mark = new Date().toISOString().slice(11,19);
+  const hint = $('refreshHint'); if(hint) hint.textContent = 'last refresh '+mark;
+  const jobs = {users:loadUsers, schools:loadSchools, webhooks:loadWebhooks,
+                ntfy:loadNtfy, tokens:loadTokens, pool:loadPool};
+  try { await renderCards(); } catch(e){ log('cards: '+e); }
+  const results = await Promise.allSettled(Object.keys(jobs).map(k => jobs[k]().catch(function(e){ log(k+' load: '+e); })));
+  results.forEach(function(r, i){ if(r.status === 'rejected') log(Object.keys(jobs)[i]+' load failed'); });
+}
+
+(function init(){
+  function elPicker(o){
+    // o = {input, hidden, name, menu, school, typeSel} — element search whose
+    // type follows the linked <select>, like the calendar token picker.
+    function sel(type){
+      makePicker({input:o.input, hidden:o.hidden, menu:o.menu, schoolSel:o.school, type:type,
+        onpick:function(id,name){ const h=$(o.name); if(h) h.value=name||''; }});
+    }
+    const tsel=$(o.typeSel);
+    sel(tsel.value);
+    tsel.addEventListener('change', function(){
+      $(o.input).value=''; $(o.hidden).value='0'; $(o.name).value='';
+      sel(tsel.value);
+    });
+  }
+  elPicker({input:'whElIn', hidden:'whElVal', name:'whElName', menu:'whElMenu', school:'whSchool', typeSel:'whType'});
+  elPicker({input:'ntfyElIn', hidden:'ntfyElVal', name:'ntfyElName', menu:'ntfyElMenu', school:'ntfySchool', typeSel:'ntfyType'});
+  function tokPicker(type){
+    makePicker({input:'tokElIn', hidden:'tokElVal', menu:'tokElMenu', schoolSel:'tokSchool', type:type,
+      onpick:function(id,name){ $('tokElName').value = name || ''; }});
+  }
+  tokPicker($('tokType').value);
+  $('tokType').addEventListener('change', function(){
+    $('tokElIn').value=''; $('tokElVal').value=''; $('tokElName').value='';
+    tokPicker($('tokType').value);
+  });
+  refreshAll();
+})();
+</script>
+</body>
+</html>
