@@ -193,6 +193,68 @@ func TestRemovedIsReportedOnce(t *testing.T) {
 	}
 }
 
+// TestReinstatedLessonIsAnnounced covers a lesson that is cancelled and then
+// restored upstream with byte-identical data. kind is not part of the field
+// comparison, so this must not collapse into UNCHANGED — otherwise the lesson
+// reappears on the timetable and no subscriber is ever told.
+func TestReinstatedLessonIsAnnounced(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	const today = "2026-08-29"
+	lesson := []PeriodRow{
+		{PeriodID: 7, Start: "2026-09-02T08:00Z", End: "2026-09-02T08:45Z",
+			Subject: "Mathe", Room: "R204", Teacher: "Müller"},
+	}
+	if _, err := st.ReplaceClassSnapshot("s", 2, lesson, 1, ""); err != nil {
+		t.Fatal(err)
+	}
+	// cancelled
+	if changed, err := st.ReplaceClassSnapshot("s", 2, nil, 2, today); err != nil {
+		t.Fatal(err)
+	} else if changed != 1 {
+		t.Fatalf("cancellation: changed = %d, want 1", changed)
+	}
+	// still cancelled: quiet
+	if changed, err := st.ReplaceClassSnapshot("s", 2, nil, 3, today); err != nil {
+		t.Fatal(err)
+	} else if changed != 0 {
+		t.Fatalf("steady poll after cancellation: changed = %d, want 0", changed)
+	}
+
+	// restored, with data identical to before the cancellation
+	changed, err := st.ReplaceClassSnapshot("s", 2, lesson, 4, today)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed != 1 {
+		t.Fatalf("reinstatement: changed = %d, want 1 — the lesson came back and must be announced", changed)
+	}
+	pending, ver, err := st.PendingChanges("s", 2, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("reinstatement: pending = %+v, want exactly 1 row", pending)
+	}
+	if pending[0].Kind != "ADDED" {
+		t.Errorf("reinstatement kind = %q, want ADDED (CHANGED carries no marker in the digest, so a reinstatement would be silent about what happened)", pending[0].Kind)
+	}
+	if pending[0].ModVer != 4 {
+		t.Errorf("reinstatement mod version = %d, want 4", pending[0].ModVer)
+	}
+	if ver != 4 {
+		t.Errorf("version = %d, want 4", ver)
+	}
+	// the payload must be the real lesson, not a stub
+	if pending[0].Subject != "Mathe" || pending[0].Room != "R204" || pending[0].Start != lesson[0].Start {
+		t.Errorf("reinstatement row = %+v, want the restored lesson data", pending[0])
+	}
+}
+
 // TestRemovedAgedOutIsStillDropped guards the interaction with the window: a
 // removal whose start date has passed should still disappear rather than linger.
 func TestRemovedAgedOutIsStillDropped(t *testing.T) {

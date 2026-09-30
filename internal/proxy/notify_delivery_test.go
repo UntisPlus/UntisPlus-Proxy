@@ -390,6 +390,107 @@ func TestCancelledLessonNotifiesOnce(t *testing.T) {
 	}
 }
 
+// TestReinstatedLessonSendsNotification is the user-visible half of the
+// reinstatement fix: a lesson that is cancelled and then restored must reach the
+// subscriber, and must read as a lesson that is back rather than as a silent
+// no-op. The digest marks ADDED as "new" and CHANGED with nothing at all, so
+// this also pins which of the two a reinstatement reports as.
+func TestReinstatedLessonSendsNotification(t *testing.T) {
+	var mu sync.Mutex
+	var posts []string
+	ntfySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		_ = json.Unmarshal(b, &body)
+		mu.Lock()
+		posts = append(posts, fmt.Sprint(body["message"]))
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer ntfySrv.Close()
+
+	// far enough ahead that the window guard cannot drop it. Shaped like the
+	// real API response: RFC3339 timestamps and a nested text object, because
+	// textField and parsePeriodTime only understand those. A bare "subject" key
+	// and a space-separated timestamp leave the digest with nothing to render,
+	// which would test the fixture rather than the code.
+	day := time.Now().AddDate(0, 0, 4)
+	lesson := []map[string]any{{
+		"id":            10,
+		"startDateTime": day.Format(time.RFC3339),
+		"endDateTime":   day.Add(45 * time.Minute).Format(time.RFC3339),
+		"text":          map[string]any{"subject": "Mathe"},
+		"elements": []any{
+			map[string]any{"id": 5009, "type": "TEACHER"},
+			map[string]any{"id": 169, "type": "ROOM"},
+		},
+	}}
+	f := &fakeUpstream{}
+	f.setTimetable(t, lesson)
+
+	p, st := newFakeProxyUpstream(t, f)
+	if err := st.UpsertUser(&store.User{Username: "owen", School: "testschool", Method: "key",
+		PersonType: 5, PersonID: 7, ClassID: 5000, Password: "replayable"}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if _, err := st.AddNtfyTopic(&store.NtfyTopic{School: "testschool", Topic: "changes",
+		BaseURL: ntfySrv.URL, Enabled: true}); err != nil {
+		t.Fatalf("add ntfy topic: %v", err)
+	}
+	if err := st.SaveMasterNames("testschool", "TEACHER", map[int64]string{5009: "A. Hartley"}); err != nil {
+		t.Fatalf("seed teacher name: %v", err)
+	}
+	if err := st.SaveMasterNames("testschool", "ROOM", map[int64]string{169: "R204"}); err != nil {
+		t.Fatalf("seed room name: %v", err)
+	}
+
+	p.pollOnce("testschool") // present
+	f.setTimetable(t, nil)   // cancelled
+	p.pollOnce("testschool")
+	p.pollOnce("testschool") // still cancelled: quiet
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	before := len(posts)
+	mu.Unlock()
+
+	f.setTimetable(t, lesson) // restored, byte-identical
+	p.pollOnce("testschool")
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	got := len(posts)
+	msg := ""
+	if got > before {
+		msg = posts[got-1]
+	}
+	all := append([]string(nil), posts...)
+	mu.Unlock()
+
+	if got != before+1 {
+		t.Fatalf("ntfy posts = %d, want %d — a reinstated lesson must notify. All messages: %q", got, before+1, all)
+	}
+	if !strings.Contains(msg, "new") {
+		t.Errorf("reinstatement message lacks the %q marker, so a subscriber cannot tell the lesson is back: %q", "new", msg)
+	}
+	// The subject resolves because the fixture now matches the real response
+	// shape, so the line is a real lesson rather than a bare "new lesson". The
+	// room is left out deliberately: it resolves through the masterdata cache,
+	// which this fake upstream does not serve, so asserting it would be
+	// asserting the fixture.
+	for _, want := range []string{"new", "Mathe", day.Format("02.01.")} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("reinstatement message missing %q, so the subscriber cannot tell which lesson is back: %q", want, msg)
+		}
+	}
+	if strings.TrimSpace(msg) == "new lesson" {
+		t.Errorf("reinstatement rendered as a bare marker with no lesson detail: %q", msg)
+	}
+	if v := st.ClassVersion("testschool", 5000); v != 3 {
+		t.Errorf("ClassVersion = %d, want 3 (add, cancel, reinstate)", v)
+	}
+}
+
 func TestStartPollLoopRunsImmediatePassAndStops(t *testing.T) {
 	f := &fakeUpstream{}
 	f.setTimetable(t, []map[string]any{{

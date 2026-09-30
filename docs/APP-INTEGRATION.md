@@ -103,7 +103,7 @@ field names):
 ```json
 {
   "PeriodID": 123456,
-  "Kind": "ADDED" | "CHANGED" | "REMOVED",
+  "Kind": "ADDED" | "CHANGED" | "REMOVED" | "UNCHANGED",
   "Start": "2026-09-07 08:00",
   "End":   "2026-09-07 08:45",
   "Subject": "M",
@@ -116,9 +116,25 @@ field names):
 
 `Kind` describes how the period changed relative to the previous snapshot.
 `Teacher` (and `Subject`/`Room`) name the involved elements — the element
-matching above uses them. For the full before/after period objects, diff
-`/api/timetable/changes` against the class timetable fetched via the JSON-RPC
-ttservice.
+matching above uses them.
+
+Two details worth getting right in a client:
+
+- **`UNCHANGED` is reachable.** It is not in the union above by intent — it means
+  "this period is still here, unchanged" and carries the mod version from when it
+  last really changed. A full-history request (`since=0`, which is also what the
+  SSE stream replays on connect) returns these, so a `switch` over `Kind` needs
+  a default or an `UNCHANGED` arm. Notifications never include them: the digest
+  is built from `PendingChanges` with the current version, which selects only
+  rows written by the change that just happened.
+- **A reinstated lesson arrives as `ADDED`, not `CHANGED`.** A period that was
+  cancelled upstream and then restored with byte-identical data is reported as
+  `ADDED`. It is not a modification, and treating it as one loses the fact that
+  the lesson is back — which is the only thing a subscriber needs to know. The
+  digest marks it `new:`.
+
+For the full before/after period objects, diff `/api/timetable/changes` against
+the class timetable fetched from the upstream JSON-RPC service.
 
 ## Self-service subscriptions (app-integrated config)
 

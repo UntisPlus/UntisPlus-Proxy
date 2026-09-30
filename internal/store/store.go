@@ -1806,15 +1806,29 @@ func (s *Store) ReplaceClassSnapshot(school string, classID int64, next []Period
 	for _, r := range next {
 		prev, existed := oldByID[r.PeriodID]
 		cur := r
-		if existed && prev.Start == r.Start && prev.End == r.End &&
+		// A period that is back after a cancellation is a reinstatement, and
+		// kind is deliberately not part of the comparison below. Without this
+		// a lesson that was cancelled and then restored with byte-identical
+		// data matches UNCHANGED, keeps the mod version it was removed at, and
+		// is never announced — the lesson silently reappears on the timetable
+		// and nobody is told.
+		reinstated := existed && prev.Kind == "REMOVED"
+		if existed && !reinstated && prev.Start == r.Start && prev.End == r.End &&
 			prev.Subject == r.Subject && prev.Room == r.Room && prev.Teacher == r.Teacher && prev.Description == r.Description {
 			cur.Kind = "UNCHANGED"
 			cur.ModVer = prev.ModVer
 		} else {
 			cur.ModVer = newVer
-			if existed {
+			switch {
+			case reinstated:
+				// ADDED rather than CHANGED: it is back on the timetable, and
+				// the digest marks ADDED as "new". CHANGED carries no marker at
+				// all, so subscribers would be told a lesson is back without
+				// being told which lesson, or that it is back.
+				cur.Kind = "ADDED"
+			case existed:
 				cur.Kind = "CHANGED"
-			} else {
+			default:
 				cur.Kind = "ADDED"
 			}
 			changed++
