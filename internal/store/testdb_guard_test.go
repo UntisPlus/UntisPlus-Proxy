@@ -16,7 +16,16 @@ import (
 // TestOpenRefusesRepoRelativePath: the mistake that matters is passing a
 // repo-relative "data/untis.db" or the bare "untis.db" default from a test.
 func TestOpenRefusesRepoRelativePath(t *testing.T) {
-	for _, path := range []string{"data/untis.db", "untis.db", "/home/evan/Projects/untis-api/data/untis.db"} {
+	// Resolve the real database from this package's location rather than
+	// hardcoding an absolute path. The check only means anything if it points at
+	// the actual file, and that path moves every time the checkout is renamed or
+	// cloned somewhere else. A test run always has the package directory as its
+	// working directory, so two levels up is the repository root.
+	live, err := filepath.Abs(filepath.Join("..", "..", "data", "untis.db"))
+	if err != nil {
+		t.Fatalf("resolve live database path: %v", err)
+	}
+	for _, path := range []string{"data/untis.db", "untis.db", live} {
 		st, err := Open(path)
 		if err == nil {
 			st.Close()
