@@ -140,11 +140,19 @@ untisctl perms reset                             # wipe all -> Basic for everyon
 
 `boosted` and `editor` are **per-user only** (no `--global`).
 
-Absence **reads** (own data, e.g. `getOwnAbsence`, `getPersonAbsence`,
-`getStudentAbsences2017`) are available to **everyone** by default; only the
-**write/mutation** methods need `editor`. Being an **admin of this proxy does
-not imply editing**: admins manage accounts here, they do not write to Untis
-unless they hold `editor`.
+Absence **reads** (own data, `getStudentAbsences2017`) are available to
+**everyone** by default; only the **write/mutation** methods need `editor`.
+Being an **admin of this proxy does not imply editing**: admins manage accounts
+here, they do not write to Untis unless they hold `editor`.
+
+> A read-only probe against this school (2026-09-30) found
+> `getStudentAbsences2017` **exists and authenticates, but returns an empty list
+> for every student account over a ±180-day window**, and that
+> `getAbsences`, `getAbsences2017`, `getOwnAbsence` and `getPersonAbsence` all
+> return `-32601 Method not found`. The earlier claim that those three were
+> available was wrong. Real absence entries come from `getPeriodData2017`, which
+> upstream only answers with an `absences` array for a **teacher** identity —
+> see "The absence/lesson editor needs a teacher identity" below.
 
 Ask the server what you currently have with `GET /me`:
 
@@ -584,6 +592,12 @@ those describe how the current code behaves and are kept in step with it.
 | [`docs/APP-INTEGRATION.md`](docs/APP-INTEGRATION.md) | the contract for a client that wants live changes |
 | [`docs/ADMIN-WEBHOOKS-NTFY.md`](docs/ADMIN-WEBHOOKS-NTFY.md) | full `/admin/*` API, ntfy, multi-school |
 | [`docs/GOD-API-PLAN.md`](docs/GOD-API-PLAN.md) | the Basic/Reconstruction/Boosted/Editor permission tiers and planned upstream API coverage |
+
+In progress — agreed in discussion, not yet built:
+
+| Doc | Read it for |
+|---|---|
+| [`docs/PLANNED-FEATURES.md`](docs/PLANNED-FEATURES.md) | personal homework done, private absence notes, per-student Technik events, and the notification-delivery outbox |
 
 Then the checklists. These are **dated records of test passes, not living
 specs** — a `[x]` means it passed on the date it was run against the version named
