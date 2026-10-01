@@ -1,8 +1,8 @@
 # Planned work — personal homework, absence notes, Technik events, delivery outbox
 
-Status: **Phase 1 released as `v1.4.6`. Phase 2 released as `v1.5.0`.**
-Phase 0 (probe), Phase 1 (delivery outbox) and Phase 2 (personal homework done)
-are done; every other phase below is still only agreed. Decisions were made in
+Status: **Phases 1–3 released: `v1.4.6`, `v1.5.0`, `v1.6.0`.**
+Phase 0 (probe), Phase 1 (delivery outbox), Phase 2 (personal homework done) and
+Phase 3 (absence notes) are done; Phase 4 (Technik events) is still only agreed. Decisions were made in
 discussion, and the reasoning is recorded so a later reader can tell which parts
 are load-bearing and which were arbitrary.
 
@@ -320,36 +320,59 @@ response is safe.
 
 ## Phase 3 — absence enrichment + private notes
 
-Ready. `absence_key` is the upstream absence `id`, and no teacher identity is
-involved.
+Implemented and released as `v1.6.0`. `absence_key` is the upstream absence `id`,
+and no teacher identity is involved.
 
 ```sql
 CREATE TABLE absence_notes (
   school TEXT NOT NULL, username TEXT NOT NULL, absence_key INTEGER NOT NULL,
-  note TEXT NOT NULL DEFAULT '', updated_at DATETIME NOT NULL,
+  note TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL,
   PRIMARY KEY (school, username, absence_key)
 );
 ```
 
-Intercept `getStudentAbsences2017` in the info-center default branch — taking
-care to pass `includeExcused`/`includeUnExcused` through or upstream returns an
-empty list — and for each absence add the derived metadata:
+`getStudentAbsences2017` is enriched with a private `note`/`noteUpdatedAt` and a
+`derived` block (`classId`, `className`, `date`, `weekday`, `subject`, `reason`).
+`text` (the teacher's comment) and `excuse.text` (upstream's excuse text) are
+passed through untouched; the note is a third, separate field.
 
-- **class** from `klasseId`, resolved to a name via `users.class_name`
-- **day** as a weekday name from `startDateTime`
-- **subject** by matching `startDateTime`/`endDateTime` against the same
-  student's own timetable periods
-- **reason** text resolved from `masterData.absenceReasons` by `absenceReasonId`
+### Decisions taken while implementing
 
-then merge the student's note into a field distinct from `text` (teacher's
-comment) and `excuse.text` (upstream's excuse text).
+Three things the plan left open, settled here:
 
-Identity is verifiable from the response itself: `studentId` is present on every
-entry, which satisfies the "enrich only when identity is independently
-established" rule without relying on the client's auth claim.
+1. **Class name comes from `masterData.klassen`, not `users.class_name`.** The
+   plan proposed the latter, but it only works when some *other* student row
+   happens to share the class, which is not guaranteed. `masterData` already
+   carries the full class list and is cached per school, so it is both simpler
+   and correct.
+2. **`subject` is reported only when exactly one lesson overlaps the absence.**
+   The plan said "best-effort", but a whole-day absence covers several lessons,
+   and naming the first one is a guess that a client cannot detect and cannot
+   correct. No subject is the recoverable answer; a wrong subject is not. Same
+   for absences older than the polling window, whose periods have been pruned.
+3. **The list key is discovered, not assumed.** The response's array key was never
+   recorded by the probe, so `findAbsenceList` tries the plausible names and then
+   falls back to recognising the array by its contents (a numeric `id` plus a
+   `startDateTime`), one level of nesting included. If none matches, the response
+   is passed through and the mismatch is logged at most once an hour per school —
+   a wrong guess degrades to "no enrichment", never to a broken feature.
 
-Notes appear on no editor or teacher surface — enforced by the absence of a code
-path rather than by a check, which is the cheapest form of that guarantee.
+### Identity
+
+Identity is verified from the response itself: `studentId` is present on every
+entry, so an entry is only decorated when its `studentId` equals the session
+user's `person_id`. An entry with no `studentId`, or another student's, is passed
+through **completely undecorated** — no note *and* no derived block, because
+metadata resolved for the wrong person is wrong in the same way.
+
+`getStudentAbsences2017` is deliberately not in `classScopedMethods`, so it is
+never replayed as a boosted teacher: there is no code path from an editor's
+response to a note lookup, which is a stronger guarantee than a runtime check.
+`TestAbsenceInternNeverDecoratedForTeacher` pins it end to end.
+
+The `includeExcused`/`includeUnExcused` flags were already passed through (the
+body is forwarded as-is); a test now asserts it, because dropping them yields an
+empty list that is indistinguishable from "no absences".
 
 ## Phase 4 — Technik events
 
@@ -409,9 +432,10 @@ Not to be guessed. Decide before the matching phase, not during it:
   cleanup**: rows are a few dozen bytes each, a student marks perhaps a few
   hundred a year, and deleting on a schedule risks discarding an answer the
   student still wants. Revisit only if the table becomes a measurable cost.
-- **Should subject recovery for absences be best-effort?** Matching an absence's
-  time window against timetable periods will miss cancelled or moved lessons. A
-  miss should degrade to no subject rather than a wrong one.
+- ~~**Should subject recovery for absences be best-effort?**~~ Resolved in Phase 3
+  in favour of "no subject rather than a wrong one": `subject` is reported only
+  when exactly one lesson overlaps the absence, so a whole-day absence or one
+  outside the polling window simply has no subject.
 - **Deleting a Technik event in the admin UI — does it disappear from subscribed
   calendars?** ICS clients cache aggressively; this is a product question, not a
   technical one.

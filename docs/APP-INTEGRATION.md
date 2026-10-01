@@ -213,6 +213,112 @@ Rules a client can rely on:
   (the class-scoped methods), the response is the teacher's data and carries **no**
   `done` fields at all.
 
+## Absence notes and derived metadata
+
+Every entry in a **`getStudentAbsences2017`** response gains a private `note` and
+a `derived` block:
+
+```json
+{
+  "id": 300001,
+  "startDateTime": "2026-10-01T10:00",
+  "endDateTime": "2026-10-01T10:45",
+  "klasseId": 5000,
+  "absenceReasonId": 3,
+  "text": "Doctor",
+  "excuse": {"date": "2026-09-30", "text": "see doctor"},
+  "studentId": 7,
+  "note": "bring workbook",
+  "noteUpdatedAt": "2026-10-01T12:34:56Z",
+  "derived": {
+    "classId": 5000,
+    "className": "10b",
+    "date": "2026-10-01",
+    "weekday": "Thursday",
+    "subject": "Mathematik 3",
+    "reason": "Doctor's appointment"
+  }
+}
+```
+
+Three upstream fields exist and are none of them the student's:
+
+| Field | Whose it is |
+|---|---|
+| `text` | the **teacher's** comment — passed through untouched |
+| `excuse.text` | **upstream's** own excuse text |
+| `note` | the **student's** private note, stored by this proxy |
+
+### The `derived` block
+
+Everything here is computed by the proxy from data already present, and **omitted
+when it cannot be known** — a missing key means "not derivable", never "empty".
+
+| Key | Source | When it can be missing |
+|---|---|---|
+| `classId` | the absence's own `klasseId` | absent upstream |
+| `className` | `masterData.klassen` | no cached master data |
+| `date`, `weekday` | `startDateTime` | unparseable timestamp |
+| `reason` | `masterData.absenceReasons` by `absenceReasonId` | no cached master data |
+| `subject` | the single timetable period the absence overlaps | see below |
+
+`weekday` is an English weekday name; the raw timestamp is always present, so a
+client that needs a localised name should derive it from `startDateTime` rather
+than from this field.
+
+### `subject` appears only when it is unambiguous
+
+The subject is reported **only when the absence window overlaps exactly one
+lesson** in the pooled timetable. That means:
+
+- a lesson-scoped absence (10:00–10:45) reports that lesson's subject;
+- a **whole-day absence has no subject**, because it covers several lessons and
+  naming the first one would be a guess;
+- an absence older than the polling window has no subject, because the snapshot
+  no longer holds those periods.
+
+This is deliberate. An absence with no subject is recoverable; an absence with
+the *wrong* subject is not, and there is no way for a client to tell the two apart
+after the fact.
+
+### Privacy
+
+Notes are private to the student, and that is structural rather than a check:
+
+- A note is looked up by `(school, session user, absence id)`.
+- It is attached only to an absence whose own `studentId` matches the session
+  user. An entry with no `studentId`, or another student's, is passed through
+  **completely undecorated** — no note, no derived block.
+- `getStudentAbsences2017` is not in `classScopedMethods`, so it is never
+  replayed as a boosted teacher. No editor or teacher response has a code path to
+  a note lookup at all.
+- The derived block is subject to the same ownership check, so a mismatch never
+  attaches metadata resolved for the wrong person either.
+
+### Reading and writing notes
+
+```
+GET  /api/absence/notes[?school=<name>]
+200  {"school":"testschool","notes":[{"absenceKey":300001,
+                                     "note":"bring workbook",
+                                     "updatedAt":"2026-10-01T12:34:56Z"}]}
+
+POST /api/absence/notes[?school=<name>]  {"absenceKey":300001,"note":"bring workbook"}
+200  {"absenceKey":300001,"note":"bring workbook","updatedAt":"2026-10-01T12:34:56Z"}
+200  {"absenceKey":300001,"note":null}
+400  {"error":"absenceKey is required"}
+400  {"error":"note is too long"}
+401  {"error":"not logged in"}
+```
+
+- **The session decides the user.** No username parameter exists; a `username` in
+  the body is ignored.
+- **An empty or whitespace-only `note` clears** the note, so the response
+  `note: null` and a stored note cannot disagree. Idempotent.
+- A note is trimmed and capped at 2000 characters; over that is a 400 rather than
+  a silent truncation.
+- `updatedAt` is the same value the write returns and the read reports.
+
 ## Self-service subscriptions (app-integrated config)
 
 `/api/webhooks` and `/api/ntfy` (session required):

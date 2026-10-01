@@ -290,6 +290,22 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// absence_notes is the student's own private note on one absence. There is no
+	// upstream field for it: an absence carries `text`, which is the *teacher's*
+	// comment, and `excuse.text`, which is upstream's own excuse text. Neither can
+	// be reused, so the note lives here. Keyed by the upstream absence id and by
+	// viewer, so a note is never visible on another student's record.
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS absence_notes (
+		school TEXT NOT NULL,
+		username TEXT NOT NULL,
+		absence_key INTEGER NOT NULL,
+		note TEXT NOT NULL DEFAULT '',
+		updated_at INTEGER NOT NULL,
+		PRIMARY KEY (school, username, absence_key)
+	)`)
+	if err != nil {
+		return nil, err
+	}
 	// migration: add person_id to class_tokens for older databases
 	if err := addColumnIfMissing(db, "class_tokens", "person_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return nil, err
@@ -2219,6 +2235,85 @@ func (s *Store) HomeworkDoneCount(school, username string) (int, error) {
 	err := s.db.QueryRow(`SELECT COUNT(*) FROM homework_done WHERE school=? AND username=?`,
 		school, norm(username)).Scan(&n)
 	return n, err
+}
+
+// SetAbsenceNote records a student's private note on one absence and returns when
+// it was written.
+//
+// absenceKey is the upstream absence `id`. The viewer is the only identity
+// accepted: callers must pass the resolved session user, never one taken from a
+// request body.
+func (s *Store) SetAbsenceNote(school, username string, absenceKey int64, note string) (time.Time, error) {
+	now := time.Now().Truncate(time.Second)
+	_, err := s.db.Exec(`INSERT INTO absence_notes (school, username, absence_key, note, updated_at)
+		VALUES (?,?,?,?,?)
+		ON CONFLICT(school, username, absence_key) DO UPDATE SET
+			note=excluded.note, updated_at=excluded.updated_at`,
+		school, norm(username), absenceKey, note, now.Unix())
+	return now, err
+}
+
+// ClearAbsenceNote removes a student's note. Clearing an absent note is not an
+// error, so a repeated clear — or a client retrying after a dropped response —
+// converges on the same state.
+func (s *Store) ClearAbsenceNote(school, username string, absenceKey int64) error {
+	_, err := s.db.Exec(`DELETE FROM absence_notes WHERE school=? AND username=? AND absence_key=?`,
+		school, norm(username), absenceKey)
+	return err
+}
+
+// AbsenceNote is one stored note and when it was last written.
+type AbsenceNote struct {
+	Key       int64
+	Note      string
+	UpdatedAt time.Time
+}
+
+// AbsenceNotes returns every note the student has written, keyed by absence id.
+// An absence with no note is simply absent from the map, so enrichment does not
+// have to invent an empty row per absence.
+func (s *Store) AbsenceNotes(school, username string) (map[int64]AbsenceNote, error) {
+	rows, err := s.db.Query(`SELECT absence_key, note, updated_at FROM absence_notes
+		WHERE school=? AND username=?`, school, norm(username))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]AbsenceNote{}
+	for rows.Next() {
+		var key, at int64
+		var note string
+		if err := rows.Scan(&key, &note, &at); err != nil {
+			return nil, err
+		}
+		out[key] = AbsenceNote{Key: key, Note: note, UpdatedAt: time.Unix(at, 0)}
+	}
+	return out, rows.Err()
+}
+
+// ClassPeriodsOnDate returns the periods a class has on one date, for matching an
+// absence to the lesson it displaced.
+//
+// Only the current snapshot is searched, and periods that fall out of the polling
+// window are deleted, so a date further back than the horizon returns nothing.
+// Callers must therefore treat an empty result as "unknown", never as "no lesson".
+func (s *Store) ClassPeriodsOnDate(school string, classID int64, date string) ([]PeriodRow, error) {
+	rows, err := s.db.Query(`SELECT period_id, kind, start, end, subject, room, teacher, description, mod_ver
+		FROM timetable_changes WHERE school=? AND class_id=? AND substr(start,1,10)=?
+		ORDER BY start`, school, classID, date)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PeriodRow
+	for rows.Next() {
+		var r PeriodRow
+		if err := rows.Scan(&r.PeriodID, &r.Kind, &r.Start, &r.End, &r.Subject, &r.Room, &r.Teacher, &r.Description, &r.ModVer); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // PendingChanges returns the periods modified after the given version, plus the

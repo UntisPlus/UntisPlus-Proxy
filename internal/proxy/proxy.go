@@ -54,6 +54,10 @@ type Proxy struct {
 	// rescanReq is set by RequestRescan so the next StartRecon sweep ignores
 	// the stored horizons and re-enumerates every class.
 	rescanReq atomic.Bool
+
+	// absenceDiag throttles the "found no absence list" log, so an unexpected
+	// response shape is reported occasionally instead of on every request.
+	absenceDiag *absenceDiagnostics
 }
 
 // RequestRescan makes the next recon sweep re-enumerate every pooled class
@@ -93,6 +97,9 @@ type masterDataCache struct {
 	rooms    map[int64]string
 	subjects map[int64]string
 	klassen  map[int64]string
+	// absenceReasons resolves an absence's absenceReasonId to readable text, so a
+	// client does not have to show the raw two-digit code.
+	absenceReasons map[int64]string
 }
 
 func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *Proxy {
@@ -100,14 +107,15 @@ func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *
 		opts.TTL = 5 * time.Minute
 	}
 	return &Proxy{
-		store:    st,
-		untis:    uc,
-		sessions: sm,
-		opts:     opts,
-		tt:       newTTCache(opts.TTL),
-		secrets:  map[string]string{},
-		hub:      newNotifyHub(),
-		schools:  map[string]*schoolState{},
+		store:       st,
+		untis:       uc,
+		sessions:    sm,
+		opts:        opts,
+		tt:          newTTCache(opts.TTL),
+		secrets:     map[string]string{},
+		hub:         newNotifyHub(),
+		schools:     map[string]*schoolState{},
+		absenceDiag: &absenceDiagnostics{},
 	}
 }
 
@@ -234,6 +242,13 @@ func (p *Proxy) masterData(school string) *masterDataCache {
 					ID   int64  `json:"id"`
 					Name string `json:"name"`
 				} `json:"klassen"`
+				AbsenceReasons []struct {
+					ID          int64  `json:"id"`
+					Name        string `json:"name"`
+					LongName    string `json:"longName"`
+					Text        string `json:"text"`
+					DisplayText string `json:"displayText"`
+				} `json:"absenceReasons"`
 			} `json:"masterData"`
 		} `json:"result"`
 	}
@@ -241,10 +256,11 @@ func (p *Proxy) masterData(school string) *masterDataCache {
 		return st.md
 	}
 	md := &masterDataCache{
-		teachers: map[int64]string{},
-		rooms:    map[int64]string{},
-		subjects: map[int64]string{},
-		klassen:  map[int64]string{},
+		teachers:       map[int64]string{},
+		rooms:          map[int64]string{},
+		subjects:       map[int64]string{},
+		klassen:        map[int64]string{},
+		absenceReasons: map[int64]string{},
 	}
 	for _, t := range resp.Result.MasterData.Teachers {
 		md.teachers[t.ID] = t.Name
@@ -264,6 +280,17 @@ func (p *Proxy) masterData(school string) *masterDataCache {
 	}
 	for _, k := range resp.Result.MasterData.Klassen {
 		md.klassen[k.ID] = k.Name
+	}
+	for _, r := range resp.Result.MasterData.AbsenceReasons {
+		// The reason objects name themselves differently across Untis versions, so
+		// the first non-empty text field wins. An empty catalogue only costs the
+		// client the readable reason, never the absence itself.
+		for _, candidate := range []string{r.LongName, r.DisplayText, r.Text, r.Name} {
+			if candidate != "" {
+				md.absenceReasons[r.ID] = candidate
+				break
+			}
+		}
 	}
 	st.md = md
 	st.mdNext = time.Now().Add(time.Hour)
@@ -296,6 +323,9 @@ func (p *Proxy) Handler() http.Handler {
 	// viewer from the session only.
 	mux.HandleFunc("GET /api/homework/flags", p.handleHomeworkFlags)
 	mux.HandleFunc("POST /api/homework/done", p.handleHomeworkDone)
+	// Absence notes are the same contract: session-scoped, viewer from the
+	// session only, GET to read and POST to write.
+	mux.HandleFunc("/api/absence/notes", p.handleAbsenceNotes)
 	mux.HandleFunc("/admin", p.handleAdminDashboard)
 	mux.HandleFunc("/admin/login", p.handleAdminLogin)
 	mux.HandleFunc("/admin/", p.handleAdmin)

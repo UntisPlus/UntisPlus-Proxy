@@ -359,6 +359,27 @@ through the proxy, so a student can answer for themselves without ever overwriti
 a teacher. Writes are idempotent, and an enrichment that changes nothing returns
 the upstream bytes unchanged.
 
+**Absence notes** (session-authenticated, same contract)
+
+```
+GET  /api/absence/notes[?school=<name>]     # this student's own notes
+POST /api/absence/notes   {"absenceKey":300001,"note":"bring workbook"}
+POST /api/absence/notes   {"absenceKey":300001,"note":""}   # clears the note
+```
+
+Every entry in a `getStudentAbsences2017` response gains a private `note` and a
+`derived` block (weekday, date, class name, reason text, and the subject of the
+lesson the absence displaced where that is unambiguous). Upstream `text` is the
+*teacher's* comment and `excuse.text` is upstream's own excuse text — neither is
+touched, and the student's note is a separate field.
+
+**Notes are private to the student, by construction.** They are stored per viewer
+and are only ever attached to an absence whose own `studentId` matches the
+session. `getStudentAbsences2017` is not a class-scoped method, so it is never
+replayed as a boosted teacher, and no editor or teacher response has a code path
+to a note lookup. An absence with no `studentId`, or one belonging to a different
+student, is passed through completely undecorated.
+
 **Calendar**
 
 ```

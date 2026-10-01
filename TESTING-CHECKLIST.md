@@ -1,4 +1,4 @@
-# TESTING-CHECKLIST — full API surface walk-through (v1.5.0)
+# TESTING-CHECKLIST — full API surface walk-through (v1.6.0)
 
 Interactive runbook. Every box gets pushed through live; tick it once the
 expected result holds off this machine. Report anything that deviates.
@@ -221,8 +221,42 @@ Set `COOKIE=<your JSESSIONID>` and a homework `id` taken from a real
 - [ ] 13.14 `GET /api/timetable/stream` and a `getTimetable2017` fetch → byte-identical
       to upstream; homework flags must not appear there
 
-## 14. Packaging
-- [ ] 14.1 `/status` reports the published tag, and **not** `dev` — a plain
+## 14. Absence notes (v1.6.0)
+
+Set `COOKIE=<your JSESSIONID>` and an `absenceKey` (the `id` of a real entry) from
+a `getStudentAbsences2017` response. Remember the method needs
+`includeExcused`/`includeUnExcused`, or it returns an empty list.
+
+- [ ] 14.1 `getStudentAbsences2017` with the include flags → every entry has a
+      `derived` block with `date` and `weekday`
+- [ ] 14.2 a lesson-scoped absence (e.g. 10:00–10:45) → `derived.subject` names
+      that lesson
+- [ ] 14.3 a **whole-day** absence → `derived` has **no** `subject` key at all
+      (it covers several lessons; a guess would be wrong and undetectable)
+- [ ] 14.4 an absence from before the polling window → still has `date`, still no
+      `subject`
+- [ ] 14.5 `derived.className` and `derived.reason` are readable text, not the raw
+      numeric id / 2-digit code
+- [ ] 14.6 the upstream `text` is the **teacher's** comment and is unchanged;
+      `excuse.text` is unchanged too
+- [ ] 14.7 `POST /api/absence/notes {"absenceKey":<id>,"note":"bring workbook"}`
+      → 200; refetch 14.1 → that entry has `note` + `noteUpdatedAt`
+- [ ] 14.8 `GET /api/absence/notes` → lists only your notes, sorted by key
+- [ ] 14.9 the same POST with `"note":""` → clears it; the absence entry loses the
+      `note` field and `/api/absence/notes` no longer lists it
+- [ ] 14.10 repeat the write twice → still one note, no duplicates
+- [ ] 14.11 POST with a `"username":"<someone-else>"` → **your** note is written and
+      the named student's notes are unchanged
+- [ ] 14.12 both endpoints without the cookie → 401
+- [ ] 14.13 POST with `{"note":"x"}` (no key) → 400 and nothing written
+- [ ] 14.14 as a **second student**, fetch your own absences → `note` is absent;
+      the other student's note must not appear
+- [ ] 14.15 as an **editor** with a boosted teacher, open the class register
+      (`getPeriodData2017`) → the response contains **no** `note` and no
+      `noteUpdatedAt`, even though you have notes on your own absences
+
+## 15. Packaging
+- [ ] 15.1 `/status` reports the published tag, and **not** `dev` — a plain
       `go build` reports `dev`, so `dev` means the version was never compiled in
-- [ ] 14.2 `docker images <your-namespace>/untisplus-proxy` shows the release tag +
+- [ ] 15.2 `docker images <your-namespace>/untisplus-proxy` shows the release tag +
       `latest` (pushed)

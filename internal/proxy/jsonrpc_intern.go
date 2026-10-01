@@ -113,12 +113,12 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 				p.writeJSONRPCError(w, req.ID, "upstream error", -1)
 				return
 			}
-			if !rewritten && username != "" && homeworkCarryingMethod(m) {
+			if !rewritten && username != "" {
 				// username came from the request but was validated by upstream:
 				// the response only arrived because those credentials are real.
 				// An empty username means the request named nobody, and personal
 				// fields are never attached to a response the proxy cannot attribute.
-				b = p.enrichHomeWorkResponse(b, school, username)
+				b = p.enrichPersonalResponse(b, school, m, username)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
@@ -153,14 +153,32 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 			p.writeJSONRPCError(w, req.ID, "upstream error", -1)
 			return
 		}
-		if !rewritten && homeworkCarryingMethod(m) {
+		if !rewritten {
 			// The session, not the request body, decided who this is.
-			b = p.enrichHomeWorkResponse(b, school, user.Username)
+			b = p.enrichPersonalResponse(b, school, m, user.Username)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write(b)
 	}
+}
+
+// enrichPersonalResponse applies whichever proxy-local personal features apply to
+// this method, for a viewer the proxy has already established.
+//
+// It is the single place personal data is attached to a passthrough response, so
+// the rule "only for an established identity, and never for a response whose
+// credentials were rewritten" is enforced once rather than at each call site.
+// Callers must have already established the viewer and confirmed that no rewrite
+// happened.
+func (p *Proxy) enrichPersonalResponse(raw []byte, school, method, viewer string) []byte {
+	if homeworkCarryingMethod(method) {
+		return p.enrichHomeWorkResponse(raw, school, viewer)
+	}
+	if absenceCarryingMethod(method) {
+		return p.enrichAbsenceResponse(raw, school, viewer)
+	}
+	return raw
 }
 
 // homeworkCarryingMethod reports whether an upstream response can carry homework
