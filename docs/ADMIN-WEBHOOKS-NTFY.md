@@ -110,8 +110,8 @@ Headers on every delivery:
 - `X-Untis-Signature: sha256=<HMAC-SHA256(body, secret)>` — only if a `secret`
   was configured on the webhook; receivers should verify it.
 
-Delivery retries 3× with backoff; a slow/unreachable webhook never blocks the
-poll loop.
+Deliveries are queued durably and sent by a background worker — see
+[Delivery reliability](#delivery-reliability) below.
 
 ### Configuring webhooks
 
@@ -151,6 +151,42 @@ and teacher/room/subject topics are only listed for `editor`/`boosted`/admin.
 Use per-school prefixes so different schools never collide on the public ntfy
 server, e.g. `schl{schule}-klasse{ID}` and `schl{schule}-all`. The proxy itself
 only enforces per-row `school`, not topic naming.
+
+## Delivery reliability
+
+Every webhook and ntfy delivery goes through a durable outbox, so a change that
+the poller detects is never silently dropped.
+
+- A change is queued in the **same database transaction** that records the new
+  timetable version. Either both happen or neither does.
+- One queued row per **destination**. A broken endpoint cannot cause deliveries
+  that other endpoints already received to be replayed.
+- A worker retries failed deliveries with backoff (30s, doubling to a 15-minute
+  cap, up to 8 attempts), and a slow or unreachable destination never blocks the
+  poll loop.
+- After 8 failed attempts a delivery is marked **dead** and stops retrying. It
+  stays in the table on purpose: that is the signal that a human needs to look.
+- Restarting reclaims deliveries that were in flight when the process stopped,
+  and retries them.
+- Deleting a subscription drops its queued backlog rather than retrying a
+  destination you removed on purpose.
+
+Inspecting failures (admin session required):
+
+| Method | Purpose |
+|---|---|
+| `GET /admin/outbox` | counts by state, plus the most recent dead deliveries with their error |
+| `GET /admin/outbox?state=dead` | only the exhausted deliveries |
+| `GET /admin/status` | includes an `outbox` object with `pending`/`sending`/`dead` counts |
+
+A dead row names the school, class, version, destination and error, which is
+usually enough to tell whether the fix belongs in the URL or in the receiver.
+`pending` growing steadily means the worker cannot keep up or a destination is
+failing; `dead` above zero means a destination has given up.
+
+The public `/healthz` and `/status` endpoints stay aggregate-only and never
+expose which school or destination is failing. Outbox detail requires an admin
+session, or the separate loopback `-metrics-addr` listener.
 
 ## Streaming API (SSE) — unchanged
 

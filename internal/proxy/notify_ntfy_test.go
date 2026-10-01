@@ -166,8 +166,10 @@ func TestPublishNtfyClickUsesPublicBase(t *testing.T) {
 	rec := &recordingNtfy{}
 	rec.server(t)
 
-	(&Proxy{}).publishNtfy(&store.NtfyTopic{Topic: "t"}, "school", 1234,
-		changeDigest{Title: "class 12x", Summary: "1 added", Lines: []string{"Thu 01.10. 09:50–10:35 · Mathe"}, Changed: 1, Added: 1})
+	if err := (&Proxy{}).publishNtfyOnce(&store.NtfyTopic{Topic: "t"}, "school", 1234,
+		changeDigest{Title: "class 12x", Summary: "1 added", Lines: []string{"Thu 01.10. 09:50–10:35 · Mathe"}, Changed: 1, Added: 1}); err != nil {
+		t.Fatalf("publishNtfyOnce: %v", err)
+	}
 
 	var sent map[string]any
 	if err := json.Unmarshal([]byte(rec.body), &sent); err != nil {

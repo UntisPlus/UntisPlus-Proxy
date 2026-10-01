@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -189,7 +191,30 @@ func (p *Proxy) checkClassErr(school string, classID int64) (bool, error) {
 	// instead of "1 changed".
 	prevSnapshot, _ := p.store.LoadClassSnapshot(school, classID)
 	dropBefore := time.Now().Format("2006-01-02")
-	changed, err := p.store.ReplaceClassSnapshot(school, classID, next, newVer, dropBefore)
+
+	// Read the subscription lists AND resolve the class display name BEFORE the
+	// snapshot transaction opens. The store pool is a single connection, so the
+	// in-transaction enqueue cannot query the store without deadlocking on the
+	// connection it already holds.
+	hooks, err := p.store.ListWebhooks(school)
+	if err != nil {
+		log.Printf("[notify] webhooks %s: %v", school, err)
+	}
+	topics, err := p.store.ListNtfyTopics(school)
+	if err != nil {
+		log.Printf("[notify] ntfy %s: %v", school, err)
+	}
+	className := p.classDisplayName(school, classID)
+	targets := p.resolveTargets(school, hooks, topics)
+
+	// The queued deliveries are written by the same transaction that stamps
+	// newVer, so a committed change always has a delivery waiting for it.
+	var queued []store.PeriodRow
+	changed, err := p.store.ApplyClassSnapshot(school, classID, next, newVer, dropBefore,
+		func(rows []store.PeriodRow, put func(string, int64, []byte) error) error {
+			queued = rows
+			return p.enqueueChange(school, className, classID, newVer, rows, prevSnapshot, hooks, topics, targets, put)
+		})
 	if err != nil {
 		log.Printf("[notify] store class %d: %v", classID, err)
 		return false, err
@@ -197,18 +222,14 @@ func (p *Proxy) checkClassErr(school string, classID int64) (bool, error) {
 	if changed == 0 {
 		return false, nil
 	}
-	rows, cur, err := p.store.PendingChanges(school, classID, newVer-1)
-	if err != nil {
-		return true, err
-	}
+	sort.Slice(queued, func(i, j int) bool { return queued[i].PeriodID < queued[j].PeriodID })
 	p.hub.publish(school, classID, notifyMsg{
 		School:  school,
 		ClassID: classID,
-		Version: cur,
-		Changes: rows,
+		Version: newVer,
+		Changes: queued,
 	})
-	go p.deliverChange(school, classID, cur, rows, prevSnapshot)
-	log.Printf("[notify] class %d changed (%d updates) -> version %d", classID, changed, cur)
+	log.Printf("[notify] class %d changed (%d updates) -> version %d", classID, changed, newVer)
 	return true, nil
 }
 
@@ -230,26 +251,87 @@ func (p *Proxy) elementTargetName(school, et string, eid int64) string {
 	return p.store.ElementName(school, et, eid)
 }
 
+// resolvedTarget is the identity a subscription is matched on, resolved ahead of
+// time so matching itself never has to touch the database.
+type resolvedTarget struct {
+	name    string // display name for TEACHER/ROOM/SUBJECT
+	classID int64  // class id for CLASS/STUDENT
+}
+
+// targetKey identifies a subscription target within one resolve pass.
+func targetKey(et string, eid int64) string {
+	return et + ":" + strconv.FormatInt(eid, 10)
+}
+
+// resolveTargets pre-resolves the identity of every subscription target, so that
+// elementMatches can decide purely from memory.
+//
+// It must run before the snapshot transaction opens: resolving a STUDENT needs
+// the class of a person, and resolving a TEACHER/ROOM/SUBJECT needs its display
+// name — both store reads, and the store pool is a single connection that the
+// transaction already holds. Targets that cannot be resolved are left out, and
+// a missing entry means "no match" rather than a fallback query, because a
+// fallback query is exactly the deadlock this avoids.
+func (p *Proxy) resolveTargets(school string, hooks []*store.Webhook, topics []*store.NtfyTopic) map[string]resolvedTarget {
+	out := make(map[string]resolvedTarget, len(hooks)+len(topics))
+	add := func(et string, eid int64) {
+		key := targetKey(et, eid)
+		if _, done := out[key]; done {
+			return
+		}
+		switch et {
+		case "CLASS":
+			out[key] = resolvedTarget{classID: eid}
+		case "STUDENT":
+			cid, err := p.store.ClassForPerson(school, eid)
+			if err != nil {
+				return
+			}
+			out[key] = resolvedTarget{classID: cid}
+		default:
+			name := p.elementTargetName(school, et, eid)
+			if name == "" {
+				return
+			}
+			out[key] = resolvedTarget{name: name}
+		}
+	}
+	for _, h := range hooks {
+		et, eid := h.Target()
+		add(et, eid)
+	}
+	for _, t := range topics {
+		et, eid := t.Target()
+		add(et, eid)
+	}
+	return out
+}
+
 // elementMatches reports whether a change event for classID (with the given
 // changed rows) targets the element (et,eid). School-wide topics (empty et)
 // match everything; legacy class-targeted rows match when eid is the changed
 // class; STUDENT matches when that person belongs to the changed class; and
 // TEACHER/ROOM/SUBJECT match when their resolved name appears in a changed
 // row.
-func (p *Proxy) elementMatches(school, et string, eid, classID int64, rows []store.PeriodRow) bool {
+//
+// targets comes from resolveTargets and must be supplied by the caller so that
+// no store read happens here; inside the snapshot transaction there is no spare
+// connection to perform one.
+func (p *Proxy) elementMatches(school, et string, eid, classID int64, rows []store.PeriodRow, targets map[string]resolvedTarget) bool {
 	switch et {
 	case "", "ALL", "SCHOOL":
 		return true
 	case "CLASS":
 		return eid == classID
-	case "STUDENT":
-		cid, err := p.store.ClassForPerson(school, eid)
-		return err == nil && cid == classID
 	}
-	name := p.elementTargetName(school, et, eid)
-	if name == "" {
+	rt, ok := targets[targetKey(et, eid)]
+	if !ok {
 		return false
 	}
+	if et == "STUDENT" {
+		return rt.classID == classID
+	}
+	name := rt.name
 	for _, r := range rows {
 		switch et {
 		case "TEACHER":
@@ -269,12 +351,23 @@ func (p *Proxy) elementMatches(school, et string, eid, classID int64, rows []sto
 	return false
 }
 
-// deliverChange fans a timetable change out to configured webhooks and ntfy
-// topics (school-wide, class-targeted or any named element). Runs detached so
-// a slow receiver never blocks the poll loop.
-func (p *Proxy) deliverChange(school string, classID int64, version int64, rows, prev []store.PeriodRow) {
-	digest := p.buildDigest(school, classID, prev, rows)
-	payload := map[string]any{
+// enqueueChange renders one change and queues it for every destination that
+// matches it — one outbox row per destination, so a destination that keeps
+// failing cannot cause healthy ones to be replayed.
+//
+// hooks, topics, targets and className must be supplied by the caller, all
+// resolved before the snapshot transaction opened: the store pool is a single
+// connection, so reading from inside that transaction would deadlock on the
+// connection it already holds. A destination created in the gap between that
+// read and the commit does not receive this change, which is the correct trade
+// against a deadlock.
+func (p *Proxy) enqueueChange(school, className string, classID, version int64, rows []store.PeriodRow,
+	prev []store.PeriodRow, hooks []*store.Webhook, topics []*store.NtfyTopic,
+	targets map[string]resolvedTarget,
+	put func(dest string, destID int64, payload []byte) error) error {
+
+	digest := p.buildDigestNamed(school, className, classID, prev, rows)
+	body, err := json.Marshal(map[string]any{
 		"event":   "change",
 		"school":  school,
 		"classId": classID,
@@ -282,79 +375,84 @@ func (p *Proxy) deliverChange(school string, classID int64, version int64, rows,
 		"summary": digest.Summary,
 		"digest":  digest,
 		"changes": rows,
-	}
-	body, err := json.Marshal(payload)
+	})
 	if err != nil {
-		return
-	}
-	summary := digest.Summary
-
-	hooks, err := p.store.ListWebhooks(school)
-	if err != nil {
-		log.Printf("[deliver] webhooks: %v", err)
+		return err
 	}
 	for _, h := range hooks {
 		if !h.Enabled {
 			continue
 		}
 		et, eid := h.Target()
-		if !p.elementMatches(school, et, eid, classID, rows) {
+		if !p.elementMatches(school, et, eid, classID, rows, targets) {
 			continue
 		}
-		go p.postWebhook(h, body, summary)
-	}
-
-	topics, err := p.store.ListNtfyTopics(school)
-	if err != nil {
-		log.Printf("[deliver] ntfy: %v", err)
+		if err := put("webhook", h.ID, body); err != nil {
+			return err
+		}
 	}
 	for _, t := range topics {
 		if !t.Enabled {
 			continue
 		}
 		et, eid := t.Target()
-		if !p.elementMatches(school, et, eid, classID, rows) {
+		if !p.elementMatches(school, et, eid, classID, rows, targets) {
 			continue
 		}
-		go p.publishNtfy(t, school, classID, digest)
+		if err := put("ntfy", t.ID, body); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
-// postWebhook delivers a change payload to one webhook with a short retry.
-// The shared secret (if set) is sent as an HMAC-SHA256 signature header so
-// receivers can verify the request really came from this proxy.
-func (p *Proxy) postWebhook(h *store.Webhook, body []byte, summary string) {
-	sig := ""
+// deliverChange queues one change for delivery and returns once it is durable.
+// The actual HTTP happens later, in the outbox worker.
+func (p *Proxy) deliverChange(school string, classID, version int64, rows, prev []store.PeriodRow) error {
+	hooks, err := p.store.ListWebhooks(school)
+	if err != nil {
+		return err
+	}
+	topics, err := p.store.ListNtfyTopics(school)
+	if err != nil {
+		return err
+	}
+	targets := p.resolveTargets(school, hooks, topics)
+	return p.enqueueChange(school, p.classDisplayName(school, classID), classID, version, rows, prev, hooks, topics, targets,
+		func(dest string, destID int64, payload []byte) error {
+			return p.store.EnqueueOutbox(school, classID, version, dest, destID, payload)
+		})
+}
+
+// postWebhookOnce performs a single delivery attempt and reports the outcome, so
+// the outbox worker can decide whether to retry. Retrying is the worker's job
+// now: an in-process retry loop cannot survive a restart and cannot tell a
+// temporary failure from a dead receiver.
+func (p *Proxy) postWebhookOnce(h *store.Webhook, body []byte, summary string) error {
+	req, err := http.NewRequest(http.MethodPost, h.URL, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "untis-proxy/1.0")
+	req.Header.Set("X-Untis-Event", "timetable-change")
+	req.Header.Set("X-Untis-Summary", summary)
 	if h.Secret != "" {
 		mac := hmac.New(sha256.New, []byte(h.Secret))
 		mac.Write(body)
-		sig = "sha256=" + hex.EncodeToString(mac.Sum(nil))
+		req.Header.Set("X-Untis-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	}
-	for attempt := 0; attempt < 3; attempt++ {
-		req, err := http.NewRequest(http.MethodPost, h.URL, bytes.NewReader(body))
-		if err != nil {
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("User-Agent", "untis-proxy/1.0")
-		req.Header.Set("X-Untis-Event", "timetable-change")
-		req.Header.Set("X-Untis-Summary", summary)
-		if sig != "" {
-			req.Header.Set("X-Untis-Signature", sig)
-		}
-		client := &http.Client{Timeout: 10 * time.Second}
-		resp, err := client.Do(req)
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-				return
-			}
-		}
-		if attempt < 2 {
-			time.Sleep(time.Duration(attempt+1) * time.Second)
-		}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return err
 	}
-	log.Printf("[deliver] webhook %s failed after retries", h.URL)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("webhook %s returned %d", h.URL, resp.StatusCode)
+	}
+	return nil
 }
 
 // ntfyPost publishes a JSON message to an ntfy server.
@@ -385,8 +483,12 @@ func ntfyPost(t *store.NtfyTopic, msg map[string]any) (int, error) {
 	return resp.StatusCode, nil
 }
 
-// publishNtfy posts a change notification to an ntfy topic.
-func (p *Proxy) publishNtfy(t *store.NtfyTopic, school string, classID int64, digest changeDigest) {
+// publishNtfyOnce posts the digest to an ntfy topic and reports the outcome.
+//
+// A non-2xx means the message was rejected (or, before the root-url fix,
+// silently stored as plain text), which is worth surfacing: the dashboard
+// otherwise shows a delivered notification nobody can read.
+func (p *Proxy) publishNtfyOnce(t *store.NtfyTopic, school string, classID int64, digest changeDigest) error {
 	title := "Timetable change — " + digest.Title
 	if et, eid := t.Target(); et != "" {
 		if name := p.elementTargetName(school, et, eid); name != "" {
@@ -401,15 +503,12 @@ func (p *Proxy) publishNtfy(t *store.NtfyTopic, school string, classID int64, di
 		"click":   publicURL(fmt.Sprintf("/api/timetable/changes?school=%s&classId=%d", school, classID)),
 	})
 	if err != nil {
-		log.Printf("[deliver] ntfy %s: %v", t.Topic, err)
-		return
+		return fmt.Errorf("ntfy %s: %w", t.Topic, err)
 	}
-	// A non-2xx means the message was rejected (or, before the root-url fix,
-	// silently stored as plain text), which is worth a log line: the dashboard
-	// otherwise shows a delivered notification nobody can read.
 	if status < 200 || status >= 300 {
-		log.Printf("[deliver] ntfy %s: status %d", t.Topic, status)
+		return fmt.Errorf("ntfy %s returned %d", t.Topic, status)
 	}
+	return nil
 }
 
 // deliverTest sends a single test notification to a webhook or ntfy topic and

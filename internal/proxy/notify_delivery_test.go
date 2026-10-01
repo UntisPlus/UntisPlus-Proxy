@@ -76,7 +76,9 @@ func TestPostWebhookSetsHeadersAndSignature(t *testing.T) {
 	p, _ := newTestProxy(t)
 
 	body := []byte(`{"event":"change","school":"testschool","classId":5000,"version":4}`)
-	p.postWebhook(&store.Webhook{URL: srv.URL, Secret: "s3cret"}, body, "1 change(s): 1 added")
+	if err := p.postWebhookOnce(&store.Webhook{URL: srv.URL, Secret: "s3cret"}, body, "1 change(s): 1 added"); err != nil {
+		t.Fatalf("postWebhookOnce: %v", err)
+	}
 
 	r := awaitRecv(t, ch)
 	if r.Path != "/" {
@@ -106,7 +108,9 @@ func TestPostWebhookWithoutSecretOmitstSignature(t *testing.T) {
 	ch := make(chan received, 4)
 	srv := receiver(t, ch)
 	p, _ := newTestProxy(t)
-	p.postWebhook(&store.Webhook{URL: srv.URL}, []byte(`{"event":"change"}`), "1 change(s)")
+	if err := p.postWebhookOnce(&store.Webhook{URL: srv.URL}, []byte(`{"event":"change"}`), "1 change(s)"); err != nil {
+		t.Fatalf("postWebhookOnce: %v", err)
+	}
 	if got := awaitRecv(t, ch).Header.Get("X-Untis-Signature"); got != "" {
 		t.Errorf("X-Untis-Signature = %q, want empty without a shared secret", got)
 	}
@@ -117,8 +121,10 @@ func TestPublishNtfyPayload(t *testing.T) {
 	srv := receiver(t, ch)
 	p, _ := newTestProxy(t)
 
-	p.publishNtfy(&store.NtfyTopic{Topic: "klass5000", BaseURL: srv.URL + "/"}, "testschool", 5000,
-		changeDigest{Title: "class 5000 · 2 changes", Summary: "2 changes", Lines: []string{"new: Tue 29.09. 08:00–08:45 · Mathe · R204"}})
+	if err := p.publishNtfyOnce(&store.NtfyTopic{Topic: "klass5000", BaseURL: srv.URL + "/"}, "testschool", 5000,
+		changeDigest{Title: "class 5000 · 2 changes", Summary: "2 changes", Lines: []string{"new: Tue 29.09. 08:00–08:45 · Mathe · R204"}}); err != nil {
+		t.Fatalf("publishNtfyOnce: %v", err)
+	}
 
 	r := awaitRecv(t, ch)
 	// The JSON envelope goes to the server ROOT; the topic travels in the body.
@@ -158,8 +164,10 @@ func TestPublishNtfyTitleNamesTheElement(t *testing.T) {
 	if err := st.SaveMasterNames("testschool", "TEACHER", map[int64]string{5009: "A. Hartley"}); err != nil {
 		t.Fatalf("seed teacher name: %v", err)
 	}
-	p.publishNtfy(&store.NtfyTopic{Topic: "teacher1", BaseURL: srv.URL, ElementType: "TEACHER", ElementID: 5009},
-		"testschool", 5000, changeDigest{Title: "class 5000 · 1 change", Summary: "1 change", Lines: []string{"new: Mathe"}})
+	if err := p.publishNtfyOnce(&store.NtfyTopic{Topic: "teacher1", BaseURL: srv.URL, ElementType: "TEACHER", ElementID: 5009},
+		"testschool", 5000, changeDigest{Title: "class 5000 · 1 change", Summary: "1 change", Lines: []string{"new: Mathe"}}); err != nil {
+		t.Fatalf("publishNtfyOnce: %v", err)
+	}
 
 	var payload struct {
 		Title string `json:"title"`
@@ -226,12 +234,17 @@ func TestDeliverChangeFansOutOnlyToMatchingTargets(t *testing.T) {
 		t.Fatalf("add ntfy topic: %v", err)
 	}
 
-	p.deliverChange("testschool", 5000, 7, []store.PeriodRow{
+	if err := p.deliverChange("testschool", 5000, 7, []store.PeriodRow{
 		{PeriodID: 10, Kind: "REMOVED", Teacher: "A. Hartley", Subject: "MATH"},
 		{PeriodID: 11, Kind: "ADDED", Teacher: "A. Hartley", Subject: "MATH"},
 	}, []store.PeriodRow{
 		{PeriodID: 10, Teacher: "A. Hartley", Subject: "MATH"},
-	})
+	}); err != nil {
+		t.Fatalf("deliverChange: %v", err)
+	}
+	// Delivery is queued durably and performed by the outbox worker, so drain it
+	// explicitly rather than relying on a background goroutine.
+	p.drainOutbox()
 
 	hook := awaitRecv(t, hookCh)
 	var payload struct {
@@ -280,6 +293,7 @@ func TestPollDiscoversClassChangeAndBumpsVersion(t *testing.T) {
 	}
 
 	p.pollOnce("testschool")
+	p.drainOutbox()
 
 	if v := st.ClassVersion("testschool", 5000); v != 1 {
 		t.Errorf("ClassVersion = %d, want 1 after the first snapshot", v)
@@ -307,6 +321,7 @@ func TestPollDiscoversClassChangeAndBumpsVersion(t *testing.T) {
 
 	// polling again with unchanged data must not create a new version
 	p.pollOnce("testschool")
+	p.drainOutbox()
 	if v := st.ClassVersion("testschool", 5000); v != 1 {
 		t.Errorf("ClassVersion = %d after an unchanged poll, want 1", v)
 	}
@@ -352,11 +367,13 @@ func TestCancelledLessonNotifiesOnce(t *testing.T) {
 		t.Fatalf("add ntfy topic: %v", err)
 	}
 
-	p.pollOnce("testschool") // the lesson is present
+	p.pollOnce("testschool")
+	p.drainOutbox() // the lesson is present
 	// upstream cancels it
 	f.setTimetable(t, nil)
 
-	p.pollOnce("testschool") // the cancellation: one notification
+	p.pollOnce("testschool")
+	p.drainOutbox() // the cancellation: one notification
 	time.Sleep(50 * time.Millisecond)
 
 	// Count from here: the ADDED notification above is correct and expected.
@@ -370,7 +387,8 @@ func TestCancelledLessonNotifiesOnce(t *testing.T) {
 	mu.Unlock()
 
 	for i := 0; i < 5; i++ {
-		p.pollOnce("testschool")          // unchanged: must be silent
+		p.pollOnce("testschool")
+		p.drainOutbox()                   // unchanged: must be silent
 		time.Sleep(20 * time.Millisecond) // let any goroutine finish
 	}
 
@@ -444,10 +462,13 @@ func TestReinstatedLessonSendsNotification(t *testing.T) {
 		t.Fatalf("seed room name: %v", err)
 	}
 
-	p.pollOnce("testschool") // present
-	f.setTimetable(t, nil)   // cancelled
 	p.pollOnce("testschool")
-	p.pollOnce("testschool") // still cancelled: quiet
+	p.drainOutbox()        // present
+	f.setTimetable(t, nil) // cancelled
+	p.pollOnce("testschool")
+	p.drainOutbox()
+	p.pollOnce("testschool")
+	p.drainOutbox() // still cancelled: quiet
 	time.Sleep(50 * time.Millisecond)
 
 	mu.Lock()
@@ -456,6 +477,7 @@ func TestReinstatedLessonSendsNotification(t *testing.T) {
 
 	f.setTimetable(t, lesson) // restored, byte-identical
 	p.pollOnce("testschool")
+	p.drainOutbox()
 	time.Sleep(50 * time.Millisecond)
 
 	mu.Lock()

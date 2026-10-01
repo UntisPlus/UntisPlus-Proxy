@@ -183,6 +183,11 @@ Embedded single-page UI at **`/admin`**, gated by an admin session
 (`users.admin`). It grants full DB/`untisctl` capability: users, perms, pool,
 tokens, schools, webhooks, ntfy topics, recon.
 
+`GET /admin/outbox` reports the notification-delivery backlog — counts by state
+plus the most recent destinations that gave up, with their error. `/admin/status`
+carries the same counts as an `outbox` object. The public `/healthz` and
+`/status` never include this detail.
+
 - All element pickers (class / **student** / teacher / room / subject) are
   fuzzy-searchable — no raw ids in the UI.
 - Bootstrap the first admin with `untisctl users admin --user evan` (or
@@ -240,9 +245,14 @@ On every detected change, JSON is POSTed to configured URLs with:
 Each webhook targets **any element** (class / student / teacher / room / subject)
 or is **school-wide**. It fires when the matching element is involved: the class
 id, the student's class, or the teacher/room/subject name appearing in the
-changed rows. Delivery is retried up to three times with a growing backoff, and
-a receiver that never returns 2xx is logged as
-`[deliver] webhook <url> failed after retries`.
+changed rows.
+
+Deliveries are **durable**: each one is queued in the same transaction that
+records the new timetable version, so a detected change is never silently
+dropped, and it survives a restart. A failing destination retries with backoff
+(30s doubling to a 15m cap, 8 attempts) and is then marked dead — visible via
+`GET /admin/outbox` — while other destinations for the same change are unaffected.
+See [docs/ADMIN-WEBHOOKS-NTFY.md](docs/ADMIN-WEBHOOKS-NTFY.md#delivery-reliability).
 
 ---
 

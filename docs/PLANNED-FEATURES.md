@@ -1,8 +1,9 @@
 # Planned work — personal homework, absence notes, Technik events, delivery outbox
 
-Status: **agreed, not started.** Every decision below was made in discussion; the
-reasoning is recorded so a later reader can tell which parts are load-bearing
-and which were arbitrary.
+Status: **Phase 1 implemented, not yet released.** Phases 0 and 1 are done in the
+tree; every other phase below is still only agreed. Decisions were made in
+discussion, and the reasoning is recorded so a later reader can tell which parts
+are load-bearing and which were arbitrary.
 
 Phases ship as **one release each**, so each can be tested against real data
 before the next is built. Phase 1 (the delivery outbox) goes first: it is a live
@@ -205,26 +206,47 @@ Root cause: the version bump commits at `store.go:1860` *before* the send at
 sees no change. Same class of bug as the re-notification flood, opposite
 direction — one change sent too many times vs. one change sent zero times.
 
-The difficulty is atomicity. The digest is currently built from `PendingChanges`
-*after* commit, so it cannot be enqueued in the same transaction without
-restructuring. Plan: change `ReplaceClassSnapshot` to return the changed rows
-instead of just a count, let the caller build the digest before commit, and
-insert the outbox row in that same transaction. This needs a callback parameter
-on the store method.
+The difficulty is atomicity. The digest is built from the changed rows, which
+only exist inside the snapshot transaction, so it cannot be rendered after
+commit without losing the guarantee. The store method now takes an enqueue
+callback: it collects the changed rows, hands them to the callback, and commits
+only if the callback succeeds.
+
+Two consequences worth keeping in mind for later phases:
+
+- Everything the callback needs is resolved **before** the transaction opens.
+  The store pool is a single connection, so any read inside that transaction
+  deadlocks against the connection it already holds. That covers the class
+  display name for the digest, and the identity of every subscription target
+  (a STUDENT target needs a class lookup, a TEACHER/ROOM/SUBJECT target needs a
+  name lookup). `resolveTargets` exists solely for this. A destination created in
+  the gap between that read and the commit misses that one change, which is the
+  right trade against a deadlock.
+- One row per **destination**, not per change. A single unreachable endpoint must
+  not replay deliveries that other endpoints already received successfully.
 
 ```sql
 CREATE TABLE notification_outbox (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   school TEXT NOT NULL, class_id INTEGER NOT NULL, version INTEGER NOT NULL,
-  payload TEXT NOT NULL, state TEXT NOT NULL,      -- pending | sent | dead
+  dest TEXT NOT NULL, dest_id INTEGER NOT NULL,   -- webhook | ntfy + subscription id
+  payload TEXT NOT NULL,
+  state TEXT NOT NULL,        -- pending | sending | dead
   attempts INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '',
-  created_at DATETIME NOT NULL, sent_at DATETIME
+  created_at DATETIME NOT NULL,
+  next_attempt_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ```
 
-A background worker drains it with capped backoff, and the dashboard surfaces
-failures instead of burying them in the log. Both ntfy and webhooks route through
-it, which replaces the bespoke webhook retry with a shared one.
+Delivered rows are deleted rather than kept, so the table stays small; exhausted
+rows are kept as `dead` so a broken destination stays visible. A worker drains it
+with capped backoff (30s doubling to 15m, 8 attempts), reclaiming rows abandoned
+in `sending` at startup. Deleting or disabling a subscription drops its backlog
+instead of retrying it forever.
+
+Both ntfy and webhooks route through it, which replaces the bespoke webhook
+retry with a shared one. `GET /admin/outbox` (admin auth) reports counts and the
+recent dead rows with their failure reason; `/admin/status` carries the counts.
 
 **Risk:** this refactor touches the poll hot path that both the flood fix
 (v1.4.4) and the reinstate fix (v1.4.5) depend on. Run the full suite plus those
@@ -344,3 +366,7 @@ Not to be guessed. Decide before the matching phase, not during it:
 - **Deleting a Technik event in the admin UI — does it disappear from subscribed
   calendars?** ICS clients cache aggressively; this is a product question, not a
   technical one.
+- **Should Technik edits raise timetable-change events?** Phase 1 now delivers
+  changes through a durable outbox, so emitting an SSE/ntfy change when an admin
+  edits an event is nearly free — but whether a student should be told about an
+  admin edit at all is a product call.

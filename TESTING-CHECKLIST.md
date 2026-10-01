@@ -146,6 +146,21 @@ Use a throwaway user (`testtier`) — create, then remove at the end.
 - [ ] 9.5 **self-service** `GET /api/ntfy` as plain student → only own class/student topics; school-wide/room topics hidden
 - [ ] 9.6 **legacy** `classId`-only rows still work (dashboard shows them as class targets)
 - [ ] 9.7 delete hook/topic → gone from list, test 404s
+- [ ] 9.8 **durable delivery**: with a webhook pointed at an unreachable URL, let
+      the poller detect a change → `GET /admin/outbox` shows `pending ≥ 1` with
+      the failing destination, and `/admin/status` agrees; a *healthy* webhook
+      subscribed to the same change still receives it on the first attempt and
+      does **not** get it again when the broken one retries
+- [ ] 9.9 **retry then dead**: leave the broken URL alone → `pending` drops and
+      `dead` becomes 1 after 8 attempts (~15m+ with backoff); `GET /admin/outbox`
+      names the school/class/destination and the error; the healthy destination
+      is unaffected
+- [ ] 9.10 **survives restart**: queue a delivery to a broken URL, restart the
+      process → the delivery is retried, not stranded
+- [ ] 9.11 delete the broken webhook → its queued backlog clears instead of
+      retrying forever
+- [ ] 9.12 `/healthz` and public `/status` still expose **no** per-school or
+      per-destination detail
 
 ## 10. Admin dashboard (browser: `<public-host>/admin`)
 - [ ] 10.1 anon → 401; bschneider (non-admin) session → 403

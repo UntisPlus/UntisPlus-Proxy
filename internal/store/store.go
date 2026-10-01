@@ -243,6 +243,37 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// notification_outbox makes delivery survive a failed send. One row per
+	// destination, written inside the same transaction that stamps the new
+	// class version, so a change can never be committed without a delivery
+	// being queued for it.
+	//
+	// Per-destination rows, not one row per change: a single class change fans
+	// out to every matching webhook and ntfy topic, and if delivery were
+	// retried as one unit then one permanently broken destination would replay
+	// the whole fan-out forever — the same duplicate-notification failure the
+	// re-notification flood in v1.4.4 was.
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS notification_outbox (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		school TEXT NOT NULL,
+		class_id INTEGER NOT NULL,
+		version INTEGER NOT NULL,
+		dest TEXT NOT NULL,          -- 'webhook' or 'ntfy'
+		dest_id INTEGER NOT NULL,    -- row id in webhooks / ntfy_topics
+		payload TEXT NOT NULL,       -- exact bytes to send
+		state TEXT NOT NULL DEFAULT 'pending', -- pending | sending | dead
+		attempts INTEGER NOT NULL DEFAULT 0,
+		last_error TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL DEFAULT 0,
+		next_attempt_at INTEGER NOT NULL DEFAULT 0
+	)`)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS notification_outbox_pending
+		ON notification_outbox (state, next_attempt_at, id)`); err != nil {
+		return nil, err
+	}
 	// migration: add person_id to class_tokens for older databases
 	if err := addColumnIfMissing(db, "class_tokens", "person_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return nil, err
@@ -1779,13 +1810,37 @@ func (s *Store) LoadClassSnapshot(school string, classID int64) ([]PeriodRow, er
 	return out, rows.Err()
 }
 
-// ReplaceClassSnapshot transactionally rewrites the snapshot for a class. It
-// returns the updated period rows (with new mod versions bumped) and the number
-// of rows whose mod version changed. Removed periods whose start date is before
-// dropRemovedBefore (format YYYY-MM-DD) are silently deleted rather than being
-// reported, so periods that merely age out of the sliding fetch window do not
-// trigger spurious REMOVED notifications.
+// ReplaceClassSnapshot transactionally rewrites the snapshot for a class and
+// returns the number of rows whose mod version changed. See ApplyClassSnapshot
+// for the change-detection rules; this is the form that queues no deliveries.
 func (s *Store) ReplaceClassSnapshot(school string, classID int64, next []PeriodRow, newVer int64, dropRemovedBefore string) (int, error) {
+	return s.ApplyClassSnapshot(school, classID, next, newVer, dropRemovedBefore, nil)
+}
+
+// Enqueuer queues one pending delivery while a snapshot transaction is still
+// open. put writes the row into notification_outbox on the transaction's own
+// connection, so the queue entry and the version bump commit together.
+type Enqueuer func(changed []PeriodRow, put func(dest string, destID int64, payload []byte) error) error
+
+// ApplyClassSnapshot transactionally rewrites the snapshot for a class. It
+// returns the number of rows whose mod version changed. Removed periods whose
+// start date is before dropRemovedBefore (format YYYY-MM-DD) are silently
+// deleted rather than being reported, so periods that merely age out of the
+// sliding fetch window do not trigger spurious REMOVED notifications.
+//
+// When the change is non-empty and enqueue is non-nil, enqueue is called with
+// the changed rows while the transaction is still open, so queued deliveries
+// become durable in the very same commit that stamps newVer. That ordering is
+// the point: the version bump and the notification must not be able to disagree.
+// Before this, the version was committed first and the send was fired from a
+// goroutine afterwards, so a failed or dropped send lost the notification
+// permanently — the next poll saw no change and re-sent nothing.
+//
+// enqueue must not query the Store. The pool runs a single connection, so a
+// read inside this transaction would wait for the very connection the
+// transaction holds and deadlock. Anything needed while enqueueing — such as
+// the list of webhooks and ntfy topics — has to be read beforehand.
+func (s *Store) ApplyClassSnapshot(school string, classID int64, next []PeriodRow, newVer int64, dropRemovedBefore string, enqueue Enqueuer) (int, error) {
 	old, err := s.LoadClassSnapshot(school, classID)
 	if err != nil {
 		return 0, err
@@ -1795,6 +1850,7 @@ func (s *Store) ReplaceClassSnapshot(school string, classID int64, next []Period
 		oldByID[r.PeriodID] = r
 	}
 	changed := 0
+	var changedRows []PeriodRow
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -1832,6 +1888,7 @@ func (s *Store) ReplaceClassSnapshot(school string, classID int64, next []Period
 				cur.Kind = "ADDED"
 			}
 			changed++
+			changedRows = append(changedRows, cur)
 		}
 		oldByID[r.PeriodID] = cur
 		if cur.Kind == "UNCHANGED" {
@@ -1888,17 +1945,205 @@ func (s *Store) ReplaceClassSnapshot(school string, classID int64, next []Period
 			return 0, err
 		}
 		changed++
+		changedRows = append(changedRows, r)
 	}
 	if changed > 0 {
 		if _, err := tx.Exec(`INSERT INTO timetable_versions (school,class_id,version) VALUES (?,?,?)
 			ON CONFLICT(school,class_id) DO UPDATE SET version=excluded.version`, school, classID, newVer); err != nil {
 			return 0, err
 		}
+		if enqueue != nil {
+			put := func(dest string, destID int64, payload []byte) error {
+				return insertOutbox(tx, school, classID, newVer, dest, destID, payload, time.Now())
+			}
+			if err := enqueue(changedRows, put); err != nil {
+				// The delivery could not be queued, so the change must not be
+				// recorded: committing here would leave the new version in place
+				// with nothing to send it, and the next poll would see no change.
+				return 0, err
+			}
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	return changed, nil
+}
+
+// outboxInserter is satisfied by both *sql.Tx and *sql.DB, so the queue insert
+// can run inside the snapshot transaction or standalone.
+type outboxInserter interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func insertOutbox(q outboxInserter, school string, classID, version int64, dest string, destID int64, payload []byte, now time.Time) error {
+	_, err := q.Exec(`INSERT INTO notification_outbox
+		(school,class_id,version,dest,dest_id,payload,state,attempts,last_error,created_at,next_attempt_at)
+		VALUES (?,?,?,?,?,?,'pending',0,'',?,0)`,
+		school, classID, version, dest, destID, string(payload), now.Unix())
+	return err
+}
+
+// EnqueueOutbox queues one delivery outside a snapshot transaction. Delivery
+// inside ApplyClassSnapshot uses that transaction instead; this exists for
+// replaying a failed or dead delivery, and as the seam tests enqueue through.
+func (s *Store) EnqueueOutbox(school string, classID, version int64, dest string, destID int64, payload []byte) error {
+	return insertOutbox(s.db, school, classID, version, dest, destID, payload, time.Now())
+}
+
+// OutboxRow is one queued delivery to one destination.
+type OutboxRow struct {
+	ID       int64
+	School   string
+	ClassID  int64
+	Version  int64
+	Dest     string // "webhook" or "ntfy"
+	DestID   int64
+	Payload  []byte
+	Attempts int
+	LastErr  string
+	Created  time.Time
+}
+
+// OutboxStats counts queued deliveries by state, for the dashboard.
+type OutboxStats struct {
+	Pending int
+	Sending int
+	Dead    int
+}
+
+// DueOutbox returns up to limit deliveries that are ready to attempt: state
+// pending, and either due now or left behind in 'sending' by a process that died
+// mid-flight. Reclaiming 'sending' rows is what makes a crash mid-send
+// recoverable rather than a silent loss.
+func (s *Store) DueOutbox(now time.Time, limit int) ([]OutboxRow, error) {
+	cutoff := now.Unix()
+	rows, err := s.db.Query(`SELECT id, school, class_id, version, dest, dest_id, payload,
+		attempts, last_error, created_at
+		FROM notification_outbox
+		WHERE (state='pending' AND next_attempt_at<=?) OR (state='sending')
+		ORDER BY id LIMIT ?`, cutoff, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OutboxRow
+	for rows.Next() {
+		var r OutboxRow
+		var created int64
+		if err := rows.Scan(&r.ID, &r.School, &r.ClassID, &r.Version, &r.Dest, &r.DestID,
+			&r.Payload, &r.Attempts, &r.LastErr, &created); err != nil {
+			return nil, err
+		}
+		r.Created = time.Unix(created, 0)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ClaimOutbox marks a row as in flight and returns false if someone else got
+// there first.
+func (s *Store) ClaimOutbox(id int64) (bool, error) {
+	res, err := s.db.Exec(`UPDATE notification_outbox SET state='sending' WHERE id=? AND state='pending'`, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+// FinishOutbox records a successful delivery and prunes the row, so the table
+// stays bounded. Keeping sent rows would grow without limit and nothing reads
+// them.
+func (s *Store) FinishOutbox(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM notification_outbox WHERE id=? AND state='sending'`, id)
+	return err
+}
+
+// FailOutbox records a failed attempt and schedules the retry. Once attempts
+// reaches maxAttempts the row is marked dead instead, so an unreachable
+// destination stops consuming a retry slot forever but stays visible for an
+// operator to inspect.
+func (s *Store) FailOutbox(id int64, attempts int, cause string, retryAt time.Time, maxAttempts int) error {
+	state := "pending"
+	if attempts >= maxAttempts {
+		state = "dead"
+	}
+	if len(cause) > 500 {
+		cause = cause[:500]
+	}
+	_, err := s.db.Exec(`UPDATE notification_outbox
+		SET state=?, attempts=?, last_error=?, next_attempt_at=? WHERE id=?`,
+		state, attempts, cause, retryAt.Unix(), id)
+	return err
+}
+
+// ReleaseOutboxStale requeues every row abandoned in the 'sending' state.
+//
+// A worker that dies mid-request leaves its claimed rows behind, and those
+// notifications would otherwise never be delivered. This is called once at
+// startup, before the worker begins, so no delivery can be in flight and every
+// 'sending' row is by definition abandoned. Requeued rows become due
+// immediately: the alternative is to silently delay a notification by a stale
+// window every restart.
+//
+// This assumes a single running process, which is how the proxy is deployed.
+// With two workers sharing the database, the correct approach is a separate
+// claimed_at column and a cutoff; that is not needed here.
+func (s *Store) ReleaseOutboxStale() error {
+	_, err := s.db.Exec(`UPDATE notification_outbox SET state='pending', next_attempt_at=?
+		WHERE state='sending'`, time.Now().Unix())
+	return err
+}
+
+// OutboxStats counts queued deliveries by state.
+func (s *Store) OutboxStats() (OutboxStats, error) {
+	var st OutboxStats
+	rows, err := s.db.Query(`SELECT state, COUNT(*) FROM notification_outbox GROUP BY state`)
+	if err != nil {
+		return st, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var state string
+		var n int
+		if err := rows.Scan(&state, &n); err != nil {
+			return st, err
+		}
+		switch state {
+		case "pending":
+			st.Pending = n
+		case "sending":
+			st.Sending = n
+		case "dead":
+			st.Dead = n
+		}
+	}
+	return st, rows.Err()
+}
+
+// RecentDeadOutbox returns the most recent exhausted deliveries, newest first,
+// so a failed destination can be diagnosed without opening the database.
+func (s *Store) RecentDeadOutbox(limit int) ([]OutboxRow, error) {
+	rows, err := s.db.Query(`SELECT id, school, class_id, version, dest, dest_id, payload,
+		attempts, last_error, created_at
+		FROM notification_outbox WHERE state='dead' ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OutboxRow
+	for rows.Next() {
+		var r OutboxRow
+		var created int64
+		if err := rows.Scan(&r.ID, &r.School, &r.ClassID, &r.Version, &r.Dest, &r.DestID,
+			&r.Payload, &r.Attempts, &r.LastErr, &created); err != nil {
+			return nil, err
+		}
+		r.Created = time.Unix(created, 0)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // PendingChanges returns the periods modified after the given version, plus the

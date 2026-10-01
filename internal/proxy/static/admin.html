@@ -13,6 +13,10 @@
   .card { background: #1c1e26; border: 1px solid #2a2d37; border-radius: 8px; padding: .7rem .9rem; }
   .card .num { font-size: 1.6rem; font-weight: 600; }
   .card .lbl { font-size: .78rem; color: #9aa0ae; }
+  /* A dead delivery means a destination gave up and needs a human. */
+  .card.warn { border-color: #7a3b3b; }
+  .card.warn .num { color: #e08585; }
+  .card.warn .lbl { color: #d9a3a3; }
   section { background: #1c1e26; border: 1px solid #2a2d37; border-radius: 8px; padding: .8rem 1rem; margin-bottom: 1rem; }
   h2 { font-size: 1rem; margin: 0 0 .6rem; }
   table { width: 100%; border-collapse: collapse; font-size: .86rem; }
@@ -143,7 +147,7 @@ async function api(method, path, body){
   return r.json();
 }
 
-function card(lbl, num){ return '<div class="card"><div class="num">'+num+'</div><div class="lbl">'+lbl+'</div></div>'; }
+function card(lbl, num, cls){ return '<div class="card'+(cls?' '+cls:'')+'"><div class="num">'+num+'</div><div class="lbl">'+lbl+'</div></div>'; }
 
 async function renderCards(){
   status = await api('GET','status');
@@ -155,6 +159,11 @@ async function renderCards(){
   c.insertAdjacentHTML('beforeend', card('tokens', status.tokens));
   c.insertAdjacentHTML('beforeend', card('webhooks', status.webhooks));
   c.insertAdjacentHTML('beforeend', card('ntfy topics', status.ntfyTopics));
+  // Notification delivery backlog. Pending means retrying; dead means a
+  // destination gave up and someone has to look at /admin/outbox.
+  const ob = status.outbox || {pending:0, sending:0, dead:0};
+  c.insertAdjacentHTML('beforeend', card('notifications queued', ob.pending));
+  c.insertAdjacentHTML('beforeend', card('notifications failed', ob.dead, ob.dead ? 'warn' : ''));
   c.insertAdjacentHTML('beforeend', card('recon', status.recon));
   c.insertAdjacentHTML('beforeend', card('boosted', status.boosted));
   c.insertAdjacentHTML('beforeend', card('editors', status.editors));

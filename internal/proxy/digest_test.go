@@ -193,6 +193,8 @@ func TestNtfyMessageCarriesTheDigest(t *testing.T) {
 	if !p2.checkClass("testschool", 5000) {
 		t.Fatal("first poll found no change")
 	}
+	// Delivery is queued durably; the outbox worker is what sends it.
+	p2.drainOutbox()
 	// The initial snapshot is itself an ADDED change and pushes a notification;
 	// the interesting one is the room move below.
 	first := awaitRecv(t, ch)
@@ -209,6 +211,7 @@ func TestNtfyMessageCarriesTheDigest(t *testing.T) {
 	if !p2.checkClass("testschool", 5000) {
 		t.Fatal("room move was not detected as a change")
 	}
+	p2.drainOutbox()
 
 	r := awaitRecv(t, ch)
 	var payload struct {

@@ -103,6 +103,8 @@ func (p *Proxy) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		p.adminWebhooks(w, r, parts[1:])
 	case parts[0] == "ntfy":
 		p.adminNtfy(w, r, parts[1:])
+	case parts[0] == "outbox" && r.Method == http.MethodGet:
+		p.adminOutbox(w, r)
 	case parts[0] == "recon":
 		p.adminRecon(w, r, parts[1:])
 	default:
@@ -119,6 +121,9 @@ func (p *Proxy) adminStatus(w http.ResponseWriter) {
 	perms, _ := p.store.AllPerms()
 	webhooks, _ := p.store.ListWebhooks("")
 	ntfy, _ := p.store.ListNtfyTopics("")
+	// Delivery backlog: pending means retrying, dead means a destination gave up
+	// and someone has to look at it.
+	outbox, _ := p.store.OutboxStats()
 
 	var adminCount, boosted, editor, recon int
 	for _, us := range users {
@@ -156,7 +161,12 @@ func (p *Proxy) adminStatus(w http.ResponseWriter) {
 		"tokens":     len(tokens),
 		"webhooks":   len(webhooks),
 		"ntfyTopics": len(ntfy),
-		"global":     global,
+		"outbox": map[string]int{
+			"pending": outbox.Pending,
+			"sending": outbox.Sending,
+			"dead":    outbox.Dead,
+		},
+		"global": global,
 	})
 }
 
@@ -565,6 +575,71 @@ func (p *Proxy) adminWebhooks(w http.ResponseWriter, r *http.Request, parts []st
 		})
 	}
 	p.writeJSON(w, map[string]any{"webhooks": out})
+}
+
+// adminOutbox reports the delivery backlog and the destinations that gave up.
+//
+// GET /admin/outbox            counts by state plus the most recent dead rows
+// GET /admin/outbox?state=dead the exhausted deliveries only
+//
+// Dead rows are kept precisely so this is answerable without opening the
+// database: they name the school, class, destination and the error, which is
+// what tells an operator whether the fix is the URL or the receiver being down.
+func (p *Proxy) adminOutbox(w http.ResponseWriter, r *http.Request) {
+	stats, err := p.store.OutboxStats()
+	if err != nil {
+		p.writeJSON(w, map[string]any{"error": "store error"})
+		return
+	}
+	state := r.URL.Query().Get("state")
+
+	limit := 25
+	if onlyDead := state == "dead"; !onlyDead {
+		dead, err := p.store.RecentDeadOutbox(limit)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.writeJSON(w, map[string]any{
+			"pending": stats.Pending,
+			"sending": stats.Sending,
+			"dead":    stats.Dead,
+			"failed":  deadSummaries(dead),
+		})
+		return
+	}
+
+	dead, err := p.store.RecentDeadOutbox(limit)
+	if err != nil {
+		p.writeJSON(w, map[string]any{"error": "store error"})
+		return
+	}
+	p.writeJSON(w, map[string]any{"dead": stats.Dead, "failed": deadSummaries(dead)})
+}
+
+// deadSummary describes one exhausted delivery without its payload, which would
+// be a large blob of timetable data nobody needs to read to diagnose a failure.
+type deadSummary struct {
+	School   string `json:"school"`
+	ClassID  int64  `json:"classId"`
+	Version  int64  `json:"version"`
+	Dest     string `json:"dest"`
+	DestID   int64  `json:"destId"`
+	Attempts int    `json:"attempts"`
+	LastErr  string `json:"lastError"`
+	Created  int64  `json:"createdAt"`
+}
+
+func deadSummaries(rows []store.OutboxRow) []deadSummary {
+	out := make([]deadSummary, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, deadSummary{
+			School: row.School, ClassID: row.ClassID, Version: row.Version,
+			Dest: row.Dest, DestID: row.DestID, Attempts: row.Attempts,
+			LastErr: row.LastErr, Created: row.Created.Unix(),
+		})
+	}
+	return out
 }
 
 func (p *Proxy) adminNtfy(w http.ResponseWriter, r *http.Request, parts []string) {

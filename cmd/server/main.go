@@ -128,6 +128,16 @@ func main() {
 	pollDone := make(chan struct{})
 	go p.StartPollLoop(*school, *poll, pollDone)
 
+	// Deliveries are durably queued by the poller in the same transaction that
+	// stamps the new class version; this worker is what actually sends them. It
+	// must be running, or notifications queue up and never leave.
+	outboxDone := make(chan struct{})
+	outboxExited := make(chan struct{})
+	go func() {
+		defer close(outboxExited)
+		p.StartOutboxWorker(5*time.Second, outboxDone)
+	}()
+
 	srv := &http.Server{Addr: *addr, Handler: p.Handler()}
 	log.Printf("listening on %s (upstream %s, school %s)", *addr, *server, *school)
 
@@ -163,6 +173,10 @@ func main() {
 	}
 
 	close(pollDone)
+	// Wait for the worker to finish the batch it is on before the store closes,
+	// so a delivery in flight is not abandoned mid-request.
+	close(outboxDone)
+	<-outboxExited
 	p.PersistRecon(*school)
 	if err := st.Close(); err != nil {
 		log.Printf("close store: %v", err)

@@ -46,6 +46,18 @@ func (d changeDigest) Message() string {
 // buildDigest renders changed rows, diffing them against prev (the snapshot as
 // it was before the change; may be nil or missing an entry).
 func (p *Proxy) buildDigest(school string, classID int64, prev []store.PeriodRow, rows []store.PeriodRow) changeDigest {
+	return p.buildDigestNamed(school, p.classDisplayName(school, classID), classID, prev, rows)
+}
+
+// buildDigestNamed is buildDigest with the class name supplied by the caller.
+//
+// It exists because the enqueue callback that renders the digest runs inside the
+// snapshot transaction, and resolving a class name means querying the store — on
+// a single-connection pool that deadlocks against the very connection the
+// transaction holds. The caller resolves the name before opening the
+// transaction. Everything else here is pure, so nothing else can reach the
+// database from inside the callback.
+func (p *Proxy) buildDigestNamed(school, className string, classID int64, prev []store.PeriodRow, rows []store.PeriodRow) changeDigest {
 	prevByID := make(map[int64]store.PeriodRow, len(prev))
 	for _, r := range prev {
 		prevByID[r.PeriodID] = r
@@ -62,7 +74,7 @@ func (p *Proxy) buildDigest(school string, classID int64, prev []store.PeriodRow
 		}
 		d.Lines = append(d.Lines, digestLine(r, prevByID[r.PeriodID]))
 	}
-	d.Title = p.digestTitle(school, classID, d)
+	d.Title = digestTitleNamed(className, d)
 	// The single-line summary stays count-based (it goes into the
 	// X-Untis-Summary header where anything greppable belongs); the per-lesson
 	// detail lives in the notification message.
@@ -90,14 +102,13 @@ func (d changeDigest) countsLine() string {
 }
 
 // digestTitle names the class and the size of the change.
-func (p *Proxy) digestTitle(school string, classID int64, d changeDigest) string {
-	name := p.classDisplayName(school, classID)
+func digestTitleNamed(className string, d changeDigest) string {
 	total := len(d.Lines)
 	noun := "changes"
 	if total == 1 {
 		noun = "change"
 	}
-	return fmt.Sprintf("%s · %d %s", name, total, noun)
+	return fmt.Sprintf("%s · %d %s", className, total, noun)
 }
 
 // classDisplayName resolves a readable class name, falling back to its id.

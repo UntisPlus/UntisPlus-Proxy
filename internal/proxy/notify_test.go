@@ -170,34 +170,47 @@ func TestElementMatches(t *testing.T) {
 	}
 	rows := []store.PeriodRow{{Teacher: "A. Hartley", Room: "B.112", Subject: "Englisch"}}
 
-	if !p.elementMatches("testschool", "", 0, 5000, rows) {
+	// Matching is driven by identities resolved up front, because it has to run
+	// inside the snapshot transaction where the store cannot be queried. Resolve
+	// them the way the real caller does, from actual subscriptions.
+	hooks := []*store.Webhook{
+		{School: "testschool", ElementType: "TEACHER", ElementID: 5009},
+		{School: "testschool", ElementType: "TEACHER", ElementID: 112}, // unknown teacher
+		{School: "testschool", ElementType: "ROOM", ElementID: 169},
+		{School: "testschool", ElementType: "SUBJECT", ElementID: 1},
+		{School: "testschool", ElementType: "STUDENT", ElementID: 7},
+		{School: "testschool", ElementType: "STUDENT", ElementID: 99}, // unknown person
+	}
+	targets := p.resolveTargets("testschool", hooks, nil)
+
+	if !p.elementMatches("testschool", "", 0, 5000, rows, targets) {
 		t.Error("school-wide topic must match everything")
 	}
-	if !p.elementMatches("testschool", "ALL", 0, 5000, rows) {
+	if !p.elementMatches("testschool", "ALL", 0, 5000, rows, targets) {
 		t.Error("ALL topic must match")
 	}
-	if !p.elementMatches("testschool", "CLASS", 5000, 5000, rows) {
+	if !p.elementMatches("testschool", "CLASS", 5000, 5000, rows, targets) {
 		t.Error("CLASS topic should match the changed class id")
 	}
-	if p.elementMatches("testschool", "CLASS", 9999, 5000, rows) {
+	if p.elementMatches("testschool", "CLASS", 9999, 5000, rows, targets) {
 		t.Error("CLASS topic must not match a different class")
 	}
-	if !p.elementMatches("testschool", "TEACHER", 5009, 5000, rows) {
+	if !p.elementMatches("testschool", "TEACHER", 5009, 5000, rows, targets) {
 		t.Error("TEACHER topic should match A. Hartley appearing in a row")
 	}
-	if p.elementMatches("testschool", "TEACHER", 112, 5000, rows) {
+	if p.elementMatches("testschool", "TEACHER", 112, 5000, rows, targets) {
 		t.Error("TEACHER topic must not match an unrelated teacher")
 	}
-	if !p.elementMatches("testschool", "ROOM", 169, 5000, rows) {
+	if !p.elementMatches("testschool", "ROOM", 169, 5000, rows, targets) {
 		t.Error("ROOM topic should match B.112")
 	}
-	if !p.elementMatches("testschool", "SUBJECT", 1, 5000, rows) {
+	if !p.elementMatches("testschool", "SUBJECT", 1, 5000, rows, targets) {
 		t.Error("SUBJECT topic should match Englisch")
 	}
-	if !p.elementMatches("testschool", "STUDENT", 7, 5000, rows) {
+	if !p.elementMatches("testschool", "STUDENT", 7, 5000, rows, targets) {
 		t.Error("STUDENT topic should match a student in the changed class")
 	}
-	if p.elementMatches("testschool", "STUDENT", 99, 5000, rows) {
+	if p.elementMatches("testschool", "STUDENT", 99, 5000, rows, targets) {
 		t.Error("STUDENT topic must not match an unrelated person")
 	}
 }

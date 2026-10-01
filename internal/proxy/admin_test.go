@@ -61,6 +61,69 @@ func TestAdminStatus(t *testing.T) {
 	if out["admins"].(float64) != 1 || out["webhooks"].(float64) != 1 || out["ntfyTopics"].(float64) != 1 {
 		t.Errorf("unexpected status summary: %v", out)
 	}
+	box, ok := out["outbox"].(map[string]any)
+	if !ok {
+		t.Fatalf("status does not report the delivery outbox: %v", out)
+	}
+	for _, k := range []string{"pending", "sending", "dead"} {
+		if _, ok := box[k].(float64); !ok {
+			t.Errorf("outbox summary is missing %s: %v", k, box)
+		}
+	}
+}
+
+// TestAdminOutboxListsExhaustedDeliveries: an unreachable destination has to be
+// diagnosable from the admin UI, which means the failure has to be described
+// without opening the database.
+func TestAdminOutboxListsExhaustedDeliveries(t *testing.T) {
+	p, st := newTestProxy(t)
+	for i := 0; i < 3; i++ {
+		if err := st.EnqueueOutbox("testschool", 5000, int64(i+1), "webhook", 7, []byte(`{"summary":"x"}`)); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+	}
+	rows, err := st.DueOutbox(time.Now(), 10)
+	if err != nil || len(rows) != 3 {
+		t.Fatalf("DueOutbox = (%d rows, %v), want 3", len(rows), err)
+	}
+	// One is still retrying, two have given up.
+	if err := st.FailOutbox(rows[0].ID, 1, "dial refused", time.Now().Add(time.Hour), 2); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows[1:] {
+		if err := st.FailOutbox(r.ID, 2, "http 500", time.Now(), 2); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec := adminRequest(t, p, "bob", http.MethodGet, "/admin/outbox", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Pending int `json:"pending"`
+		Dead    int `json:"dead"`
+		Failed  []struct {
+			School   string `json:"school"`
+			DestID   int64  `json:"destId"`
+			Attempts int    `json:"attempts"`
+			LastErr  string `json:"lastError"`
+		} `json:"failed"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if out.Pending != 1 || out.Dead != 2 {
+		t.Errorf("counts = pending %d / dead %d, want 1 / 2", out.Pending, out.Dead)
+	}
+	if len(out.Failed) != 2 {
+		t.Fatalf("failed list has %d entries, want 2", len(out.Failed))
+	}
+	for _, f := range out.Failed {
+		if f.School != "testschool" || f.DestID != 7 || f.Attempts != 2 || f.LastErr != "http 500" {
+			t.Errorf("failed entry lacks diagnostic detail: %+v", f)
+		}
+	}
 }
 
 func TestAdminForbiddenForNonAdmin(t *testing.T) {
