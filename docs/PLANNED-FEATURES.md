@@ -1,7 +1,8 @@
 # Planned work — personal homework, absence notes, Technik events, delivery outbox
 
-Status: **Phase 1 implemented, not yet released.** Phases 0 and 1 are done in the
-tree; every other phase below is still only agreed. Decisions were made in
+Status: **Phase 1 released as `v1.4.6`. Phase 2 released as `v1.5.0`.**
+Phase 0 (probe), Phase 1 (delivery outbox) and Phase 2 (personal homework done)
+are done; every other phase below is still only agreed. Decisions were made in
 discussion, and the reasoning is recorded so a later reader can tell which parts
 are load-bearing and which were arbitrary.
 
@@ -252,27 +253,70 @@ recent dead rows with their failure reason; `/admin/status` carries the counts.
 (v1.4.4) and the reinstate fix (v1.4.5) depend on. Run the full suite plus those
 two regression tests specifically after this phase.
 
-## Phase 2 — personal homework done
+## Phase 2 — personal homework done (released as `v1.5.0`)
 
-Ready. `homeWorks[].id` is the storage key, and the state is proxy-local per
-Finding 1.
+Implemented and released as `v1.5.0`. `homeWorks[].id` is the storage key, and
+the state is proxy-local per Finding 1.
 
 ```sql
 CREATE TABLE homework_done (
   school TEXT NOT NULL, username TEXT NOT NULL, hw_id INTEGER NOT NULL,
-  done_at DATETIME NOT NULL,
+  done_at INTEGER NOT NULL,
   PRIMARY KEY (school, username, hw_id)
 );
 ```
 
 Enrichment adds `done` and `doneAt` onto each `homeWorks[]` entry by looking up
 `hw_id` for the resolved viewer, alongside the untouched teacher-owned
-`completed`. One new session-authenticated write endpoint, scoped to the session
-user, rejecting any attempt to write another user's rows.
+`completed`.
 
-Prefer reading homework from **`getHomeWork2017`** if the app can use it — it
-returns `{homeWorks, lessonsById}` directly instead of requiring every timetable
-period to be walked. That is a question for the app side, not a blocker.
+### Where the flags appear
+
+Both homework-carrying responses are decorated, so the app gets the same flag
+whichever one it reads:
+
+| Method | Shape | Note |
+|---|---|---|
+| `getHomeWork2017` | `{homeWorks, lessonsById}` | the whole list; the cheaper read |
+| `getPeriodData2017` | per-period `homeWorks[]` | the path `.ics` export already walks (`calendar.go`) |
+
+Correction to the original plan, from Phase 0: homework is **not** present in
+`getTimetable2017`. It arrives only through those two methods, so the timetable
+response is deliberately left untouched.
+
+### Identity rules
+
+- `getHomeWork2017` is not class-scoped, so decorating it needs only the identity
+  upstream itself validated.
+- `getPeriodData2017` **is** in `classScopedMethods`. When an editor's request is
+  rewritten to run as the boosted teacher, the response is the teacher's data, so
+  no personal flag is attached. This is enforced in `jsonrpc_intern.go` by a
+  `rewritten` flag that gates the enrichment, and pinned by
+  `TestHomeworkInternSkippedForBoostedTeacher`.
+- The write endpoint takes the viewer from the session cookie only; a `username`
+  in the body is ignored, so no client can move a write between users.
+
+### Endpoints
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /api/homework/flags` | session | the caller's own flags, sorted by homework id |
+| `POST /api/homework/done` | session | `{"homeworkId":123,"done":true}`; `done:false` clears |
+
+Both return real HTTP status codes (400 on bad input, 401 without a session) so a
+client can branch on status alone. Both are idempotent, so a retry after a dropped
+response is safe.
+
+### Invariants the tests hold
+
+- Upstream `completed`, unknown fields, and sibling keys (`lessonsById`) survive
+  byte-for-byte; only `done`/`doneAt` are added.
+- Ids above 2^53 round-trip exactly (decoding uses `UseNumber`).
+- A malformed response, a wrong-typed `homeWorks`, or an `error` envelope is
+  forwarded as-is; a half-decorated response would be worse than none.
+- Non-object entries inside `homeWorks[]` are preserved rather than filtered out.
+- An enrichment that changes nothing returns the original bytes, so untouched
+  methods are indistinguishable from a pass-through proxy.
 
 ## Phase 3 — absence enrichment + private notes
 
@@ -354,12 +398,17 @@ These are the design, not an afterthought:
 
 Not to be guessed. Decide before the matching phase, not during it:
 
-- **Does the app render homework from the timetable response, or need a dedicated
-  list?** `getHomeWork2017` exists and would serve as that list directly; if the
-  app can use it, Phase 2 grows a read endpoint rather than a write-only one.
+- ~~**Does the app render homework from the timetable response, or need a
+  dedicated list?**~~ Resolved by Phase 2 without needing the app to decide:
+  both `getHomeWork2017` and `getPeriodData2017` are decorated, plus a
+  `GET /api/homework/flags` read endpoint, so every possible client path sees the
+  flag. Homework turns out not to be in `getTimetable2017` at all.
 - **How long should a done-flag or a note live?** Both key on ids of records that
   age out of the snapshot. Without a cleanup rule the tables grow forever, and a
-  reinstated lesson's key may or may not still resolve.
+  reinstated lesson's key may or may not still resolve. Phase 2 ships with **no
+  cleanup**: rows are a few dozen bytes each, a student marks perhaps a few
+  hundred a year, and deleting on a schedule risks discarding an answer the
+  student still wants. Revisit only if the table becomes a measurable cost.
 - **Should subject recovery for absences be best-effort?** Matching an absence's
   time window against timetable periods will miss cancelled or moved lessons. A
   miss should degrade to no subject rather than a wrong one.

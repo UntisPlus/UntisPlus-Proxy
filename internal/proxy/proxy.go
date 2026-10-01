@@ -292,6 +292,10 @@ func (p *Proxy) Handler() http.Handler {
 	mux.HandleFunc("/api/webhooks/", p.handleSubsWebhooks)
 	mux.HandleFunc("/api/ntfy", p.handleSubsNtfy)
 	mux.HandleFunc("/api/ntfy/", p.handleSubsNtfy)
+	// Proxy-local homework completion. Both are session-scoped and take the
+	// viewer from the session only.
+	mux.HandleFunc("GET /api/homework/flags", p.handleHomeworkFlags)
+	mux.HandleFunc("POST /api/homework/done", p.handleHomeworkDone)
 	mux.HandleFunc("/admin", p.handleAdminDashboard)
 	mux.HandleFunc("/admin/login", p.handleAdminLogin)
 	mux.HandleFunc("/admin/", p.handleAdmin)

@@ -94,9 +94,15 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 			// identity, so editors run those requests as the boosted teacher
 			// and keep everything else on their own account.
 			out := body
+			// Once the credentials have been swapped, the response is the
+			// teacher's data rather than the requester's, so it must not be
+			// decorated with the requester's personal fields. Homework flags are
+			// exactly that kind of field.
+			rewritten := false
 			if owner := p.classScopedOwner(school, username, m); owner != nil {
-				if rewritten, err := p.rewriteAuthForOwner(school, body, owner); err == nil {
-					out = rewritten
+				if swapped, err := p.rewriteAuthForOwner(school, body, owner); err == nil {
+					out = swapped
+					rewritten = true
 					log.Printf("[intern] class-scoped %s: %s -> %s", m, username, owner.Username)
 				} else {
 					log.Printf("[intern] class-scoped %s: rewrite for %s failed: %v", m, owner.Username, err)
@@ -106,6 +112,13 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 			if err != nil {
 				p.writeJSONRPCError(w, req.ID, "upstream error", -1)
 				return
+			}
+			if !rewritten && username != "" && homeworkCarryingMethod(m) {
+				// username came from the request but was validated by upstream:
+				// the response only arrived because those credentials are real.
+				// An empty username means the request named nobody, and personal
+				// fields are never attached to a response the proxy cannot attribute.
+				b = p.enrichHomeWorkResponse(b, school, username)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
@@ -130,18 +143,38 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 		// Class-scoped editor data exists upstream only for a teacher
 		// identity; editors run those requests as the boosted teacher.
 		run := user
+		rewritten := false
 		if owner := p.classScopedOwner(school, user.Username, m); owner != nil {
 			run = owner
+			rewritten = true
 		}
 		b, status, err := p.escalatedIntern(school, run, m, body)
 		if err != nil {
 			p.writeJSONRPCError(w, req.ID, "upstream error", -1)
 			return
 		}
+		if !rewritten && homeworkCarryingMethod(m) {
+			// The session, not the request body, decided who this is.
+			b = p.enrichHomeWorkResponse(b, school, user.Username)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write(b)
 	}
+}
+
+// homeworkCarryingMethod reports whether an upstream response can carry homework
+// this proxy decorates.
+//
+// getHomeWork2017 is the list. getPeriodData2017 is per lesson and may include a
+// homeWorks[] of its own, which is the path the .ics export already walks — so
+// decorating both means a client sees the same flag whichever one it reads.
+func homeworkCarryingMethod(method string) bool {
+	switch strings.ToLower(method) {
+	case "gethomework2017", "getperioddata2017":
+		return true
+	}
+	return false
 }
 
 // hasAuthBlock reports whether a jsonrpc_intern.do request body carries the

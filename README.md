@@ -343,6 +343,22 @@ GET  /api/webhooks        /api/webhooks/{id}     # self-service
 GET  /api/ntfy            /api/ntfy/{id}         # self-service
 ```
 
+**Homework completion** (session-authenticated; the viewer comes from the session
+cookie and never from the request body)
+
+```
+GET  /api/homework/flags                  # this student's own flags
+POST /api/homework/done  {"homeworkId":123,"done":true}
+```
+
+The same flags also arrive enriched on the homework the app already reads: every
+`homeWorks[]` entry in a `getHomeWork2017` or `getPeriodData2017` response gains
+`done` (bool) and `doneAt` (RFC3339 or null), next to the untouched teacher-owned
+`completed`. Untis's `completed` is the teacher's mark and is never written
+through the proxy, so a student can answer for themselves without ever overwriting
+a teacher. Writes are idempotent, and an enrichment that changes nothing returns
+the upstream bytes unchanged.
+
 **Calendar**
 
 ```

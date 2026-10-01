@@ -136,6 +136,83 @@ Two details worth getting right in a client:
 For the full before/after period objects, diff `/api/timetable/changes` against
 the class timetable fetched from the upstream JSON-RPC service.
 
+## Homework done flags
+
+Every `homeWorks[]` entry in a **`getHomeWork2017`** or **`getPeriodData2017`**
+response carries two proxy-added fields:
+
+```json
+{
+  "id": 1001,
+  "text": "Mathe S.42",
+  "completed": false,
+  "done": true,
+  "doneAt": "2026-10-01T12:34:56Z"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | upstream homework id; the stable key for writing a flag |
+| `completed` | **teacher-owned**, passed through untouched |
+| `done` | the student's own answer, stored by this proxy |
+| `doneAt` | when the student marked it, RFC3339, or `null` |
+
+`done` is always present on an entry the proxy could key — `false` means "not
+marked done", and is distinct from a missing field, which means the entry had no
+usable `id` and was left exactly as upstream sent it.
+
+`completed` and `done` are different questions. `completed` is the teacher's mark
+on the assignment; `done` is the student's private answer. The proxy never writes
+`completed`, so marking your own work done can never overwrite a teacher.
+
+The two methods differ in what they carry, and both are decorated so the app can
+read whichever is convenient:
+
+- `getHomeWork2017` → `{homeWorks, lessonsById}` — the whole list, one call.
+- `getPeriodData2017` → per-period `homeWorks[]` — the path the `.ics` export
+  already walks.
+
+Homework does **not** appear in `getTimetable2017`; that response is left
+byte-for-byte untouched.
+
+### Reading and writing the flags
+
+The enrichment above means the app may never need the standalone endpoints, but
+they exist for a client that wants the flags without refetching homework (for
+example on app start, to render badges offline):
+
+```
+GET  /api/homework/flags[?school=<name>]
+200  {"school":"testschool","flags":[{"homeworkId":1001,"done":true,
+                                       "doneAt":"2026-10-01T12:34:56Z"}]}
+401  {"error":"not logged in"}
+
+POST /api/homework/done[?school=<name>]   {"homeworkId":1001,"done":true}
+200  {"homeworkId":1001,"done":true,"doneAt":"2026-10-01T12:34:56Z"}
+200  {"homeworkId":1001,"done":false,"doneAt":null}
+400  {"error":"homeworkId and done are required"}
+401  {"error":"not logged in"}
+```
+
+`?school=` is optional and defaults to the server's configured school. Every error
+on these two endpoints is a JSON body with a real status code.
+
+Rules a client can rely on:
+
+- **The session decides the user.** Both endpoints require the `JSESSIONID`
+  cookie; a `username` in the body is ignored. There is no way to write another
+  student's rows.
+- **`done:false` clears** the flag. Both writes are idempotent, so retrying after
+  a dropped response is safe.
+- **Bad input is a real status code**, not a 200 with an error body: 400 for a
+  malformed body, a missing or non-positive `homeworkId`, or a missing `done`.
+- Flags are scoped per school *and* per user, so the same homework id in two
+  schools is two independent flags.
+- When an editor's request was rewritten upstream to run as a boosted teacher
+  (the class-scoped methods), the response is the teacher's data and carries **no**
+  `done` fields at all.
+
 ## Self-service subscriptions (app-integrated config)
 
 `/api/webhooks` and `/api/ntfy` (session required):

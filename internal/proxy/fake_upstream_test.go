@@ -59,6 +59,10 @@ type fakeUpstream struct {
 	// userDataBody, when set, is served for the intern getUserData2017 (key
 	// login) request, e.g. a login answer carrying a full masterData block.
 	userDataBody string
+	// internReply, when set, is served for every other intern method, so tests can
+	// control the exact upstream payload a proxy decision has to cope with (e.g. a
+	// homework list, or an error response).
+	internReply string
 }
 
 func (f *fakeUpstream) handler() http.Handler {
@@ -89,6 +93,7 @@ func (f *fakeUpstream) handler() http.Handler {
 				f.timetableCalls++
 			}
 			tm, tstat := f.timetable, f.timetableStatus
+			reply := f.internReply
 			f.mu.Unlock()
 			if req.Method == "getTimetable2017" && tstat != 0 {
 				w.WriteHeader(tstat)
@@ -97,6 +102,10 @@ func (f *fakeUpstream) handler() http.Handler {
 			}
 			if req.Method == "getTimetable2017" && tm != "" {
 				_, _ = w.Write([]byte(tm))
+				return
+			}
+			if reply != "" {
+				_, _ = w.Write([]byte(reply))
 				return
 			}
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"upstream","result":{}}`))

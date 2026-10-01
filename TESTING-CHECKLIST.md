@@ -1,4 +1,4 @@
-# TESTING-CHECKLIST — full API surface walk-through (v1.4.0)
+# TESTING-CHECKLIST — full API surface walk-through (v1.5.0)
 
 Interactive runbook. Every box gets pushed through live; tick it once the
 expected result holds off this machine. Report anything that deviates.
@@ -187,8 +187,42 @@ Use a throwaway user (`testtier`) — create, then remove at the end.
 - [ ] 12.2 `/admin/pool/otherschool` → isolated (empty ≠ testschool's 5)
 - [ ] 12.3 auto-register-on-first-login is unit-covered (`TestMultiSchoolAutoRegisterAndPoolIsolation`) — no live second school to trigger
 
-## 13. Packaging
-- [ ] 13.1 `/status` reports the published tag, and **not** `dev` — a plain
+## 13. Homework done flags (v1.5.0)
+
+Set `COOKIE=<your JSESSIONID>` and a homework `id` taken from a real
+`getHomeWork2017` response.
+
+- [ ] 13.1 `POST /WebUntis/jsonrpc_intern.do?school=<school>&m=getHomeWork2017`
+      with the session cookie → every `homeWorks[]` entry has `done` and `doneAt`
+- [ ] 13.2 pick an entry with `completed: true` → `done` is `false` and `doneAt`
+      is `null`. The two fields are independent; `completed` is the teacher's
+- [ ] 13.3 `POST /api/homework/done {"homeworkId":<id>,"done":true}` → 200; refetch
+      13.1 → that entry now has `done: true` and a `doneAt`
+- [ ] 13.4 the same entry's `completed` is **unchanged** by 13.3 — the proxy must
+      never write the teacher's field
+- [ ] 13.5 `GET /api/homework/flags` → lists only your flags, sorted by id
+- [ ] 13.6 `POST /api/homework/done {"homeworkId":<id>,"done":false}` → flag
+      disappears from `/api/homework/flags`; the homework entry reads
+      `done: false, doneAt: null`
+- [ ] 13.7 repeat 13.3 and 13.6 twice each → still exactly one row, no duplicates
+- [ ] 13.8 `POST /api/homework/done` with `{"username":"<someone-else>",
+      "homeworkId":<id>,"done":true}` → your own flag is written; the named user's
+      `/api/homework/flags` is unchanged. The body `username` is ignored
+- [ ] 13.9 both endpoints without the cookie → 401
+- [ ] 13.10 `POST /api/homework/done` with `{"done":true}` (no id) and with
+      `{"homeworkId":<id>}` (no `done`) → 400, and nothing is written
+- [ ] 13.11 log in as a second student → their `done` is `false` for homework you
+      marked done (no cross-user leak)
+- [ ] 13.12 `getPeriodData2017` for a period that has homework → its `homeWorks[]`
+      entries carry the same `done`/`doneAt`
+- [ ] 13.13 as an **editor** with a boosted teacher source, open the lesson editor
+      (`getPeriodData2017`) → response contains no `done` fields at all, because
+      that data is the teacher's
+- [ ] 13.14 `GET /api/timetable/stream` and a `getTimetable2017` fetch → byte-identical
+      to upstream; homework flags must not appear there
+
+## 14. Packaging
+- [ ] 14.1 `/status` reports the published tag, and **not** `dev` — a plain
       `go build` reports `dev`, so `dev` means the version was never compiled in
-- [ ] 13.2 `docker images <your-namespace>/untisplus-proxy` shows the release tag +
+- [ ] 14.2 `docker images <your-namespace>/untisplus-proxy` shows the release tag +
       `latest` (pushed)

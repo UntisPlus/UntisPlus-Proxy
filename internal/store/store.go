@@ -274,6 +274,22 @@ func Open(path string) (*Store, error) {
 		ON notification_outbox (state, next_attempt_at, id)`); err != nil {
 		return nil, err
 	}
+	// homework_done is the student's own "I finished this" flag, kept by the
+	// proxy rather than upstream on purpose: Untis' own `completed` field is
+	// the teacher's decision for the whole class, so writing it would either
+	// fail or overwrite a teacher's judgement. Keyed by the upstream homework id
+	// and by viewer, so two students in the same class never see each other's
+	// answers on a shared timetable URL.
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS homework_done (
+		school TEXT NOT NULL,
+		username TEXT NOT NULL,
+		hw_id INTEGER NOT NULL,
+		done_at INTEGER NOT NULL,
+		PRIMARY KEY (school, username, hw_id)
+	)`)
+	if err != nil {
+		return nil, err
+	}
 	// migration: add person_id to class_tokens for older databases
 	if err := addColumnIfMissing(db, "class_tokens", "person_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return nil, err
@@ -2144,6 +2160,65 @@ func (s *Store) RecentDeadOutbox(limit int) ([]OutboxRow, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// SetHomeworkDone records that a student marked a piece of homework done, and
+// returns when it happened.
+//
+// homeworkID is the upstream `homeWorks[].id`, which is stable for the life of
+// the assignment. The viewer is the only identity accepted: callers must pass
+// the resolved session user, never one taken from a request body.
+func (s *Store) SetHomeworkDone(school, username string, homeworkID int64) (time.Time, error) {
+	// Truncated to the second, because that is all the column keeps. The value
+	// that is written and the value that is returned are the same one, so a client
+	// sees the same doneAt right after writing as it does on any later read.
+	now := time.Now().Truncate(time.Second)
+	_, err := s.db.Exec(`INSERT INTO homework_done (school, username, hw_id, done_at) VALUES (?,?,?,?)
+		ON CONFLICT(school, username, hw_id) DO UPDATE SET done_at=excluded.done_at`,
+		school, norm(username), homeworkID, now.Unix())
+	return now, err
+}
+
+// ClearHomeworkDone removes a student's done flag. Clearing an absent flag is
+// not an error: the endpoint is idempotent, so a client that toggles twice or
+// retries after a dropped response converges on the same state.
+func (s *Store) ClearHomeworkDone(school, username string, homeworkID int64) error {
+	_, err := s.db.Exec(`DELETE FROM homework_done WHERE school=? AND username=? AND hw_id=?`,
+		school, norm(username), homeworkID)
+	return err
+}
+
+// HomeworkDone returns the student's done flags keyed by homework id. A missing
+// flag is simply absent from the map, so enrichment can treat absence as false
+// without inventing a row per assignment.
+func (s *Store) HomeworkDone(school, username string) (map[int64]time.Time, error) {
+	rows, err := s.db.Query(`SELECT hw_id, done_at FROM homework_done WHERE school=? AND username=?`,
+		school, norm(username))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]time.Time{}
+	for rows.Next() {
+		var id, at int64
+		if err := rows.Scan(&id, &at); err != nil {
+			return nil, err
+		}
+		out[id] = time.Unix(at, 0)
+	}
+	return out, rows.Err()
+}
+
+// HomeworkDoneCount reports how many flags a student has set. It exists so a
+// caller can assert on the number of stored rows without enumerating them — the
+// idempotency of SetHomeworkDone is a claim about rows, not about a filtered
+// view, so a test that only checked HomeworkDone would pass even if a duplicate
+// row had been written alongside the one it read back.
+func (s *Store) HomeworkDoneCount(school, username string) (int, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM homework_done WHERE school=? AND username=?`,
+		school, norm(username)).Scan(&n)
+	return n, err
 }
 
 // PendingChanges returns the periods modified after the given version, plus the
