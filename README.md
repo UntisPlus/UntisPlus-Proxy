@@ -140,19 +140,19 @@ untisctl perms reset                             # wipe all -> Basic for everyon
 
 `boosted` and `editor` are **per-user only** (no `--global`).
 
-Absence **reads** (own data, `getStudentAbsences2017`) are available to
-**everyone** by default; only the **write/mutation** methods need `editor`.
-Being an **admin of this proxy does not imply editing**: admins manage accounts
-here, they do not write to Untis unless they hold `editor`.
+Absence **reads** (`getStudentAbsences2017`) are available to **everyone** by
+default; only the **write/mutation** methods need `editor`. Being an **admin of
+this proxy does not imply editing**: admins manage accounts here, they do not
+write to Untis unless they hold `editor`.
 
-> A read-only probe against this school (2026-09-30) found
-> `getStudentAbsences2017` **exists and authenticates, but returns an empty list
-> for every student account over a ±180-day window**, and that
-> `getAbsences`, `getAbsences2017`, `getOwnAbsence` and `getPersonAbsence` all
-> return `-32601 Method not found`. The earlier claim that those three were
-> available was wrong. Real absence entries come from `getPeriodData2017`, which
-> upstream only answers with an `absences` array for a **teacher** identity —
-> see "The absence/lesson editor needs a teacher identity" below.
+> `getStudentAbsences2017` takes only `startDate`, `endDate`,
+> `includeExcused` and `includeUnExcused` — **no `id` or `type`**; the student is
+> identified by the auth block. **Omitting the two `include` flags makes it
+> return an empty list with no error**, which reads exactly like "this student has
+> no absences". Probe-verified 2026-10-01: an account with three absences returns
+> 0 without the flags and 3 with them. `getAbsences`, `getAbsences2017`,
+> `getOwnAbsence` and `getPersonAbsence` all return `-32601 Method not found` on
+> this school — an earlier version of this README wrongly listed two of them.
 
 Ask the server what you currently have with `GET /me`:
 
