@@ -287,3 +287,91 @@ func TestClassPeriodsOnDateEmpty(t *testing.T) {
 		t.Errorf("got %d periods, want none", len(got))
 	}
 }
+
+// TestClassPeriodsOnDateOnlyMatchesThatDate: the lookup is by date prefix, so a
+// period on another day must not be returned. An absence on the wrong day then
+// finds no lesson, which is the safe direction — no subject rather than the wrong
+// one.
+func TestClassPeriodsOnDateOnlyMatchesThatDate(t *testing.T) {
+	st := openTestStore(t)
+	if _, err := st.ReplaceClassSnapshot("testschool", 5000, []PeriodRow{
+		{PeriodID: 1, Start: "2026-10-01 10:00", End: "2026-10-01 10:45", Subject: "Mathe"},
+		{PeriodID: 2, Start: "2026-10-02 10:00", End: "2026-10-02 10:45", Subject: "Deutsch"},
+	}, 1, "2000-01-01"); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	first, err := st.ClassPeriodsOnDate("testschool", 5000, "2026-10-01")
+	if err != nil {
+		t.Fatalf("ClassPeriodsOnDate: %v", err)
+	}
+	if len(first) != 1 || first[0].Subject != "Mathe" {
+		t.Errorf("2026-10-01 returned %v, want just Mathe", first)
+	}
+	second, err := st.ClassPeriodsOnDate("testschool", 5000, "2026-10-02")
+	if err != nil {
+		t.Fatalf("ClassPeriodsOnDate: %v", err)
+	}
+	if len(second) != 1 || second[0].Subject != "Deutsch" {
+		t.Errorf("2026-10-02 returned %v, want just Deutsch", second)
+	}
+	none, err := st.ClassPeriodsOnDate("testschool", 5000, "2026-10-03")
+	if err != nil {
+		t.Fatalf("ClassPeriodsOnDate: %v", err)
+	}
+	if len(none) != 0 {
+		t.Errorf("a day with no lessons returned %v, want none", none)
+	}
+}
+
+// TestClassPeriodsOnDateReturnsPeriodsInOrder: an absence spanning several lessons
+// is ambiguous regardless of order, but a stable order keeps the overlap scan
+// deterministic and its outcome reproducible.
+func TestClassPeriodsOnDateReturnsPeriodsInOrder(t *testing.T) {
+	st := openTestStore(t)
+	if _, err := st.ReplaceClassSnapshot("testschool", 5000, []PeriodRow{
+		{PeriodID: 1, Start: "2026-10-01 11:00", End: "2026-10-01 11:45", Subject: "Sport"},
+		{PeriodID: 2, Start: "2026-10-01 08:00", End: "2026-10-01 08:45", Subject: "Deutsch"},
+		{PeriodID: 3, Start: "2026-10-01 10:00", End: "2026-10-01 10:45", Subject: "Mathe"},
+	}, 1, "2000-01-01"); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+	rows, err := st.ClassPeriodsOnDate("testschool", 5000, "2026-10-01")
+	if err != nil {
+		t.Fatalf("ClassPeriodsOnDate: %v", err)
+	}
+	want := []string{"Deutsch", "Mathe", "Sport"}
+	if len(rows) != len(want) {
+		t.Fatalf("got %d periods, want %d", len(rows), len(want))
+	}
+	for i, subject := range want {
+		if rows[i].Subject != subject {
+			t.Errorf("period %d = %q, want %q (ordered by start)", i, rows[i].Subject, subject)
+		}
+	}
+}
+
+// TestAbsenceNotesIgnoresAnUnknownSchoolAndUser: a read that matches nothing must
+// report an empty set, not an error, so a student with no notes sees a normal
+// empty response rather than a failure.
+func TestAbsenceNotesIgnoresAnUnknownSchoolAndUser(t *testing.T) {
+	st := openTestStore(t)
+	if _, err := st.SetAbsenceNote("testschool", "dee", 300001, "mine"); err != nil {
+		t.Fatalf("SetAbsenceNote: %v", err)
+	}
+	for _, tc := range []struct{ school, user string }{
+		{"testschool", "sam"},
+		{"otherschool", "dee"},
+		{"", "dee"},
+		{"testschool", ""},
+	} {
+		notes, err := st.AbsenceNotes(tc.school, tc.user)
+		if err != nil {
+			t.Errorf("AbsenceNotes(%q, %q): %v", tc.school, tc.user, err)
+			continue
+		}
+		if len(notes) != 0 {
+			t.Errorf("AbsenceNotes(%q, %q) returned %v, want none", tc.school, tc.user, notes)
+		}
+	}
+}

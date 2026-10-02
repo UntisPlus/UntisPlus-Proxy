@@ -259,10 +259,17 @@ func (p *Proxy) absenceSubjects(school string, user *store.User, list []jsonObje
 		classID int64
 		date    string
 	}
-	byGroup := map[group][]jsonObject{}
+	// The key is read once, here, and carried alongside the entry. Re-reading it
+	// per group would have to re-check a value already known to be an integer.
+	type entry struct {
+		key int64
+		abs jsonObject
+	}
+	byGroup := map[group][]entry{}
 	order := []group{}
 	for _, abs := range list {
-		if _, ok := jsonID(abs["id"]); !ok {
+		key, ok := jsonID(abs["id"])
+		if !ok {
 			continue
 		}
 		start, _ := abs["startDateTime"].(string)
@@ -281,7 +288,7 @@ func (p *Proxy) absenceSubjects(school string, user *store.User, list []jsonObje
 		if _, seen := byGroup[g]; !seen {
 			order = append(order, g)
 		}
-		byGroup[g] = append(byGroup[g], abs)
+		byGroup[g] = append(byGroup[g], entry{key: key, abs: abs})
 	}
 	for _, g := range order {
 		periods, err := p.store.ClassPeriodsOnDate(school, g.classID, g.date)
@@ -289,13 +296,9 @@ func (p *Proxy) absenceSubjects(school string, user *store.User, list []jsonObje
 			enrichmentFailed("absence periods "+g.date, err)
 			continue
 		}
-		for _, abs := range byGroup[g] {
-			key, ok := jsonID(abs["id"])
-			if !ok {
-				continue
-			}
-			if subject, ok := soleOverlappingSubject(abs, periods); ok {
-				out[key] = subject
+		for _, e := range byGroup[g] {
+			if subject, ok := soleOverlappingSubject(e.abs, periods); ok {
+				out[e.key] = subject
 			}
 		}
 	}
@@ -315,8 +318,10 @@ func soleOverlappingSubject(abs jsonObject, periods []store.PeriodRow) (string, 
 	if !ok {
 		return "", false
 	}
-	// An end before the start would make the window empty and match nothing; treat
-	// it as covering the start instant rather than silently finding no lesson.
+	// A missing, unparseable or inverted end leaves the window empty, and a
+	// half-open empty window overlaps no period — so the absence reports no
+	// subject. That is the honest answer for a malformed range; widening it to
+	// the start instant would name a lesson the record does not claim.
 	end := start
 	if e, ok := parseAbsenceTime(endStr); ok && e.After(start) {
 		end = e
