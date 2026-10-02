@@ -29,20 +29,27 @@ const customEventField = "isCustom"
 // customEventIDSpace keeps synthetic ids from colliding with real period ids.
 //
 // Every surface keys on `id`, and the ICS feed puts the raw id in a UID. A real
-// period id is a small number, so negative ids are free — and being negative
-// rather than large means an id that has accidentally been left at zero, or that
-// arrived from a caller who did not set one, still cannot masquerade as a real
-// lesson. The event's own revision is folded into the low bits so an edited event
-// is a different id, which is what an ICS client needs to treat it as a new
-// VEVENT rather than an unchanged one.
+// period id is a small positive number, so negative ids are free — and being
+// negative rather than large means an id that has accidentally been left at zero,
+// or that arrived from a caller who did not set one, still cannot masquerade as a
+// real lesson.
 const customEventIDSpace = -1_000_000_000
 
-// customEventID derives the synthetic id for one event revision.
+// customEventID derives the synthetic id for one event.
+//
+// The id is derived from the event alone and is the same on every revision, which
+// is what RFC 5545 requires of the UID built from it: a client matches a VEVENT
+// by UID and uses SEQUENCE to decide whether it changed. An id that moved on edit
+// would leave the client holding the old entry under one UID and the new one
+// under another — two entries for one appointment — so the revision travels in
+// SEQUENCE and in customRevision instead, where a client can act on it.
+//
+// Event ids are unique, so no two events can land on the same synthetic id. An
+// earlier scheme also folded in the revision, subtracting a fixed amount per
+// revision, which aliased event 1 at revision 2 onto event 1000001 at revision 1:
+// one id, and one ICS UID, shared by two different events.
 func customEventID(ev store.StudentEvent) int64 {
-	if ev.Revision < 1 {
-		return customEventIDSpace - ev.ID
-	}
-	return customEventIDSpace - ev.ID - (ev.Revision-1)*1_000_000
+	return customEventIDSpace - ev.ID
 }
 
 // customEventPeriods turns stored events into WebUntis-shaped periods so the
@@ -183,12 +190,10 @@ func (p *Proxy) decorateStudentEvents(raw []byte, school, username, from, to str
 	if !validDate(from) || !validDate(to) {
 		return raw
 	}
-	// The range read is half-open, and a response spanning one day collapses to
-	// from == to, which would query an empty range and drop the day's events.
-	if from == to {
-		if t, err := time.ParseInLocation("2006-01-02", from, time.UTC); err == nil {
-			to = t.AddDate(0, 0, 1).Format("2006-01-02")
-		}
+	// from and to are both inclusive dates here, matching upstream's endDate, so a
+	// one-day response is simply from == to and needs no widening.
+	if to < from {
+		return raw
 	}
 	periods := p.studentEventPeriods(school, username, from, to, loc)
 	if len(periods) == 0 {

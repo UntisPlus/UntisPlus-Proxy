@@ -1308,6 +1308,18 @@ func (s *Store) GetUser(username string) (*User, error) {
 		norm(username)))
 }
 
+// GetUserInSchool returns a user only if that user belongs to the named school.
+// GetUser ignores the school, so in a multi-school deployment where two schools
+// have a student of the same name it answers with whichever row came first —
+// enough to reject a valid username, or to accept one that exists only in the
+// other school. A row with no school predates multi-school and is accepted for
+// any school, but only when no row for that school exists.
+func (s *Store) GetUserInSchool(school, username string) (*User, error) {
+	return s.scanUser(s.db.QueryRow(
+		`SELECT `+userCols+` FROM users WHERE username=? AND (school=? OR school='')
+		ORDER BY school='' LIMIT 1`, norm(username), school))
+}
+
 // UserByPersonID returns a user with the given person id, preferring the most
 // recently active one.
 func (s *Store) UserByPersonID(personID int64) (*User, error) {
@@ -2565,12 +2577,18 @@ func scanStudentEvent(row scanner) (StudentEvent, error) {
 	return ev, nil
 }
 
-// StudentEventsForRange returns a student's events whose date lies in [from, to)
-// — half-open, so a caller walking consecutive days does not serve the same
-// event twice at a boundary.
+// StudentEventsForRange returns a student's events whose date lies in [from, to],
+// both ends included.
+//
+// The bounds are inclusive because that is what every caller means: upstream's
+// getTimetable2017 treats endDate as a day to include, the week view asks for a
+// week, and the ICS feed asks for a horizon. A half-open upper bound silently
+// dropped whatever happened on the last day of the window, which is exactly the
+// day a calendar subscription is most likely to be looking at. A caller walking
+// consecutive days therefore passes to = the day before the next one.
 func (s *Store) StudentEventsForRange(school, username, from, to string) ([]StudentEvent, error) {
 	rows, err := s.db.Query(`SELECT `+studentEventCols+` FROM student_events
-		WHERE school=? AND username=? AND date>=? AND date<?
+		WHERE school=? AND username=? AND date>=? AND date<=?
 		ORDER BY date, start_time, event_id`, school, norm(username), from, to)
 	if err != nil {
 		return nil, err
@@ -2589,41 +2607,6 @@ func (s *Store) StudentEvents(school, username string) ([]StudentEvent, error) {
 	}
 	defer rows.Close()
 	return scanStudentEvents(rows)
-}
-
-// ListStudentEvents returns one student's events across every school, for the
-// admin search. A username is unique per proxy instance, so scoping by it alone
-// is enough and the school stays a returned field for display.
-func (s *Store) ListStudentEvents(username string) ([]StudentEvent, error) {
-	rows, err := s.db.Query(`SELECT `+studentEventCols+` FROM student_events
-		WHERE username=? ORDER BY date, start_time, event_id`, norm(username))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanStudentEvents(rows)
-}
-
-// StudentEventCounts reports how many events each student has, for the admin
-// dashboard. A map keyed by "school|username" keeps two students who share a
-// name at different schools apart.
-func (s *Store) StudentEventCounts() (map[string]int, error) {
-	rows, err := s.db.Query(`SELECT school, username, COUNT(*) FROM student_events
-		GROUP BY school, username`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]int{}
-	for rows.Next() {
-		var school, username string
-		var n int
-		if err := rows.Scan(&school, &username, &n); err != nil {
-			return nil, err
-		}
-		out[school+"|"+username] = n
-	}
-	return out, rows.Err()
 }
 
 func scanStudentEvents(rows *sql.Rows) ([]StudentEvent, error) {

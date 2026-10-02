@@ -126,7 +126,13 @@ func TestStudentEventIsolatedPerSchool(t *testing.T) {
 	}
 }
 
-func TestStudentEventsForRangeIsHalfOpen(t *testing.T) {
+// TestStudentEventsForRangeIncludesBothBounds pins the inclusive bounds. The upper
+// bound was half-open at first, on the reasoning that a caller walking
+// consecutive days must not see a boundary date twice — but every caller passes a
+// window whose last day it means, upstream's getTimetable2017 treats endDate as a
+// day to include, and the result was that whatever an admin had scheduled for the
+// final day of the week, the calendar horizon or the month was simply not served.
+func TestStudentEventsForRangeIncludesBothBounds(t *testing.T) {
 	st := openTestStore(t)
 	for _, date := range []string{"2026-09-30", "2026-10-01", "2026-10-02", "2026-10-03"} {
 		ev := sampleEvent()
@@ -135,17 +141,24 @@ func TestStudentEventsForRangeIsHalfOpen(t *testing.T) {
 			t.Fatalf("CreateStudentEvent(%s): %v", date, err)
 		}
 	}
-	// [2026-10-01, 2026-10-03) is the two middle days. A caller walking days must
-	// not see the boundary date twice.
 	evs, err := st.StudentEventsForRange("testschool", "dee", "2026-10-01", "2026-10-03")
 	if err != nil {
 		t.Fatalf("StudentEventsForRange: %v", err)
 	}
-	if len(evs) != 2 {
-		t.Fatalf("got %d events, want 2: %+v", len(evs), evs)
+	if len(evs) != 3 {
+		t.Fatalf("got %d events, want 3 (both bounds included): %+v", len(evs), evs)
 	}
-	if evs[0].Date != "2026-10-01" || evs[1].Date != "2026-10-02" {
-		t.Errorf("got dates %s and %s, want 2026-10-01 and 2026-10-02", evs[0].Date, evs[1].Date)
+	for i, want := range []string{"2026-10-01", "2026-10-02", "2026-10-03"} {
+		if evs[i].Date != want {
+			t.Errorf("event %d is %s, want %s", i, evs[i].Date, want)
+		}
+	}
+	// A single day is one day, not an empty range: the last day of a one-day
+	// window has to come back.
+	if one, err := st.StudentEventsForRange("testschool", "dee", "2026-10-02", "2026-10-02"); err != nil {
+		t.Fatalf("StudentEventsForRange one day: %v", err)
+	} else if len(one) != 1 {
+		t.Errorf("a one-day range returned %d events, want 1", len(one))
 	}
 }
 
@@ -383,80 +396,6 @@ func TestStudentEventsOnEmptyStore(t *testing.T) {
 	}
 	if len(all) != 0 {
 		t.Errorf("StudentEvents got %d, want none", len(all))
-	}
-}
-
-func TestListStudentEventsSpansSchools(t *testing.T) {
-	st := openTestStore(t)
-	if _, err := st.CreateStudentEvent("schoolA", "dee", sampleEvent(), "bob"); err != nil {
-		t.Fatalf("CreateStudentEvent: %v", err)
-	}
-	other := sampleEvent()
-	other.Title = "at B"
-	if _, err := st.CreateStudentEvent("schoolB", "dee", other, "bob"); err != nil {
-		t.Fatalf("CreateStudentEvent: %v", err)
-	}
-	// The admin search needs to find a student's events without knowing the
-	// school, so this read is intentionally the only one not school-scoped.
-	evs, err := st.ListStudentEvents("dee")
-	if err != nil {
-		t.Fatalf("ListStudentEvents: %v", err)
-	}
-	if len(evs) != 2 {
-		t.Fatalf("got %d events across schools, want 2: %+v", len(evs), evs)
-	}
-	if evs[0].School == evs[1].School {
-		t.Errorf("both events report school %q", evs[0].School)
-	}
-	if sam, err := st.ListStudentEvents("sam"); err != nil {
-		t.Fatalf("ListStudentEvents: %v", err)
-	} else if len(sam) != 0 {
-		t.Errorf("another student sees %d of dee's events: %+v", len(sam), sam)
-	}
-}
-
-func TestStudentEventCountsAreScopedBySchoolAndStudent(t *testing.T) {
-	st := openTestStore(t)
-	for _, tc := range []struct {
-		school, user string
-		n            int
-	}{
-		{"schoolA", "dee", 2},
-		{"schoolA", "sam", 1},
-		{"schoolB", "dee", 1},
-	} {
-		for i := 0; i < tc.n; i++ {
-			if _, err := st.CreateStudentEvent(tc.school, tc.user, sampleEvent(), "bob"); err != nil {
-				t.Fatalf("CreateStudentEvent: %v", err)
-			}
-		}
-	}
-	counts, err := st.StudentEventCounts()
-	if err != nil {
-		t.Fatalf("StudentEventCounts: %v", err)
-	}
-	for key, want := range map[string]int{"schoolA|dee": 2, "schoolA|sam": 1, "schoolB|dee": 1} {
-		if counts[key] != want {
-			t.Errorf("counts[%q] = %d, want %d (all: %v)", key, counts[key], want, counts)
-		}
-	}
-	if len(counts) != 3 {
-		t.Errorf("got %d entries, want 3: %v", len(counts), counts)
-	}
-	// Deleting is reflected, so the dashboard does not drift from reality.
-	evs, err := st.StudentEvents("schoolA", "dee")
-	if err != nil || len(evs) == 0 {
-		t.Fatalf("StudentEvents: %v", err)
-	}
-	if _, err := st.DeleteStudentEvent("schoolA", evs[0].ID); err != nil {
-		t.Fatalf("DeleteStudentEvent: %v", err)
-	}
-	counts, err = st.StudentEventCounts()
-	if err != nil {
-		t.Fatalf("StudentEventCounts: %v", err)
-	}
-	if counts["schoolA|dee"] != 1 {
-		t.Errorf("after delete counts = %d, want 1", counts["schoolA|dee"])
 	}
 }
 

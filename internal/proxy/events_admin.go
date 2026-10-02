@@ -246,12 +246,19 @@ func validateStudentEvent(username, date, start, end, title string) string {
 }
 
 func validateEventTimes(start, end string) string {
-	for _, v := range []string{start, end} {
-		if _, err := time.Parse("15:04", v); err != nil {
-			return "startTime and endTime must be HH:MM"
-		}
+	// time.Parse accepts one- or two-digit hours, so "9:00" is valid input and
+	// reaches here. Comparing the strings would then rank "10:00" below "9:00"
+	// and reject a perfectly ordinary 09:00–10:00 event while accepting an
+	// inverted 10:00–09:00 one, so the two values are compared as times.
+	startT, err := time.Parse("15:04", start)
+	if err != nil {
+		return "startTime and endTime must be HH:MM"
 	}
-	if end <= start {
+	endT, err := time.Parse("15:04", end)
+	if err != nil {
+		return "startTime and endTime must be HH:MM"
+	}
+	if !endT.After(startT) {
 		// Rejected rather than silently collapsed at render time: an admin who typed
 		// this has made a mistake, and quietly showing the event at the wrong length
 		// hides it.
@@ -284,10 +291,14 @@ func validateStudentEventPatch(before store.StudentEvent, patch store.StudentEve
 	return validateEventTimes(start, end)
 }
 
-// userExists reports whether the username is known in the school. The events table
-// has no foreign key to users, so this is what keeps a typo from creating an event
-// nobody will ever see.
+// userExists reports whether the username is a student of this school. The events
+// table has no foreign key to users, so this is what keeps a typo from creating
+// an event nobody will ever see.
+//
+// It requires PersonType 5 (student): a teacher or admin account is a known user,
+// but an event filed against one would sit in the table forever, because teacher
+// timetables have no viewer and so are never overlaid.
 func (p *Proxy) userExists(school, username string) bool {
-	u, err := p.store.GetUser(strings.TrimSpace(username))
-	return err == nil && u != nil && (u.School == "" || u.School == school)
+	u, err := p.store.GetUserInSchool(school, strings.TrimSpace(username))
+	return err == nil && u != nil && u.PersonType == 5
 }

@@ -191,3 +191,82 @@ func TestChanges_VersionBumpsOnNewData(t *testing.T) {
 		t.Errorf("changes empty after subject change")
 	}
 }
+
+// TestChanges_NotModifiedForAClientThatNeverSendsSinceEvents guards the 304
+// decision against the event counter.
+//
+// eventVersion was added to this endpoint so an app could notice that one of its
+// own events changed. It was initially folded into the not-modified test as
+// `events == sinceEvents`, with sinceEvents defaulting to 0 when absent — so any
+// student who had at least one event had eventVersion >= 1, could never match 0,
+// and every poll from every existing app build got a full 200 body forever
+// instead of the 304 it had been getting. The class-change tests did not catch it
+// because they seed no events, and a student's eventVersion of 0 still matches.
+//
+// The rule is now that the counter only takes part when the client opted in by
+// sending sinceEvents; a client that never sends it behaves exactly as it did
+// before events existed.
+func TestChanges_NotModifiedForAClientThatNeverSendsSinceEvents(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertUser(&store.User{Username: "dee", Method: "key", ClassID: 5000, PersonType: 5}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	seedChange(t, st, "testschool", 5000, 5, []store.PeriodRow{
+		{PeriodID: 1, Kind: "ADDED", Subject: "M", Start: "2026-09-07 08:00", End: "2026-09-07 09:00"},
+	})
+	// One event, so this student's eventVersion is 1.
+	if _, err := st.CreateStudentEvent("testschool", "dee", store.NewStudentEvent{
+		Date: "2026-10-01", StartTime: "14:00", EndTime: "15:00", Title: "Technik",
+	}, "adm"); err != nil {
+		t.Fatalf("CreateStudentEvent: %v", err)
+	}
+	if v, err := st.StudentEventVersion("testschool", "dee"); err != nil || v != 1 {
+		t.Fatalf("eventVersion = %d (%v), want 1", v, err)
+	}
+
+	rec := changesRequest(t, p, "dee", "classId=5000&since=5")
+	if rec.Code != http.StatusNotModified {
+		t.Errorf("a client that never sends sinceEvents got %d, want 304 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	// And a second poll is still a 304, not a one-off.
+	if rec := changesRequest(t, p, "dee", "classId=5000&since=5"); rec.Code != http.StatusNotModified {
+		t.Errorf("second poll got %d, want 304", rec.Code)
+	}
+}
+
+// TestChanges_EventVersionStillNotifiesAnOptedInClient is the other half: a
+// client that does send sinceEvents must still be told about its own events, or
+// the fix above would have quietly disabled the feature.
+func TestChanges_EventVersionStillNotifiesAnOptedInClient(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertUser(&store.User{Username: "dee", Method: "key", ClassID: 5000, PersonType: 5}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	seedChange(t, st, "testschool", 5000, 5, []store.PeriodRow{
+		{PeriodID: 1, Kind: "ADDED", Subject: "M", Start: "2026-09-07 08:00", End: "2026-09-07 09:00"},
+	})
+	if _, err := st.CreateStudentEvent("testschool", "dee", store.NewStudentEvent{
+		Date: "2026-10-01", StartTime: "14:00", EndTime: "15:00", Title: "Technik",
+	}, "adm"); err != nil {
+		t.Fatalf("CreateStudentEvent: %v", err)
+	}
+
+	// Up to date on both counters: 304.
+	if rec := changesRequest(t, p, "dee", "classId=5000&since=5&sinceEvents=1"); rec.Code != http.StatusNotModified {
+		t.Errorf("opted-in, up-to-date client got %d, want 304", rec.Code)
+	}
+	// A client whose event counter is behind gets 200 even with no class change.
+	if rec := changesRequest(t, p, "dee", "classId=5000&since=5&sinceEvents=0"); rec.Code != http.StatusOK {
+		t.Errorf("opted-in client behind on events got %d, want 200", rec.Code)
+	}
+	// An event appeared since: 200 even though the class has not changed.
+	if _, err := st.CreateStudentEvent("testschool", "dee", store.NewStudentEvent{
+		Date: "2026-10-08", StartTime: "14:00", EndTime: "15:00", Title: "Technik",
+	}, "adm"); err != nil {
+		t.Fatalf("second CreateStudentEvent: %v", err)
+	}
+	if rec := changesRequest(t, p, "dee", "classId=5000&since=5&sinceEvents=1"); rec.Code != http.StatusOK {
+		t.Errorf("a new event produced %d, want 200", rec.Code)
+	}
+}

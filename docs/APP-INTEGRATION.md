@@ -337,15 +337,22 @@ timetable is served, and nowhere else.
 | Surface | Carries the student's events |
 |---|---|
 | `getTimetable2017`, `params[0].type = "STUDENT"`, your own `id` | yes |
-| `getTimetable2017`, `CLASS` / `TEACHER` / `ROOM` / `SUBJECT` | **never** |
+| `getTimetable2017`, `params[0].type = "CLASS"`, **your own** `classId` | yes |
+| `getTimetable2017`, `CLASS` for any other class, or `TEACHER` / `ROOM` / `SUBJECT` | **never** |
 | `/api/calendar/{student-token}.ics` | yes |
 | `/api/calendar/{class|teacher|room|subject-token}.ics` | **never** |
 | `/week/{student-token}` | yes |
 
-The app asks for `STUDENT` with its own id, so this is the path that matters in
-practice. Events are *appended to* `result.timetable.periods` — every upstream
-field, including ones added after this proxy was written, is passed through
-untouched.
+Both self paths are covered, because which one a client uses to ask for its own
+timetable is a fact about the client, not something the proxy can assume: it
+depends on the app version, and a client that asked for `STUDENT` while the proxy
+only decorated `CLASS` would get a timetable with the events silently missing.
+Both are keyed by the session user, so a classmate asking for the same class
+receives *their own* events and never anyone else's — the response differs per
+viewer, while the underlying class data does not.
+
+Events are *appended to* `result.timetable.periods` — every upstream field,
+including ones added after this proxy was written, is passed through untouched.
 
 ### The shape
 
@@ -380,9 +387,11 @@ Two things to know about `id`:
 
 - It is **negative**. Real period ids are small positive numbers, so the two
   cannot collide and an event cannot overwrite a lesson in a client's map.
-- It **changes when the event is edited**: it folds in the event's `revision`, so
-  a client keying on `id` sees an edit as a different entry instead of a stale
-  one.
+- It **does not change when the event is edited**. It identifies the event, and
+  the revision is reported separately in `customRevision` — which is also what the
+  `.ics` `SEQUENCE` is built from. A client that replaces periods on every fetch
+  needs a stable key to do that; an id that moved on every edit would leave the
+  client unsure whether it had one event or two.
 
 `elements` is empty because an event carries the text an admin typed, not ids that
 resolve through master data. Render `customTitle`, `subject`, `teacher`, `room`
@@ -412,7 +421,9 @@ END:VEVENT
 ```
 
 - `UID` is prefixed `custom-`, so it can never be mistaken for a real lesson's UID
-  (which is the bare period id).
+  (which is the bare period id). It identifies the event and stays the same
+  across edits, as RFC 5545 requires — a UID that moved would leave the old entry
+  cached and add a second one.
 - `SEQUENCE` is the event's revision, so **editing an event raises it** and a
   client replaces its cached copy.
 - `TRANSP:TRANSPARENT` marks it as not occupying the time. A real lesson is

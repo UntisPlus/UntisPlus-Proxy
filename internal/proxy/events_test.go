@@ -10,6 +10,7 @@ package proxy
 import (
 	"encoding/json"
 	"fmt"
+	"net/http/httptest"
 	"sort"
 	"strings"
 	"testing"
@@ -108,7 +109,7 @@ func TestCustomEventIDNeverCollidesWithAPeriod(t *testing.T) {
 	}
 }
 
-func TestCustomEventIDChangesWithRevision(t *testing.T) {
+func TestCustomEventIDIsStableAcrossRevisions(t *testing.T) {
 	st := eventStore(t)
 	ev := seedEvent(t, st, "dee", testEvent())
 	first := customEventPeriods([]store.StudentEvent{ev}, berlin)[0]["id"]
@@ -117,12 +118,43 @@ func TestCustomEventIDChangesWithRevision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpdateStudentEvent: %v", err)
 	}
-	second := customEventPeriods([]store.StudentEvent{updated}, berlin)[0]["id"]
-	// An ICS client matches a VEVENT by UID. If an edit kept the UID the client
-	// would keep the old copy and never show the new room.
-	if first == second {
-		t.Errorf("the id stayed %v across a revision bump, so an edited event is indistinguishable from the original", first)
+	periods := customEventPeriods([]store.StudentEvent{updated}, berlin)
+	second := periods[0]["id"]
+	// An ICS client matches a VEVENT by UID and compares SEQUENCE to decide
+	// whether it changed. So the id — which becomes the UID — has to stay put
+	// across an edit and the revision has to move: a UID that moved would leave
+	// the old entry cached under one UID and the new one under another, which is
+	// two entries for one appointment.
+	if first != second {
+		t.Errorf("the id moved from %v to %v across a revision bump, so the client sees a second entry instead of an updated one", first, second)
 	}
+	if got := periods[0]["customRevision"]; got != int64(2) {
+		t.Errorf("customRevision = %v, want 2, so a client can tell the entry changed", got)
+	}
+	if uid1, uid2 := icsUIDOf(t, first), icsUIDOf(t, second); uid1 != uid2 {
+		t.Errorf("the ICS UID changed across an edit: %s -> %s", uid1, uid2)
+	}
+}
+
+// icsUIDOf renders the UID the ICS feed would emit for a synthetic id.
+func icsUIDOf(t *testing.T, id any) string {
+	t.Helper()
+	pd := map[string]any{
+		"id":             id,
+		"customTitle":    "Technik",
+		"customRevision": int64(1),
+		"startDateTime":  "2026-10-01T14:00:00+02:00",
+		"endDateTime":    "2026-10-01T15:00:00+02:00",
+		"is":             true,
+	}
+	out := buildCustomICSVEVENT(pd, "Europe/Berlin", time.Unix(1790000000, 0))
+	for _, line := range strings.Split(out, "\r\n") {
+		if strings.HasPrefix(line, "UID:") {
+			return line
+		}
+	}
+	t.Fatalf("no UID in rendered event:\n%s", out)
+	return ""
 }
 
 func TestCustomEventIDsAreUnique(t *testing.T) {
@@ -734,4 +766,186 @@ func TestEventTimesAreWallClockInTheSchoolZone(t *testing.T) {
 	if h := start.In(berlin).Hour(); h != 14 {
 		t.Errorf("the event reads as %02d:00 in the school zone, want 14:00", h)
 	}
+}
+
+// TestEventsReachTheAppThroughBothSelfTimetablePaths drives getTimetable2017
+// through the real handler, for both ways a client can ask for its own
+// timetable, and checks the one way it must not.
+//
+// The feature was originally attached only to the `type=STUDENT` branch, on the
+// documented belief that "the app asks for STUDENT with its own id". That belief
+// is not a property the proxy can verify: it is a claim about client behaviour,
+// and the repo held no capture of what the app actually sends. If the app asks
+// for its own timetable as `type=CLASS` — its class, which the existing
+// self-class branch explicitly serves — then the one surface the feature was
+// announced for would have come back empty, and every test would still have
+// passed because they all called decorateStudentEvents directly.
+//
+// So both self paths are decorated, keyed by the session user, and this test
+// pins all three cases.
+func TestEventsReachTheAppThroughBothSelfTimetablePaths(t *testing.T) {
+	st := eventStore(t)
+	ev := testEvent()
+	ev.Date = "2026-10-05"
+	seedEvent(t, st, "dee", ev)
+
+	fu := &fakeUpstream{}
+	p := newFakeProxyUpstreamWithStore(t, fu, st)
+	fu.setTimetable(t, []map[string]any{realPeriodJSON("2026-10-05")})
+	// dee is a student in class 5000 with person id 7; sam is a classmate.
+	seedSessionUser(t, st, "dee", 5, 7, 5000)
+	seedSessionUser(t, st, "sam", 5, 8, 5000)
+
+	for _, tc := range []struct {
+		name      string
+		user      string
+		id        int64
+		typ       string
+		wantEvent bool
+		why       string
+	}{
+		{"own record as STUDENT", "dee", 7, "STUDENT", true, "the student asking for their own record"},
+		{"own class as CLASS", "dee", 5000, "CLASS", true, "the same student asking for their own class instead"},
+		{"classmate's class", "sam", 5000, "CLASS", false, "a classmate asking for the same class must see no event"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := internReq(t, p, "getTimetable2017", tc.user,
+				internBody("getTimetable2017", ttParam(tc.id, tc.typ, "2026-10-05", "2026-10-11", tc.user)))
+			periods := periodsOfResponse(t, rec)
+			got := 0
+			for _, pd := range periods {
+				if isCustomPeriod(pd) {
+					got++
+				}
+			}
+			if len(periods) == 0 {
+				t.Fatalf("no periods decoded: %s", rec.Body.String())
+			}
+			if tc.wantEvent && got != 1 {
+				t.Errorf("%s: got %d custom periods, want 1: %s", tc.why, got, rec.Body.String())
+			}
+			if !tc.wantEvent && got != 0 {
+				t.Errorf("%s: got %d custom periods, want none: %s", tc.why, got, rec.Body.String())
+			}
+		})
+	}
+}
+
+// periodsOfResponse decodes result.timetable.periods from a JSON-RPC response,
+// failing the test if the response is an error carrier.
+func periodsOfResponse(t *testing.T, rec *httptest.ResponseRecorder) []map[string]any {
+	t.Helper()
+	var parsed struct {
+		Result struct {
+			Timetable struct {
+				Periods []map[string]any `json:"periods"`
+			} `json:"timetable"`
+		} `json:"result"`
+		Error *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("response is not JSON: %v (%s)", err, rec.Body.String())
+	}
+	if parsed.Error != nil {
+		t.Fatalf("json-rpc error %d %q: %s", parsed.Error.Code, parsed.Error.Message, rec.Body.String())
+	}
+	return parsed.Result.Timetable.Periods
+}
+
+// TestCustomEventIDsAreDistinctAcrossEventsAndRevisions pins the synthetic id
+// scheme against aliasing.
+//
+// The first scheme subtracted a fixed amount per revision: id = -(1e9 + eventID +
+// (revision-1)*1e6). That makes event 1 at revision 2 and event 1000001 at
+// revision 1 the same id, and since the ICS UID is built from this id, two
+// different events in one school would share a UID and one would silently
+// replace the other in a client's calendar. It needed a school with a million
+// events to show up, which is exactly the kind of bug that is found years later
+// by someone who has no idea why the number was there.
+//
+// The scheme now encodes the pair as eventID*stride + (revision-1), which is
+// distinct for every pair a timetable can produce.
+func TestCustomEventIDsAreDistinctAcrossEventsAndRevisions(t *testing.T) {
+	id := func(evID, rev int64) int64 {
+		return customEventID(store.StudentEvent{ID: evID, Revision: rev})
+	}
+	seen := map[int64]string{}
+	for evID := int64(1); evID <= 3; evID++ {
+		for rev := int64(1); rev <= 3; rev++ {
+			got := id(evID, rev)
+			label := fmt.Sprintf("event %d revision %d", evID, rev)
+			// Distinct events must never share an id; the same event across
+			// revisions must always share one.
+			key := fmt.Sprintf("%d", evID)
+			if rev == 1 {
+				if prev, dup := seen[got]; dup {
+					t.Errorf("%s and %s share the synthetic id %d", label, prev, got)
+				}
+				seen[got] = label
+			}
+			if first := id(evID, 1); got != first {
+				t.Errorf("%s has id %d, want the stable %d", label, got, first)
+			}
+			_ = key
+			if got >= 0 {
+				t.Errorf("%s produced the non-negative id %d, which could pass for a real period", label, got)
+			}
+		}
+	}
+	// The pair that aliased under the old scheme.
+	if a, b := id(1, 2), id(1000001, 1); a == b {
+		t.Errorf("event 1 rev 2 and event 1000001 rev 1 still share id %d", a)
+	}
+}
+
+// TestStudentEventsServeTheLastDayOfTheRange is the range-bound regression at the
+// surface that matters: an event an admin put on the final day of the requested
+// window has to be served. The window's last day is what a calendar subscription
+// and a week view both ask about, and the half-open read dropped it.
+func TestStudentEventsServeTheLastDayOfTheRange(t *testing.T) {
+	p, st := eventProxy(t)
+	for _, date := range []string{"2026-10-01", "2026-10-02", "2026-10-03"} {
+		ev := testEvent()
+		ev.Date = date
+		seedEvent(t, st, "dee", ev)
+	}
+	raw := timetableResponse(realPeriodJSON("2026-10-01"))
+	for _, tc := range []struct {
+		from, to string
+		want     int
+	}{
+		{"2026-10-01", "2026-10-03", 3},
+		{"2026-10-01", "2026-10-02", 2},
+		{"2026-10-03", "2026-10-03", 1},
+	} {
+		got := p.decorateStudentEvents(raw, "testschool", "dee", tc.from, tc.to)
+		periods := periodsFromTimetable(t, got)
+		custom := 0
+		for _, pd := range periods {
+			if isCustomPeriod(pd) {
+				custom++
+			}
+		}
+		if custom != tc.want {
+			t.Errorf("%s..%s served %d events, want %d", tc.from, tc.to, custom, tc.want)
+		}
+	}
+}
+
+func periodsFromTimetable(t *testing.T, raw []byte) []map[string]any {
+	t.Helper()
+	var parsed struct {
+		Result struct {
+			Timetable struct {
+				Periods []map[string]any `json:"periods"`
+			} `json:"timetable"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
+	return parsed.Result.Timetable.Periods
 }

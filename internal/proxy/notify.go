@@ -782,8 +782,16 @@ func (p *Proxy) handleTimetableChanges(w http.ResponseWriter, r *http.Request) {
 		p.writeJSON(w, map[string]any{"error": "store error"})
 		return
 	}
-	sinceEvents, _ := strconv.ParseInt(r.URL.Query().Get("sinceEvents"), 10, 64)
-	if len(rows) == 0 && cur == since && events == sinceEvents {
+	sinceEvents, sinceEventsErr := strconv.ParseInt(r.URL.Query().Get("sinceEvents"), 10, 64)
+	// eventVersion takes part in the 304 decision only when the client opted in by
+	// sending sinceEvents. A client that never sends it has an unknown last-seen
+	// value, and defaulting it to 0 would make events != 0 forever, answering
+	// every poll with a full 200 body to an app that had been getting 304s.
+	lastSeenEvents := events
+	if sinceEventsErr == nil {
+		lastSeenEvents = sinceEvents
+	}
+	if len(rows) == 0 && cur == since && lastSeenEvents == events {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}

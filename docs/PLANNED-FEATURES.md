@@ -23,7 +23,7 @@ bug and independent of the features.
 | Technik visibility | Everywhere a student's timetable is served, **including `.ics`** |
 | Delivery-loss fix | Bundled into this plan, but released first and separately |
 | Homework event recurrence | Not applicable — specific dates, one row each |
-| App fetch style | `STUDENT` (personal), not `CLASS` |
+| App fetch style | Both self paths (`STUDENT` with own id, `CLASS` with own classId) are decorated — the client's choice is not something the proxy can assume |
 
 ## Phase 0 results (probe complete)
 

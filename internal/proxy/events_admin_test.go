@@ -8,6 +8,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -373,5 +374,88 @@ func TestAdminDashboardOffersEventManagement(t *testing.T) {
 		if !strings.Contains(adminDashboardHTML, want) {
 			t.Errorf("the admin dashboard does not reference %q", want)
 		}
+	}
+}
+
+// TestValidateEventTimesComparesTimesNotStrings pins the ordering rule for an
+// event's times.
+//
+// time.Parse("15:04", ...) accepts a one-digit hour, so "9:00" is valid input and
+// reaches this check. The check then compared the two strings, which put
+// "10:00" below "9:00": a plain 09:00–10:00 Technik slot was refused with
+// "endTime must be after startTime", while an inverted 10:00–09:00 one was
+// accepted and stored.
+func TestValidateEventTimesComparesTimesNotStrings(t *testing.T) {
+	for _, tc := range []struct {
+		start, end, want string
+	}{
+		{"09:00", "10:00", ""},
+		{"9:00", "10:00", ""},
+		{"9:00", "10:30", ""},
+		{"9:00", "9:30", ""},
+		{"14:00", "15:00", ""},
+		{"10:00", "9:00", "endTime must be after startTime"},
+		{"9:00", "9:00", "endTime must be after startTime"},
+		{"9:00", "8:00", "endTime must be after startTime"},
+		{"9:00", "10:0", "startTime and endTime must be HH:MM"},
+		{"9:00", "noon", "startTime and endTime must be HH:MM"},
+	} {
+		if got := validateEventTimes(tc.start, tc.end); got != tc.want {
+			t.Errorf("validateEventTimes(%q, %q) = %q, want %q", tc.start, tc.end, got, tc.want)
+		}
+	}
+}
+
+// TestAdminEventTimesAcceptUnpaddedHours walks the same case through the API, so
+// the fix is pinned where an admin's client actually hits it.
+func TestAdminEventTimesAcceptUnpaddedHours(t *testing.T) {
+	p, _ := adminEventProxy(t)
+	rec := doAdmin(t, p, "adm", http.MethodPost, "/api/admin/events",
+		`{"username":"dee","date":"2026-10-01","startTime":"9:00","endTime":"10:00","title":"Technik"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("a 09:00–10:00 event was refused: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = doAdmin(t, p, "adm", http.MethodPost, "/api/admin/events",
+		`{"username":"dee","date":"2026-10-01","startTime":"10:00","endTime":"9:00","title":"Backwards"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("an event ending before it starts was accepted: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestAdminEventsRequireAStudentOfThatSchool covers the target check.
+//
+// The events table has no foreign key to users, so this check is the only thing
+// between a typo and a row nobody will ever see. It originally accepted any
+// known username: a teacher account, or a student of a *different* school with
+// the same username, produced an event that no surface could ever serve.
+func TestAdminEventsRequireAStudentOfThatSchool(t *testing.T) {
+	p, st := adminEventProxy(t)
+	if err := st.UpsertUser(&store.User{
+		Username: "teacher", School: "testschool", PersonType: 4, PersonID: 42, ClassID: 0,
+	}); err != nil {
+		t.Fatalf("seed teacher: %v", err)
+	}
+	if err := st.UpsertUser(&store.User{
+		Username: "edna", School: "otherschool", PersonType: 5, PersonID: 43, ClassID: 6000,
+	}); err != nil {
+		t.Fatalf("seed other-school student: %v", err)
+	}
+
+	for _, tc := range []struct{ user, why string }{
+		{"teacher", "a teacher account is a known user but has no per-student timetable"},
+		{"edna", "the username exists, but in another school"},
+		{"nosuchuser", "the username does not exist"},
+	} {
+		rec := doAdmin(t, p, "adm", http.MethodPost, "/api/admin/events",
+			fmt.Sprintf(`{"username":%q,"date":"2026-10-01","startTime":"14:00","endTime":"15:00","title":"Technik"}`, tc.user))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s (%s): got %d, want 404", tc.user, tc.why, rec.Code)
+		}
+	}
+	// The ordinary case still works.
+	rec := doAdmin(t, p, "adm", http.MethodPost, "/api/admin/events",
+		`{"username":"dee","date":"2026-10-01","startTime":"14:00","endTime":"15:00","title":"Technik"}`)
+	if rec.Code != http.StatusOK {
+		t.Errorf("a real student was refused: %d %s", rec.Code, rec.Body.String())
 	}
 }

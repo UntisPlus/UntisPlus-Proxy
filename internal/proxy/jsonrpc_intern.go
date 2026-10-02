@@ -645,8 +645,7 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 			w.WriteHeader(status)
 			_, _ = w.Write(b)
 			return
-		}
-		// Another student's id: resolve it to their class and serve it via
+		} // Another student's id: resolve it to their class and serve it via
 		// the pool, which requires a replayable owner.
 		u, err := p.store.UserByPersonID(pr.ID)
 		if err == nil && u != nil {
@@ -664,6 +663,16 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 				return
 			}
 			b = p.viewerBody(requesterName, b)
+			// A client asking for its own class is asking for its own timetable —
+			// which class of its own it named is not a privacy question, and the
+			// response it gets is its own either way. Events are therefore attached
+			// here as well as on the STUDENT branch, keyed by the session user and
+			// never by anything in the request. Without this the feature would depend
+			// on the client choosing type=STUDENT over type=CLASS for its own
+			// timetable, which is an assumption about client behaviour, not a fact
+			// the proxy can rely on: a classmate in the same class sends the same
+			// request and gets their own events, never anyone else's.
+			b = p.decorateStudentEvents(b, school, requesterName, pr.StartDate, pr.EndDate)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = w.Write(b)
