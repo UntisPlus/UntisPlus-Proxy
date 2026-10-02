@@ -306,6 +306,59 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// student_events is one hand-authored event on one student's schedule, created
+	// by an admin. Upstream has no such concept — a Technik appointment, a study
+	// group, a doctor's slot — so the row is entirely proxy-owned.
+	//
+	// Keyed by viewer and never by class: these events belong to a person, and a
+	// class token has no viewer, so a class-wide feed must not show them. Two
+	// students on the same timetable therefore never see each other's events, even
+	// though the underlying lessons are shared.
+	//
+	// revision is a per-row counter rather than reusing updated_at, because an .ics
+	// client compares SEQUENCE to decide whether a VEVENT changed, and two edits
+	// within the same second would otherwise be indistinguishable to it.
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS student_events (
+		event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+		school TEXT NOT NULL,
+		username TEXT NOT NULL,
+		date TEXT NOT NULL,
+		start_time TEXT NOT NULL,
+		end_time TEXT NOT NULL,
+		title TEXT NOT NULL,
+		subject TEXT NOT NULL DEFAULT '',
+		room TEXT NOT NULL DEFAULT '',
+		teacher TEXT NOT NULL DEFAULT '',
+		description TEXT NOT NULL DEFAULT '',
+		created_by TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL,
+		revision INTEGER NOT NULL DEFAULT 1
+	)`)
+	if err != nil {
+		return nil, err
+	}
+	// The range read is the only query that matters for serving, and it filters on
+	// school, username and date.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS student_events_range
+		ON student_events (school, username, date)`); err != nil {
+		return nil, err
+	}
+	// A per-student counter, bumped on every edit. A poller cannot derive this from
+	// the events themselves: a delete leaves no row behind, so a max(updated_at)
+	// would not move and a client would never learn the event is gone. It is keyed
+	// by school and username rather than shared through the class outbox, because a
+	// class-visible counter would tell a classmate that someone else's schedule
+	// changed.
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS student_event_versions (
+		school TEXT NOT NULL,
+		username TEXT NOT NULL,
+		version INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (school, username)
+	)`)
+	if err != nil {
+		return nil, err
+	}
 	// migration: add person_id to class_tokens for older databases
 	if err := addColumnIfMissing(db, "class_tokens", "person_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return nil, err
@@ -2290,6 +2343,306 @@ func (s *Store) AbsenceNotes(school, username string) (map[int64]AbsenceNote, er
 	}
 	return out, rows.Err()
 }
+
+// StudentEvent is one hand-authored event on a student's own schedule.
+type StudentEvent struct {
+	ID          int64
+	School      string
+	Username    string
+	Date        string // YYYY-MM-DD, the only date form stored
+	StartTime   string // HH:MM
+	EndTime     string // HH:MM
+	Title       string
+	Subject     string
+	Room        string
+	Teacher     string
+	Description string
+	CreatedBy   string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Revision    int64
+}
+
+// NewStudentEvent is the writable subset of a StudentEvent. The caller supplies
+// the student, and the store owns the identity, the timestamps and the revision.
+type NewStudentEvent struct {
+	Date        string
+	StartTime   string
+	EndTime     string
+	Title       string
+	Subject     string
+	Room        string
+	Teacher     string
+	Description string
+}
+
+// CreateStudentEvent inserts an event for a student and returns it as stored,
+// including the id and revision the caller did not know.
+func (s *Store) CreateStudentEvent(school, username string, ev NewStudentEvent, createdBy string) (StudentEvent, error) {
+	now := time.Now().Truncate(time.Second)
+	res, err := s.db.Exec(`INSERT INTO student_events
+		(school, username, date, start_time, end_time, title, subject, room, teacher,
+		 description, created_by, created_at, updated_at, revision)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1)`,
+		school, norm(username), ev.Date, ev.StartTime, ev.EndTime, ev.Title,
+		ev.Subject, ev.Room, ev.Teacher, ev.Description, norm(createdBy),
+		now.Unix(), now.Unix())
+	if err != nil {
+		return StudentEvent{}, err
+	}
+	if err := s.BumpStudentEventVersion(school, username); err != nil {
+		return StudentEvent{}, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return StudentEvent{}, err
+	}
+	return StudentEvent{
+		ID: id, School: school, Username: norm(username),
+		Date: ev.Date, StartTime: ev.StartTime, EndTime: ev.EndTime, Title: ev.Title,
+		Subject: ev.Subject, Room: ev.Room, Teacher: ev.Teacher, Description: ev.Description,
+		CreatedBy: norm(createdBy), CreatedAt: now, UpdatedAt: now, Revision: 1,
+	}, nil
+}
+
+// StudentEventPatch is a partial edit. A nil field is left alone, which is what
+// makes "change only the room" possible without the caller reading the row first
+// and racing another admin.
+type StudentEventPatch struct {
+	Date        *string
+	StartTime   *string
+	EndTime     *string
+	Title       *string
+	Subject     *string
+	Room        *string
+	Teacher     *string
+	Description *string
+}
+
+// UpdateStudentEvent applies a partial edit and bumps the revision, so a client
+// holding the event can tell it changed even if both edits land in one second.
+//
+// It reports whether a row matched. A missing id is not an error: an admin
+// deleting an event twice, or editing one another admin just deleted, converges
+// on the same outcome as editing one that is there.
+func (s *Store) UpdateStudentEvent(school string, id int64, patch StudentEventPatch) (StudentEvent, bool, error) {
+	before, found, err := s.StudentEventByID(school, id)
+	if err != nil || !found {
+		return StudentEvent{}, found, err
+	}
+	// Applied by hand rather than built from a map so every column is named once
+	// and a field absent from the patch cannot be overwritten with a zero value.
+	date, start, end := before.Date, before.StartTime, before.EndTime
+	title, subject, room := before.Title, before.Subject, before.Room
+	teacher, description := before.Teacher, before.Description
+	if patch.Date != nil {
+		date = *patch.Date
+	}
+	if patch.StartTime != nil {
+		start = *patch.StartTime
+	}
+	if patch.EndTime != nil {
+		end = *patch.EndTime
+	}
+	if patch.Title != nil {
+		title = *patch.Title
+	}
+	if patch.Subject != nil {
+		subject = *patch.Subject
+	}
+	if patch.Room != nil {
+		room = *patch.Room
+	}
+	if patch.Teacher != nil {
+		teacher = *patch.Teacher
+	}
+	if patch.Description != nil {
+		description = *patch.Description
+	}
+	now := time.Now().Truncate(time.Second)
+	_, err = s.db.Exec(`UPDATE student_events SET
+			date=?, start_time=?, end_time=?, title=?, subject=?, room=?, teacher=?,
+			description=?, updated_at=?, revision=revision+1
+		WHERE school=? AND event_id=?`,
+		date, start, end, title, subject, room, teacher, description, now.Unix(), school, id)
+	if err != nil {
+		return StudentEvent{}, false, err
+	}
+	if err := s.BumpStudentEventVersion(school, before.Username); err != nil {
+		return StudentEvent{}, false, err
+	}
+	before.Date, before.StartTime, before.EndTime = date, start, end
+	before.Title, before.Subject, before.Room = title, subject, room
+	before.Teacher, before.Description = teacher, description
+	before.UpdatedAt = now
+	before.Revision++
+	return before, true, nil
+}
+
+// DeleteStudentEvent removes an event and reports whether a row was there.
+// Deleting an absent event is not an error, so a retry after a lost response
+// converges rather than failing.
+func (s *Store) DeleteStudentEvent(school string, id int64) (bool, error) {
+	// The username is read before the delete: afterwards the row that names the
+	// student whose counter needs bumping is gone.
+	var username string
+	err := s.db.QueryRow(`SELECT username FROM student_events WHERE school=? AND event_id=?`, school, id).Scan(&username)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	res, err := s.db.Exec(`DELETE FROM student_events WHERE school=? AND event_id=?`, school, id)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil || n == 0 {
+		return n > 0, err
+	}
+	if err := s.BumpStudentEventVersion(school, username); err != nil {
+		return true, err
+	}
+	return true, nil
+}
+
+// BumpStudentEventVersion raises one student's event counter and returns the new
+// value. Called on every admin edit so the student's connected clients can be told
+// to refresh.
+func (s *Store) BumpStudentEventVersion(school, username string) error {
+	_, err := s.db.Exec(`INSERT INTO student_event_versions (school, username, version)
+		VALUES (?,?,1)
+		ON CONFLICT(school, username) DO UPDATE SET version=version+1`,
+		school, norm(username))
+	return err
+}
+
+// StudentEventVersion returns the student's current event counter. A student who
+// has never had an event reports 0, which is the same value a client would have
+// stored from an empty timeline, so no change looks like no change.
+func (s *Store) StudentEventVersion(school, username string) (int64, error) {
+	var v int64
+	err := s.db.QueryRow(`SELECT version FROM student_event_versions WHERE school=? AND username=?`,
+		school, norm(username)).Scan(&v)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return v, nil
+}
+
+// StudentEventByID returns one event scoped to a school. The school is part of
+// the lookup rather than a returned field to check afterwards, so a caller cannot
+// accidentally act on an id belonging to another school.
+func (s *Store) StudentEventByID(school string, id int64) (StudentEvent, bool, error) {
+	row := s.db.QueryRow(`SELECT `+studentEventCols+` FROM student_events WHERE school=? AND event_id=?`, school, id)
+	ev, err := scanStudentEvent(row)
+	if err == sql.ErrNoRows {
+		return StudentEvent{}, false, nil
+	}
+	return ev, err == nil, err
+}
+
+const studentEventCols = `event_id, school, username, date, start_time, end_time, title,
+	subject, room, teacher, description, created_by, created_at, updated_at, revision`
+
+// scanner is satisfied by both *sql.Row and *sql.Rows.
+type scanner interface{ Scan(dest ...any) error }
+
+func scanStudentEvent(row scanner) (StudentEvent, error) {
+	var ev StudentEvent
+	var created, updated int64
+	if err := row.Scan(&ev.ID, &ev.School, &ev.Username, &ev.Date, &ev.StartTime, &ev.EndTime,
+		&ev.Title, &ev.Subject, &ev.Room, &ev.Teacher, &ev.Description, &ev.CreatedBy,
+		&created, &updated, &ev.Revision); err != nil {
+		return StudentEvent{}, err
+	}
+	ev.CreatedAt = time.Unix(created, 0)
+	ev.UpdatedAt = time.Unix(updated, 0)
+	return ev, nil
+}
+
+// StudentEventsForRange returns a student's events whose date lies in [from, to)
+// — half-open, so a caller walking consecutive days does not serve the same
+// event twice at a boundary.
+func (s *Store) StudentEventsForRange(school, username, from, to string) ([]StudentEvent, error) {
+	rows, err := s.db.Query(`SELECT `+studentEventCols+` FROM student_events
+		WHERE school=? AND username=? AND date>=? AND date<?
+		ORDER BY date, start_time, event_id`, school, norm(username), from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanStudentEvents(rows)
+}
+
+// StudentEvents returns every event for a student, for the admin listing. Unlike
+// the range read this is not bounded, so it is only for administration.
+func (s *Store) StudentEvents(school, username string) ([]StudentEvent, error) {
+	rows, err := s.db.Query(`SELECT `+studentEventCols+` FROM student_events
+		WHERE school=? AND username=? ORDER BY date, start_time, event_id`, school, norm(username))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanStudentEvents(rows)
+}
+
+// ListStudentEvents returns one student's events across every school, for the
+// admin search. A username is unique per proxy instance, so scoping by it alone
+// is enough and the school stays a returned field for display.
+func (s *Store) ListStudentEvents(username string) ([]StudentEvent, error) {
+	rows, err := s.db.Query(`SELECT `+studentEventCols+` FROM student_events
+		WHERE username=? ORDER BY date, start_time, event_id`, norm(username))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanStudentEvents(rows)
+}
+
+// StudentEventCounts reports how many events each student has, for the admin
+// dashboard. A map keyed by "school|username" keeps two students who share a
+// name at different schools apart.
+func (s *Store) StudentEventCounts() (map[string]int, error) {
+	rows, err := s.db.Query(`SELECT school, username, COUNT(*) FROM student_events
+		GROUP BY school, username`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]int{}
+	for rows.Next() {
+		var school, username string
+		var n int
+		if err := rows.Scan(&school, &username, &n); err != nil {
+			return nil, err
+		}
+		out[school+"|"+username] = n
+	}
+	return out, rows.Err()
+}
+
+func scanStudentEvents(rows *sql.Rows) ([]StudentEvent, error) {
+	out := []StudentEvent{}
+	for rows.Next() {
+		ev, err := scanStudentEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, ev)
+	}
+	return out, rows.Err()
+}
+
+// StudentEventRange is the widest window StudentEventsForRange will serve in one
+// call. An admin-authored event is a scheduled appointment, so it lives on a
+// specific date rather than a term, but the ICS feed still asks for a rolling
+// lookahead of months.
+const StudentEventRange = 400
 
 // ClassPeriodsOnDate returns the periods a class has on one date, for matching an
 // absence to the lesson it displaced.

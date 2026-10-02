@@ -37,6 +37,8 @@
   .flag.cancelled { color:var(--bad); }
   .flag.exam { color:var(--warn); }
   .flag.subst { color:var(--accent); }
+  .flag.custom { color:var(--accent); border-color:var(--accent); }
+  tr.custom td { opacity:.9; }
   .free { padding:.6rem .8rem; color:var(--dim); font-size:.85rem; }
   footer { color:var(--dim); font-size:.76rem; padding-top:1rem; text-align:center; }
 </style>
@@ -57,9 +59,10 @@
     {{if .Lessons}}
     <table>
       {{range .Lessons}}
-      <tr>
+      <tr{{if .Custom}} class="custom"{{end}}>
         <td class="time">{{.TimeRange}}</td>
         <td>
+          {{if .Custom}}<span class="flag custom">Termin</span>{{end}}
           {{if .Cancelled}}<span class="flag cancelled">entfällt</span>{{end}}
           {{if .Exam}}<span class="flag exam">{{.ExamLabel}}</span>{{end}}
           {{if .Substitution}}<span class="flag subst">Vertretung</span>{{end}}

@@ -255,8 +255,76 @@ a `getStudentAbsences2017` response. Remember the method needs
       (`getPeriodData2017`) → the response contains **no** `note` and no
       `noteUpdatedAt`, even though you have notes on your own absences
 
-## 15. Packaging
-- [ ] 15.1 `/status` reports the published tag, and **not** `dev` — a plain
+## 15. Technik / custom events (v1.7.0)
+
+Signed in as an admin. Pick a student who has real lessons on the chosen date.
+
+### Writing
+
+- [ ] 15.1 `/admin` → *Student events*: pick school + student, enter a date,
+      `14:00`–`15:00`, a title, room and teacher → **add**
+- [ ] 15.2 the table lists it with revision 1
+- [ ] 15.3 the same student again after an edit → the revision reads 2 (each edit
+      increments it)
+- [ ] 15.4 **edit** the time to `16:00`–`17:00` → the row updates
+- [ ] 15.5 **del** the row → it disappears; deleting again is not an error
+- [ ] 15.6 add with the end before the start → refused, nothing written
+- [ ] 15.7 add for a username that does not exist → refused with *no such user*
+- [ ] 15.8 the events list is sorted by date, then start time
+
+### Seeing them as the student
+
+- [ ] 15.9 as the **student**, open the timetable in the app → the event appears in
+      the week with the *Termin* marker and the time you entered
+- [ ] 15.10 the entry is on the **correct day and time** — the app shows the
+      school-clock time you typed, not a shifted one
+- [ ] 15.11 the entry is visually distinct from a real lesson (marker, no subject
+      column clash)
+- [ ] 15.12 subject, room and teacher show exactly as typed
+- [ ] 15.13 open `/week/{your student token}` → the event appears there too
+- [ ] 15.14 subscribe `/api/calendar/{your student token}.ics` and refresh the
+      calendar → one new all-day-or-timed entry, with `SUMMARY` carrying
+      title · subject · teacher
+- [ ] 15.15 the `.ics` `UID` starts with `custom-` and `SEQUENCE` is 1
+- [ ] 15.16 **edit** the event, then refresh the subscribed calendar → the entry
+      updates in place (the UID is unchanged, `SEQUENCE` rose to 2). A client that
+      keeps the old text means `SEQUENCE` is not moving
+- [ ] 15.17 **delete** the event, refresh the calendar → the entry is gone after a
+      full re-sync. An entry that survives a *second* refresh is stale client cache
+      (documented, not a bug)
+
+### Privacy
+
+- [ ] 15.18 as the **student**, fetch the `CLASS` timetable for your class → the
+      response contains no `isCustom` period
+- [ ] 15.19 subscribe a **class** token's `.ics` → it contains no event
+- [ ] 15.20 subscribe a **teacher**, **room** and **subject** token → none carries
+      an event
+- [ ] 15.21 as the **second student**, your own timetable and `/week/{your token}`
+      show none of the first student's events
+- [ ] 15.22 as an **editor** or **teacher** account, no event appears on any
+      response you can fetch
+- [ ] 15.23 `/api/admin/events` as a **non-admin** → 401/403 on GET, POST, PATCH
+      and DELETE
+- [ ] 15.24 `/api/admin/events` without `username` → 400, not everyone's events
+
+### Being told about a change
+
+- [ ] 15.25 note your current `eventVersion` from `/api/timetable/changes`
+- [ ] 15.26 as the admin, edit the student's event → the student's next
+      `/api/timetable/changes?sinceEvents=<noted>` returns 200 with a **higher**
+      `eventVersion`, not 304
+- [ ] 15.27 repeat with an unchanged `eventVersion` → 304
+- [ ] 15.28 as the admin, **delete** the event → `eventVersion` rises again
+- [ ] 15.29 with `/api/timetable/stream` open as the student → an
+      `event: student-events` frame arrives, with a `reason` and **no event text**
+- [ ] 15.30 as the **second student**, the same admin edit produces no
+      `student-events` frame and no `eventVersion` change
+- [ ] 15.31 no event change appears on the shared **ntfy topic** or **webhook**
+      destinations configured for the class
+
+## 16. Packaging
+- [ ] 16.1 `/status` reports the published tag, and **not** `dev` — a plain
       `go build` reports `dev`, so `dev` means the version was never compiled in
-- [ ] 15.2 `docker images <your-namespace>/untisplus-proxy` shows the release tag +
+- [ ] 16.2 `docker images <your-namespace>/untisplus-proxy` shows the release tag +
       `latest` (pushed)

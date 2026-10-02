@@ -34,6 +34,7 @@ type weekLesson struct {
 	Substitution bool
 	Cancelled    bool
 	Exam         bool
+	Custom       bool
 }
 
 // weekDay is one rendered day column.
@@ -101,55 +102,7 @@ func (p *Proxy) handleWeekPage(w http.ResponseWriter, r *http.Request) {
 		ICSURL:     "/api/calendar/" + token + ".ics",
 		Version:    feed.Version,
 	}
-	byDay := map[string][]weekLesson{}
-	for _, pd := range feed.Periods {
-		st, err := parsePeriodTime(rawString(pd, "startDateTime"))
-		if err != nil {
-			continue
-		}
-		st = st.In(loc)
-		l := weekLesson{TimeRange: st.Format("15:04")}
-		if e, err := parsePeriodTime(rawString(pd, "endDateTime")); err == nil {
-			l.TimeRange = st.Format("15:04") + "–" + e.In(loc).Format("15:04")
-		}
-		l.Subject = lessonSubject(pd, md)
-		var who []string
-		if t := joinedElementNames(pd, md, "TEACHER"); t != "" {
-			who = append(who, t)
-		}
-		if r := joinedElementNames(pd, md, "ROOM"); r != "" {
-			who = append(who, r)
-		}
-		if c := joinedElementNames(pd, md, "CLASS"); c != "" {
-			who = append(who, c)
-		}
-		l.Detail = strings.Join(who, " · ")
-		l.Cancelled = periodHasFlag(pd, "CANCELLED")
-		l.Substitution = textField(pd, "substitution") != ""
-		if exam, ok := pd["exam"].(map[string]any); ok && exam != nil {
-			l.Exam = true
-			l.ExamLabel = "Klausur"
-			if t, _ := exam["examtype"].(string); t != "" {
-				l.ExamLabel = t
-			}
-			if n, _ := exam["name"].(string); n != "" {
-				l.ExamLabel += " " + n
-			}
-		}
-		var notes []string
-		if t := textField(pd, "substitution"); t != "" {
-			notes = append(notes, "Vertretung: "+t)
-		}
-		if t := textField(pd, "info"); t != "" {
-			notes = append(notes, t)
-		}
-		if t := textField(pd, "lesson"); t != "" {
-			notes = append(notes, "Thema: "+t)
-		}
-		l.Notes = strings.Join(notes, " · ")
-		key := st.Format("2006-01-02")
-		byDay[key] = append(byDay[key], l)
-	}
+	byDay := weekLessonsByDay(feed.Periods, md, loc)
 	todayKey := dayStart.Format("2006-01-02")
 	for d := weekStart; !d.After(weekEnd); d = d.AddDate(0, 0, 1) {
 		key := d.Format("2006-01-02")
@@ -223,4 +176,82 @@ func periodHasFlag(pd map[string]any, flag string) bool {
 		}
 	}
 	return false
+}
+
+// weekLessonsByDay renders periods into the rows the week view shows, grouped by
+// day. It is a function rather than inline in the handler so the rendering of a
+// period — real lesson or custom event — has exactly one definition.
+func weekLessonsByDay(periods []map[string]any, md *masterDataCache, loc *time.Location) map[string][]weekLesson {
+	byDay := map[string][]weekLesson{}
+	for _, pd := range periods {
+		st, err := parsePeriodTime(rawString(pd, "startDateTime"))
+		if err != nil {
+			continue
+		}
+		st = st.In(loc)
+
+		l := weekLesson{TimeRange: st.Format("15:04")}
+		if e, err := parsePeriodTime(rawString(pd, "endDateTime")); err == nil {
+			l.TimeRange = st.Format("15:04") + "–" + e.In(loc).Format("15:04")
+		}
+		l.Subject = lessonSubject(pd, md)
+		var who []string
+		if t := joinedElementNames(pd, md, "TEACHER"); t != "" {
+			who = append(who, t)
+		}
+		if r := joinedElementNames(pd, md, "ROOM"); r != "" {
+			who = append(who, r)
+		}
+		if c := joinedElementNames(pd, md, "CLASS"); c != "" {
+			who = append(who, c)
+		}
+		l.Detail = strings.Join(who, " · ")
+		// A custom event has no elements to resolve, so its text is read straight
+		// off the period instead. It reuses the same fields as a lesson rather than
+		// adding its own layout, and is distinguished by the Custom flag.
+		if isCustomPeriod(pd) {
+			l.Custom = true
+			l.Subject, _ = pd["customTitle"].(string)
+			var evWho []string
+			if teacher, _ := pd["teacher"].(string); teacher != "" {
+				evWho = append(evWho, teacher)
+			}
+			if room, _ := pd["room"].(string); room != "" {
+				evWho = append(evWho, room)
+			}
+			l.Detail = strings.Join(evWho, " · ")
+			desc, _ := pd["description"].(string)
+			l.Notes = desc
+		}
+		l.Cancelled = periodHasFlag(pd, "CANCELLED")
+		l.Substitution = textField(pd, "substitution") != ""
+		if exam, ok := pd["exam"].(map[string]any); ok && exam != nil {
+			l.Exam = true
+			l.ExamLabel = "Klausur"
+			if t, _ := exam["examtype"].(string); t != "" {
+				l.ExamLabel = t
+			}
+			if n, _ := exam["name"].(string); n != "" {
+				l.ExamLabel += " " + n
+			}
+		}
+		var notes []string
+		if t := textField(pd, "substitution"); t != "" {
+			notes = append(notes, "Vertretung: "+t)
+		}
+		if t := textField(pd, "info"); t != "" {
+			notes = append(notes, t)
+		}
+		if t := textField(pd, "lesson"); t != "" {
+			notes = append(notes, "Thema: "+t)
+		}
+		// The custom-event branch above filled these from the event's own text;
+		// overwriting them here from empty element lookups would erase it.
+		if !l.Custom {
+			l.Notes = strings.Join(notes, " · ")
+		}
+		key := st.Format("2006-01-02")
+		byDay[key] = append(byDay[key], l)
+	}
+	return byDay
 }

@@ -1,10 +1,11 @@
 # Planned work — personal homework, absence notes, Technik events, delivery outbox
 
-Status: **Phases 1–3 released: `v1.4.6`, `v1.5.0`, `v1.6.0`.**
-Phase 0 (probe), Phase 1 (delivery outbox), Phase 2 (personal homework done) and
-Phase 3 (absence notes) are done; Phase 4 (Technik events) is still only agreed. Decisions were made in
-discussion, and the reasoning is recorded so a later reader can tell which parts
-are load-bearing and which were arbitrary.
+Status: **All phases released: `v1.4.6` (outbox), `v1.5.0` (homework),
+`v1.6.0` (absences), `v1.7.0` (Technik events).**
+Phase 0 (probe) through Phase 4 are done. Decisions were made in discussion, and
+the reasoning is recorded so a later reader can tell which parts are load-bearing
+and which were arbitrary. What remains open is listed at the end; nothing below
+is a proposal any more.
 
 Phases ship as **one release each**, so each can be tested against real data
 before the next is built. Phase 1 (the delivery outbox) goes first: it is a live
@@ -378,13 +379,22 @@ empty list that is indistinguishable from "no absences".
 
 ```sql
 CREATE TABLE student_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id INTEGER PRIMARY KEY AUTOINCREMENT,
   school TEXT NOT NULL, username TEXT NOT NULL,
   date TEXT NOT NULL, start_time TEXT NOT NULL, end_time TEXT NOT NULL,
-  title TEXT NOT NULL, subject TEXT, room TEXT, teacher TEXT, description TEXT,
-  created_by TEXT NOT NULL, created_at DATETIME NOT NULL
+  title TEXT NOT NULL,
+  subject TEXT NOT NULL DEFAULT '', room TEXT NOT NULL DEFAULT '',
+  teacher TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+  created_by TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  revision INTEGER NOT NULL DEFAULT 1
 );
+CREATE INDEX student_events_range ON student_events (school, username, date);
 ```
+
+Plus `student_event_versions (school, username, version)`, bumped on every admin
+edit. It exists because the change signal has to notice a *delete*, and a delete
+leaves no row behind for a counter derived from the events to come from.
 
 Specific dates only, so no `RRULE` and no recurrence maths. Injected as synthetic
 periods into the student `getTimetable2017` path and the token paths feeding
@@ -436,10 +446,18 @@ Not to be guessed. Decide before the matching phase, not during it:
   in favour of "no subject rather than a wrong one": `subject` is reported only
   when exactly one lesson overlaps the absence, so a whole-day absence or one
   outside the polling window simply has no subject.
-- **Deleting a Technik event in the admin UI — does it disappear from subscribed
-  calendars?** ICS clients cache aggressively; this is a product question, not a
-  technical one.
-- **Should Technik edits raise timetable-change events?** Phase 1 now delivers
-  changes through a durable outbox, so emitting an SSE/ntfy change when an admin
-  edits an event is nearly free — but whether a student should be told about an
-  admin edit at all is a product call.
+- ~~**Deleting a Technik event in the admin UI — does it disappear from subscribed
+  calendars?**~~ Resolved in Phase 4 by documenting the behaviour rather than
+  fighting it: **no retraction is attempted.** RFC 5545 `METHOD:PUBLISH` is a
+  full-state push, so a removed VEVENT would have to be pushed as a `CANCEL`
+  override of the UID a client may already hold, and every client resolves
+  cancellation differently. Deleting the event drops it from every future fetch,
+  which is what a client sees on its next sync; a client that has not synced keeps
+  showing a stale copy until it does. `APP-INTEGRATION.md` says so.
+- ~~**Should Technik edits raise timetable-change events?**~~ Resolved in Phase 4:
+  **yes, to the affected student only.** `GET /api/timetable/changes` carries a
+  per-student `eventVersion` beside the class `current`, and the SSE stream emits
+  a `student-events` frame. Neither goes through the class outbox or the
+  webhook/ntfy fan-out — those are read by everyone with access to the class, so a
+  student's private appointment announced there would reach every classmate.
+  The signal carries the version and the reason, never the event content.

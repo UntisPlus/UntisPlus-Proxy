@@ -337,7 +337,7 @@ school on the login request.
 **Subscriptions and changes**
 
 ```
-GET  /api/timetable/changes?since=<version>
+GET  /api/timetable/changes?since=<version>[&sinceEvents=<eventVersion>]
 GET  /api/timetable/stream
 GET  /api/webhooks        /api/webhooks/{id}     # self-service
 GET  /api/ntfy            /api/ntfy/{id}         # self-service
@@ -372,6 +372,36 @@ Every entry in a `getStudentAbsences2017` response gains a private `note` and a
 lesson the absence displaced where that is unambiguous). Upstream `text` is the
 *teacher's* comment and `excuse.text` is upstream's own excuse text — neither is
 touched, and the student's note is a separate field.
+
+**Technik / custom events** (admin-authored, one student at a time)
+
+```
+GET    /api/admin/events?username=<name>            # admin: list one student's events
+POST   /api/admin/events                           # admin: create
+PATCH  /api/admin/events/{id}                      # admin: edit (partial)
+DELETE /api/admin/events/{id}                      # admin: remove
+```
+
+An admin can put an entry on one student's own timetable — a Technik slot, a
+meeting, any dated entry with a time. It is served on that student's
+`getTimetable2017`, on their `/week/{token}` page and in their `.ics` feed, and on
+**no** class, teacher, room or subject feed: those have no viewer, so there is no
+identity to key an event on.
+
+Events reach a client as extra periods in `result.timetable.periods`, marked
+`isCustom: true`, with a negative `id` that folds in the event's revision so an
+edit reads as a new entry. In the `.ics` feed they carry a `custom-`-prefixed UID
+and a `SEQUENCE` that rises on edit. `TRANSP:TRANSPARENT` marks them as not
+occupying the time.
+
+Deleting an event removes it from every future fetch but **does not retract it
+from calendars that already hold it** — see
+[docs/APP-INTEGRATION.md](docs/APP-INTEGRATION.md#technik--custom-events) for why
+no cancellation is pushed. Admins manage events in the dashboard's *Student
+events* section. Each edit bumps a per-student counter exposed as `eventVersion`
+on `/api/timetable/changes` and as a `student-events` SSE frame, so the student
+is told to refetch; those signals deliberately bypass the shared webhook and ntfy
+topics, which the whole class can see.
 
 **Notes are private to the student, by construction.** They are stored per viewer
 and are only ever attached to an absence whose own `studentId` matches the

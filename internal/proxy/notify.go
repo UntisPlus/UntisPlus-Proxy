@@ -61,6 +61,24 @@ func SetNtfyBase(base string) {
 type notifyHub struct {
 	mu   sync.RWMutex
 	subs map[string]map[chan notifyMsg]struct{}
+	// userSubs is kept separate from subs rather than sharing the map, because the
+	// two carry different messages to different audiences. Sharing one map keyed by
+	// a formatted string would make a class message and a single student's event
+	// message indistinguishable at the channel, and the risk is a class subscriber
+	// receiving one student's event — so the separation is structural.
+	userSubs map[string]map[chan studentEventMsg]struct{}
+}
+
+// studentEventMsg tells one student that their own events changed. It carries no
+// event content: the recipient re-fetches through the surface they already
+// authenticated for. Putting a title or a date in here would mean the signal has to
+// be trusted not to travel anywhere else, and the shared webhook and ntfy fan-out
+// that carries class changes is exactly the wrong place for it.
+type studentEventMsg struct {
+	School       string `json:"school"`
+	Username     string `json:"username"`
+	EventVersion int64  `json:"eventVersion"`
+	Reason       string `json:"reason"`
 }
 
 type notifyMsg struct {
@@ -71,11 +89,56 @@ type notifyMsg struct {
 }
 
 func newNotifyHub() *notifyHub {
-	return &notifyHub{subs: map[string]map[chan notifyMsg]struct{}{}}
+	return &notifyHub{
+		subs:     map[string]map[chan notifyMsg]struct{}{},
+		userSubs: map[string]map[chan studentEventMsg]struct{}{},
+	}
 }
 
 func hubKey(school string, classID int64) string {
 	return fmt.Sprintf("%s|%d", school, classID)
+}
+
+// userHubKey is namespaced with a prefix that hubKey can never produce, so a
+// username containing the separator cannot be crafted to collide with a class key.
+func userHubKey(school, username string) string {
+	return "u\x00" + school + "\x00" + strings.ToLower(strings.TrimSpace(username))
+}
+
+func (h *notifyHub) subscribeUser(school, username string) (chan studentEventMsg, func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ch := make(chan studentEventMsg, 4)
+	k := userHubKey(school, username)
+	if h.userSubs[k] == nil {
+		h.userSubs[k] = map[chan studentEventMsg]struct{}{}
+	}
+	h.userSubs[k][ch] = struct{}{}
+	return ch, func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if m, ok := h.userSubs[k]; ok {
+			delete(m, ch)
+			close(ch)
+			if len(m) == 0 {
+				delete(h.userSubs, k)
+			}
+		}
+	}
+}
+
+func (h *notifyHub) publishUser(school, username string, msg studentEventMsg) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for ch := range h.userSubs[userHubKey(school, username)] {
+		select {
+		case ch <- msg:
+		default:
+			// A client that is not draining is dropped rather than blocking the
+			// admin's request. It recovers by polling, where the event version is
+			// still authoritative.
+		}
+	}
 }
 
 func (h *notifyHub) subscribe(school string, classID int64) (chan notifyMsg, func()) {
@@ -710,7 +773,17 @@ func (p *Proxy) handleTimetableChanges(w http.ResponseWriter, r *http.Request) {
 		p.writeJSON(w, map[string]any{"error": "store error"})
 		return
 	}
-	if len(rows) == 0 && cur == since {
+	// The student's own event counter travels beside the class one. An admin adding
+	// or editing one of this student's events bumps nothing class-wide — that is the
+	// point of keeping them out of the class outbox — so without this a polling
+	// client would never learn about them.
+	events, err := p.store.StudentEventVersion(school, u.Username)
+	if err != nil {
+		p.writeJSON(w, map[string]any{"error": "store error"})
+		return
+	}
+	sinceEvents, _ := strconv.ParseInt(r.URL.Query().Get("sinceEvents"), 10, 64)
+	if len(rows) == 0 && cur == since && events == sinceEvents {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -720,9 +793,14 @@ func (p *Proxy) handleTimetableChanges(w http.ResponseWriter, r *http.Request) {
 		"classId": classID,
 		"since":   since,
 		"current": cur,
-		"summary": digest.Summary,
-		"digest":  digest,
-		"changes": rows,
+		// eventVersion changes on this student's events only. A client re-fetches its
+		// timetable when either counter moves. A client that ignores this field still
+		// works: it sees a 200 with no class changes and re-reads the same data.
+		"eventVersion": events,
+		"sinceEvents":  sinceEvents,
+		"summary":      digest.Summary,
+		"digest":       digest,
+		"changes":      rows,
 	})
 }
 
@@ -753,14 +831,21 @@ func (p *Proxy) handleTimetableStream(w http.ResponseWriter, r *http.Request) {
 	ch, unsub := p.hub.subscribe(school, classID)
 	defer unsub()
 
+	// A second, separate subscription for this student's own events. It is not the
+	// class subscription, so a change in one student's schedule cannot be delivered
+	// to a classmate's stream.
+	evCh, unsubEvents := p.hub.subscribeUser(school, u.Username)
+	defer unsubEvents()
+
 	heartbeat := time.NewTicker(30 * time.Second)
 	defer heartbeat.Stop()
 
 	// initial snapshot so the client syncs state on connect
 	rows, cur, _ := p.store.PendingChanges(school, classID, 0)
+	evVersion, _ := p.store.StudentEventVersion(school, u.Username)
 	if data, err := json.Marshal(map[string]any{
 		"event": "snapshot", "school": school, "classId": classID,
-		"current": cur, "changes": rows,
+		"current": cur, "changes": rows, "eventVersion": evVersion,
 	}); err == nil {
 		fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", data)
 		flusher.Flush()
@@ -785,6 +870,21 @@ func (p *Proxy) handleTimetableStream(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			if _, err := fmt.Fprintf(w, "event: change\ndata: %s\n\n", data); err != nil {
+				return
+			}
+			flusher.Flush()
+		case ev := <-evCh:
+			// A student's own event change. No title, no time: only the counter, so
+			// the client knows to re-fetch through a surface it is already
+			// authenticated for.
+			data, err := json.Marshal(map[string]any{
+				"event": "student-events", "school": ev.School,
+				"eventVersion": ev.EventVersion, "reason": ev.Reason,
+			})
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "event: student-events\ndata: %s\n\n", data); err != nil {
 				return
 			}
 			flusher.Flush()

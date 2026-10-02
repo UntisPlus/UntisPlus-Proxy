@@ -63,13 +63,20 @@ GET /api/timetable/changes?school=testschool&classId=5000&since=4
 
 - Requires a session whose class matches (or the `classId` param omitted → own
   class).
-- `since` is the last seen version (`0` = full history).
-- Returns `{school, classId, since, current, changes}`.
-- `304 Not Modified` when nothing changed since `since`.
+- `since` is the last seen class version (`0` = full history).
+- `sinceEvents` is the last seen count of the session user's **own** custom
+  events. Omit it to be sent the current value.
+- Returns `{school, classId, since, current, eventVersion, sinceEvents, changes}`.
+- `304 Not Modified` when neither the class version nor the event version moved.
 
 The app should drive its cache by version: keep the played-back version,
 increment as `change` events arrive, and reconcile with `/changes` after
 reconnect or push wake-up.
+
+`current` and `eventVersion` are two independent counters. `current` is
+class-wide and moves for anyone's timetable change; `eventVersion` is private to
+the session user and moves only when an admin edits *their* custom events (see
+[Technik / custom events](#technik--custom-events)). Refetch when either moves.
 
 ## ntfy push topics
 
@@ -318,6 +325,136 @@ POST /api/absence/notes[?school=<name>]  {"absenceKey":300001,"note":"bring work
 - A note is trimmed and capped at 2000 characters; over that is a 400 rather than
   a silent truncation.
 - `updatedAt` is the same value the write returns and the read reports.
+
+## Technik / custom events
+
+An admin can put an entry on **one student's** timetable: a Technik slot, a
+meeting, anything with a date and a time. It appears wherever that student's own
+timetable is served, and nowhere else.
+
+### Where they appear
+
+| Surface | Carries the student's events |
+|---|---|
+| `getTimetable2017`, `params[0].type = "STUDENT"`, your own `id` | yes |
+| `getTimetable2017`, `CLASS` / `TEACHER` / `ROOM` / `SUBJECT` | **never** |
+| `/api/calendar/{student-token}.ics` | yes |
+| `/api/calendar/{class|teacher|room|subject-token}.ics` | **never** |
+| `/week/{student-token}` | yes |
+
+The app asks for `STUDENT` with its own id, so this is the path that matters in
+practice. Events are *appended to* `result.timetable.periods` — every upstream
+field, including ones added after this proxy was written, is passed through
+untouched.
+
+### The shape
+
+```json
+{
+  "id": -1000000000,
+  "startDateTime": "2026-10-01T14:00+02:00",
+  "endDateTime": "2026-10-01T15:00+02:00",
+  "isCustom": true,
+  "customEventId": 12,
+  "customRevision": 1,
+  "customTitle": "Technik",
+  "subject": "Mathe",
+  "room": "R12",
+  "teacher": "Mr Smith",
+  "description": "Arbeitsblatt mitbringen",
+  "date": 20261001,
+  "startTime": 840,
+  "endTime": 900,
+  "lessonText": "Technik",
+  "is": {"standard": false, "event": true},
+  "cellState": "CUSTOM",
+  "hasInfo": true,
+  "elements": []
+}
+```
+
+Read `isCustom` to tell an event from a real lesson — the app cannot infer it, and
+guessing from `elements` being empty would misread a real lesson with no elements.
+
+Two things to know about `id`:
+
+- It is **negative**. Real period ids are small positive numbers, so the two
+  cannot collide and an event cannot overwrite a lesson in a client's map.
+- It **changes when the event is edited**: it folds in the event's `revision`, so
+  a client keying on `id` sees an edit as a different entry instead of a stale
+  one.
+
+`elements` is empty because an event carries the text an admin typed, not ids that
+resolve through master data. Render `customTitle`, `subject`, `teacher`, `room`
+and `description` directly.
+
+### Times and the school clock
+
+`startDateTime` carries the school's UTC offset, exactly as upstream's own
+periods do — the event is 14:00 on the school clock, not 14:00 UTC. A client that
+converts using the school timezone gets the right instant.
+
+### In the .ics feed
+
+An event becomes one `VEVENT`:
+
+```
+BEGIN:VEVENT
+UID:custom--1000000000@untis-api
+SEQUENCE:1
+DTSTART;TZID=Europe/Berlin:20261001T140000
+DTEND;TZID=Europe/Berlin:20261001T150000
+SUMMARY:Technik · Mathe · Mr Smith
+LOCATION:R12
+DESCRIPTION:Raum: R12\nArbeitsblatt mitbringen
+TRANSP:TRANSPARENT
+END:VEVENT
+```
+
+- `UID` is prefixed `custom-`, so it can never be mistaken for a real lesson's UID
+  (which is the bare period id).
+- `SEQUENCE` is the event's revision, so **editing an event raises it** and a
+  client replaces its cached copy.
+- `TRANSP:TRANSPARENT` marks it as not occupying the time. A real lesson is
+  `OPAQUE`.
+
+### Deletion: stale copies are expected
+
+**Deleting an event does not retract it from calendars that already have it.**
+The event is gone from every future fetch, so a client that syncs drops it. A
+client that has not synced keeps showing a cached copy until it does.
+
+No cancellation is pushed. RFC 5545 `METHOD:PUBLISH` is a full-state push, so a
+removal would have to arrive as a `CANCEL` override keyed on the UID the client
+already stored, and clients disagree about how to resolve that against a
+`PUBLISH` feed — including some that would delete the whole series. The reliable
+fix is to keep the subscription URL short-lived so clients re-fetch often.
+
+### Knowing an event changed
+
+An admin edit bumps a **per-student counter**, separate from the class one:
+
+- `GET /api/timetable/changes` carries `eventVersion` (and echoes `sinceEvents`).
+  Pass `?sinceEvents=<last value>` alongside `since`; the endpoint answers `304`
+  only when *both* the class version and the event version are unchanged.
+- `GET /api/timetable/stream` emits an extra frame:
+
+```
+event: student-events
+data: {"event":"student-events","school":"…","eventVersion":4,"reason":"updated"}
+```
+
+`reason` is `created`, `updated` or `deleted`. The frame carries **no event
+content** — only the counter — so treat it as "your schedule changed, refetch"
+and re-read through whichever surface you are already authenticated for.
+
+Deleting an event bumps this counter too. That is why it is a stored counter and
+not something derived from the events: a delete leaves no row behind to derive
+from.
+
+Event changes are **not** delivered to the shared webhook and ntfy topics. Those
+are read by everyone with access to the class, so a student's private appointment
+announced there would reach every classmate.
 
 ## Self-service subscriptions (app-integrated config)
 

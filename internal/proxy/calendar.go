@@ -253,6 +253,26 @@ type feedTarget struct {
 	Version int64
 }
 
+// feedLocation is the zone a feed's periods are expressed in: the token's, or the
+// offset the fetched periods actually carry if the token names a zone this binary
+// has no data for. An unreadable zone falls back to UTC rather than failing the
+// feed — the events would land on the wrong wall clock, but the lessons are still
+// correct and that is the lesser failure.
+func feedLocation(tok *store.ClassToken, periods []map[string]any) *time.Location {
+	if tok.Timezone != "" {
+		if loc, err := time.LoadLocation(tok.Timezone); err == nil {
+			return loc
+		}
+	}
+	for _, pd := range periods {
+		if t, err := parsePeriodTime(rawString(pd, "startDateTime")); err == nil {
+			_, offset := t.Zone()
+			return time.FixedZone("feed", offset)
+		}
+	}
+	return time.UTC
+}
+
 // resolveFeed resolves a calendar token to its element and fetches the periods
 // for [from, to]. Access is token-based, exactly like the .ics feed.
 func (p *Proxy) resolveFeed(tok *store.ClassToken, from, to string) (feedTarget, error) {
@@ -286,6 +306,15 @@ func (p *Proxy) resolveFeed(tok *store.ClassToken, from, to string) (feedTarget,
 			out.Version = p.store.ClassVersion(tok.School, u.ClassID)
 		}
 		out.Periods, err = p.studentPeriods(tok.School, personID, from, to)
+		// A student's own events ride along on their feed. This branch is the only
+		// one that has a username, which is the whole reason a class, teacher, room
+		// or subject feed cannot carry anyone's events: there is nowhere to read
+		// them from. A lookup failure (no user row for this person) is not fatal —
+		// the real periods still resolve.
+		if perr == nil && u != nil && u.Username != "" {
+			out.Periods = append(out.Periods,
+				p.studentEventPeriods(tok.School, u.Username, from, to, feedLocation(tok, out.Periods))...)
+		}
 	case "CLASS":
 		classID := tok.ElementID
 		if classID == 0 {
@@ -388,6 +417,12 @@ func (p *Proxy) handleCalendarICS(w http.ResponseWriter, r *http.Request) {
 	b.WriteString("X-WR-CALNAME:" + icsEscape("Untis "+calName) + "\r\n")
 	b.WriteString("X-WR-CALDESC:" + icsEscape("Untis timetable for "+calName) + "\r\n")
 	for _, pd := range feed.Periods {
+		// An event carries plain text where a real period carries element ids, so
+		// it has its own renderer rather than being forced through buildICSVEVENT.
+		if isCustomPeriod(pd) {
+			b.WriteString(buildCustomICSVEVENT(pd, tz, now))
+			continue
+		}
 		b.WriteString(buildICSVEVENT(pd, md, tz, feed.Version, now))
 	}
 	b.WriteString("END:VCALENDAR\r\n")

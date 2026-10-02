@@ -124,6 +124,25 @@
   <table id="tokens"><thead><tr><th>token</th><th>element</th><th>type</th><th>id</th><th>created</th><th>by</th><th>days</th><th></th></tr></thead><tbody></tbody></table>
 </section>
 
+<section id="eventsSection">
+  <h2>Student events <button class="mini" onclick="loadEvents()">refresh</button></h2>
+  <div class="row" style="margin-bottom:.5rem">
+    <select id="evSchool"></select>
+    <input id="evUser" placeholder="username" style="width:12rem">
+    <button class="mini" onclick="loadEvents()">show</button>
+  </div>
+  <div class="row" style="margin-bottom:.5rem">
+    <input id="evTitle" placeholder="title" style="width:12rem">
+    <input id="evDate" type="date" style="width:10rem">
+    <input id="evStart" type="time" value="14:00" style="width:7rem">
+    <input id="evEnd" type="time" value="15:00" style="width:7rem">
+    <input id="evRoom" placeholder="room" style="width:7rem">
+    <input id="evTeacher" placeholder="teacher" style="width:10rem">
+    <button onclick="addEvent()">add</button>
+  </div>
+  <table id="events"><thead><tr><th>date</th><th>time</th><th>title</th><th>room</th><th>teacher</th><th>rev</th><th></th></tr></thead><tbody></tbody></table>
+</section>
+
 <section>
   <h2>Pool <button class="mini" onclick="loadPool()">refresh</button></h2>
   <div class="row" style="margin-bottom:.5rem">
@@ -167,7 +186,8 @@ async function renderCards(){
   c.insertAdjacentHTML('beforeend', card('recon', status.recon));
   c.insertAdjacentHTML('beforeend', card('boosted', status.boosted));
   c.insertAdjacentHTML('beforeend', card('editors', status.editors));
-  for(const id of ['whSchool','ntfySchool','tokSchool','poolSchool']) fillSchoolSelect(id);
+  for(const id of ['whSchool','ntfySchool','tokSchool','poolSchool','evSchool']) fillSchoolSelect(id);
+  $('evUser').addEventListener('keydown', function(ev){ if(ev.key==='Enter') loadEvents(); });
   $('poolSchool').addEventListener('change', loadPool);
 }
 
@@ -206,6 +226,70 @@ function fillSchoolSelect(id){
   const sel=$(id); sel.innerHTML='';
   (status.schools||[]).forEach(function(s){ const o=document.createElement('option'); o.value=s.name; o.textContent=s.name; sel.appendChild(o); });
   if(!sel.options.length){ const o=document.createElement('option'); o.value='testschool'; o.textContent='testschool'; sel.appendChild(o); }
+}
+
+// Student events are per-student entries on one person's own timetable: a
+// Technik slot, a meeting, anything an admin wants on that schedule. They are
+// served on the surfaces that already know who is asking — the .ics feed, the
+// /week page and the student's own timetable in the app — and never on a class,
+// teacher, room or subject feed.
+async function eventApi(method, path, body){
+  const opts = {method: method, headers: {}};
+  if(body){ opts.headers['Content-Type']='application/json'; opts.body=JSON.stringify(body); }
+  const url = '/api/admin/events'+path+(path.indexOf('?')>=0?'&':'?')+'school='+encodeURIComponent($('evSchool').value||'');
+  const r = await fetch(url, opts);
+  if(!r.ok) throw new Error((await r.json().catch(()=>({}))).error || ('http '+r.status));
+  return r.json();
+}
+
+async function loadEvents(){
+  const user=$('evUser').value.trim(); if(!user) return;
+  const d = await eventApi('GET','?username='+encodeURIComponent(user));
+  const tb=$('events').querySelector('tbody'); tb.innerHTML='';
+  for(const e of d.events){
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+e.date+'</td><td>'+e.startTime+'\u2013'+e.endTime+'</td><td>'+esc(e.title)+'</td>'+
+      '<td>'+esc(e.room||'')+'</td><td>'+esc(e.teacher||'')+'</td><td>'+e.revision+'</td>'+
+      '<td><button class="mini" onclick="editEvent('+e.eventId+')">edit</button> '+
+      '<button class="mini danger" onclick="delEvent('+e.eventId+')">del</button></td>';
+    tb.appendChild(tr);
+  }
+  if(!d.events.length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="7">no events for this student</td>'; tb.appendChild(tr); }
+}
+
+function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
+
+async function addEvent(){
+  const user=$('evUser').value.trim(); if(!user) return log('pick a username first');
+  try{
+    await eventApi('POST','',{username:user, title:$('evTitle').value.trim(), date:$('evDate').value,
+      startTime:$('evStart').value, endTime:$('evEnd').value, room:$('evRoom').value, teacher:$('evTeacher').value});
+    $('evTitle').value=''; log('event added for '+user); loadEvents();
+  }catch(e){ log('add failed: '+e.message); }
+}
+
+// Editing replaces the whole entry. The API takes a partial patch, but a form
+// that silently keeps a field the admin meant to clear is worse than one that
+// submits everything it shows.
+async function editEvent(id){
+  const title=prompt('title'); if(title===null) return;
+  const room=prompt('room'); if(room===null) return;
+  const teacher=prompt('teacher'); if(teacher===null) return;
+  const when=prompt('date + start - end (YYYY-MM-DD 14:00 15:00)','');
+  if(when===null) return;
+  const m=when.trim().split(/\s+/);
+  if(m.length!==3) return log('expected: date start end');
+  try{
+    await eventApi('PATCH','/'+id,{title:title, room:room, teacher:teacher,
+      date:m[0], startTime:m[1], endTime:m[2]});
+    log('event '+id+' updated'); loadEvents();
+  }catch(e){ log('update failed: '+e.message); }
+}
+
+async function delEvent(id){
+  if(!confirm('delete event '+id+'?')) return;
+  try{ await eventApi('DELETE','/'+id); log('event '+id+' deleted'); loadEvents(); }
+  catch(e){ log('delete failed: '+e.message); }
 }
 
 async function loadUsers(){

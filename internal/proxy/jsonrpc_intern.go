@@ -633,6 +633,14 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 				p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 				return
 			}
+			// Custom events are attached here and only here. This branch is reached
+			// only when a student asks for their own timetable, which is the one
+			// getTimetable2017 path where the requester is unambiguously the subject of
+			// the response. The class branch below serves a whole class and the
+			// element branch serves a teacher, room or subject — putting a personal
+			// event in either would hand it to everyone else looking at the same
+			// response, so those paths deliberately carry no events.
+			b = p.decorateStudentEvents(b, school, requesterName, pr.StartDate, pr.EndDate)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = w.Write(b)

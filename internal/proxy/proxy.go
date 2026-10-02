@@ -326,6 +326,8 @@ func (p *Proxy) Handler() http.Handler {
 	// Absence notes are the same contract: session-scoped, viewer from the
 	// session only, GET to read and POST to write.
 	mux.HandleFunc("/api/absence/notes", p.handleAbsenceNotes)
+	mux.HandleFunc("/api/admin/events", p.handleStudentEvents)
+	mux.HandleFunc("/api/admin/events/{id}", p.handleStudentEvents)
 	mux.HandleFunc("/admin", p.handleAdminDashboard)
 	mux.HandleFunc("/admin/login", p.handleAdminLogin)
 	mux.HandleFunc("/admin/", p.handleAdmin)

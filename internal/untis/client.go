@@ -69,6 +69,12 @@ func New(cfg Config) *Client {
 	return &Client{cfg: cfg, hc: cfg.HTTPClient, sessions: make(map[string]cachedSession), servers: servers}
 }
 
+// totpNow supplies the current time for TOTP. It is a variable so a test can hold
+// the clock still: the counter is a 30-second window, so a caller that compares a
+// code produced during a request against one produced afterwards would otherwise
+// disagree whenever the window rolls between the two.
+var totpNow = time.Now
+
 // TOTP computes a RFC6238 time-based one-time password from a base32 secret.
 func TOTP(secret string) string {
 	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(secret))
@@ -78,7 +84,7 @@ func TOTP(secret string) string {
 			return "000000"
 		}
 	}
-	counter := uint64(time.Now().Unix() / 30)
+	counter := uint64(totpNow().Unix() / 30)
 	var msg [8]byte
 	binary.BigEndian.PutUint64(msg[:], counter)
 	mac := hmac.New(sha1.New, key)
@@ -87,6 +93,19 @@ func TOTP(secret string) string {
 	off := sum[len(sum)-1] & 0x0f
 	code := binary.BigEndian.Uint32(sum[off:off+4]) & 0x7fffffff
 	return fmt.Sprintf("%06d", code%1000000)
+}
+
+// SetTOTPClock overrides the clock that TOTP reads and returns a function that
+// restores the previous one. It exists for tests outside this package that compare
+// a code produced during a request with one produced afterwards: with the counter
+// window held still, the two agree by construction instead of by luck, and a
+// rollover mid-test shows up as a real failure rather than a flake.
+func SetTOTPClock(now func() time.Time) (restore func()) {
+	prev := totpNow
+	if now != nil {
+		totpNow = now
+	}
+	return func() { totpNow = prev }
 }
 
 func (c *Client) base(school string) string {

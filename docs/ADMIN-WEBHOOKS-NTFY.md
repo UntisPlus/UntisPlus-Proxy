@@ -188,12 +188,68 @@ The public `/healthz` and `/status` endpoints stay aggregate-only and never
 expose which school or destination is failing. Outbox detail requires an admin
 session, or the separate loopback `-metrics-addr` listener.
 
-## Streaming API (SSE) — unchanged
+## Streaming API (SSE)
 
 `GET /api/timetable/stream?school=<s>` emits `event: change`
 messages on every detected change; `GET /api/timetable/changes?since=N` is the
 pollable diff. Android apps can use either the SSE stream or the per-class ntfy
 topic as the push trigger and reconcile via `/api/timetable/changes`.
+
+## Student events (Technik) — and why they bypass the outbox
+
+The *Student events* section of the dashboard puts an entry on **one student's**
+timetable. Those events are **not** class changes, so they deliberately do not go
+through the outbox, the webhooks or the ntfy topics.
+
+Every webhook and ntfy destination is configured for an element or a whole class,
+and everyone who can read that class can read those messages. A student's private
+appointment announced there would reach every classmate — a Technik slot with a
+room and a time is exactly the kind of thing that should not be. There is no
+per-student variant of these subscriptions, so the events take a separate route:
+
+| Mechanism | Scope |
+|---|---|
+| `GET /api/timetable/changes?sinceEvents=N` | `eventVersion`, private to the session user |
+| `GET /api/timetable/stream` → `event: student-events` | same counter, for that user only |
+
+Both move on create, edit **and delete** — the delete is the case a counter
+derived from the events could not catch, since no row is left to derive from. The
+signal carries the counter and a reason (`created`/`updated`/`deleted`), never the
+event's content; the client refetches through a surface it is already
+authenticated for.
+
+If you want the whole school to see something, that is a different thing: write it
+into your own teacher account's timetable, or set a webhook/ntfy topic yourself.
+
+## Admin API for events
+
+Admin session required. A non-admin gets `401`/`403` before the method is even
+dispatched, and a list without `username` is refused rather than guessing which
+student was meant.
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/admin/events?username=<name>[&school=<s>]` | one student's events, sorted by date then start time |
+| `POST` | `/api/admin/events` | create |
+| `PATCH` | `/api/admin/events/{id}` | partial edit; the merged result is validated |
+| `DELETE` | `/api/admin/events/{id}` | remove, idempotent |
+
+```json
+POST {"username":"dee","date":"2026-10-01","startTime":"14:00","endTime":"15:00",
+      "title":"Technik","subject":"Mathe","room":"R12","teacher":"Mr Smith",
+      "description":"Arbeitsblatt mitbringen"}
+```
+
+`username` must exist in that school (`404` if not) — an event filed against a
+typo would never appear on anyone's timetable, which is the kind of mistake that
+gets made and forgotten. `date` must be `YYYY-MM-DD`, the times `HH:MM`, and
+`endTime` strictly after `startTime`, so a malformed entry is refused at write
+time rather than rendered as a collapsed or misplaced block later. A `PATCH` is
+validated against the *merged* row, so changing only the start time onto a value
+after the stored end is caught.
+
+Every write records `createdBy`, `createdAt`, `updatedAt` and a `revision` that
+increments per edit. The revision is what an `.ics` client sees as `SEQUENCE`.
 
 ## Multi-school
 
@@ -221,5 +277,7 @@ section; its data remains keyed by school name and becomes orphaned.
 - `internal/proxy/subs.go` — self-service `/api/webhooks`, `/api/ntfy`.
 - `internal/proxy/notify.go` — `deliverChange`, `postWebhook`, `publishNtfy`,
   `StartPollLoop` (multi-school), changes/stream API.
-- `internal/store/store.go` — `users.admin`, `schools`, `webhooks`, `ntfy_topics`
-  tables + school-scoped queries.
+- `internal/proxy/events_admin.go` — `/api/admin/events` CRUD + the private
+  change signal.
+- `internal/store/store.go` — `users.admin`, `schools`, `webhooks`, `ntfy_topics`,
+  `student_events`, `student_event_versions` tables + school-scoped queries.

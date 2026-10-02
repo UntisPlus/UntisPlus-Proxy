@@ -111,6 +111,12 @@ func TestKeyLoginPastedSecret(t *testing.T) {
 	p, st, _ := newFakeProxy(t, f)
 	secret := "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
 
+	// The login and the comparison below both read the clock. Frozen, so the two
+	// cannot land on opposite sides of a 30-second TOTP window and make this test
+	// fail once every few runs.
+	restore := untis.SetTOTPClock(func() time.Time { return time.Unix(1790000000, 0).UTC() })
+	defer restore()
+
 	req := httptest.NewRequest(http.MethodPost, "/WebUntis/jsonrpc_intern.do?m=getUserData2017&school=testschool", strings.NewReader(loginBody(t, "newkid", secret)))
 	rec := httptest.NewRecorder()
 	p.handleJSONRPCIntern(rec, req)
