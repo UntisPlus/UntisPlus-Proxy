@@ -261,8 +261,23 @@ Signed in as an admin. Pick a student who has real lessons on the chosen date.
 
 ### Writing
 
-- [ ] 15.1 `/admin` → *Student events*: pick school + student, enter a date,
-      `14:00`–`15:00`, a title, room and teacher → **add**
+- [ ] 15.1 `/admin` → *Student events*: pick a school, pick a student from the
+      list, enter a date, `14:00`–`15:00`, a title, pick a room and set a teacher
+      → **add**
+- [ ] 15.1a the student picker lists only students of the chosen school (no
+      teacher accounts); the room picker lists that school's rooms, and the
+      room filter box narrows it
+- [ ] 15.1b select **two or more students** and **two rooms**, add once → one
+      event per student, each carrying both rooms; the table shows it for a
+      picked student
+- [ ] 15.1c type in the student filter *after* picking → the ticks stay on the
+      picks (narrowing the filter must not drop a selection)
+- [ ] 15.1d switch to a different school → picks and the room list follow the
+      new school rather than keeping the old one's
+- [ ] 15.1e a batch naming one student who is not in the school → the whole batch
+      is refused and **nothing** is written for the others
+- [ ] 15.1f the automated equivalent: `node scripts/check-admin-ui.js` passes
+      (also run by `scripts/release.sh` when node is installed)
 - [ ] 15.2 the table lists it with revision 1
 - [ ] 15.3 the same student again after an edit → the revision reads 2 (each edit
       increments it)

@@ -110,42 +110,74 @@ func (p *Proxy) handleStudentEvents(w http.ResponseWriter, r *http.Request) {
 
 	case http.MethodPost:
 		var req struct {
-			Username    string `json:"username"`
-			Date        string `json:"date"`
-			StartTime   string `json:"startTime"`
-			EndTime     string `json:"endTime"`
-			Title       string `json:"title"`
-			Subject     string `json:"subject"`
-			Room        string `json:"room"`
-			Teacher     string `json:"teacher"`
-			Description string `json:"description"`
+			Username string `json:"username"`
+			// Usernames carries the same event for several students at once. It is
+			// one row per student, not a shared group row: a group row would have
+			// to be joined against every reader to decide what they may see, and a
+			// single row per student is the only shape that cannot leak one
+			// student's entry to another.
+			Usernames   []string `json:"usernames"`
+			Date        string   `json:"date"`
+			StartTime   string   `json:"startTime"`
+			EndTime     string   `json:"endTime"`
+			Title       string   `json:"title"`
+			Subject     string   `json:"subject"`
+			Room        string   `json:"room"`
+			Teacher     string   `json:"teacher"`
+			Description string   `json:"description"`
 		}
 		if !decodeJSON(readBody(r), &req) {
 			writeJSONError(w, http.StatusBadRequest, "bad request")
 			return
 		}
-		if bad := validateStudentEvent(req.Username, req.Date, req.StartTime, req.EndTime, req.Title); bad != "" {
+		targets := eventTargets(req.Username, req.Usernames)
+		if len(targets) == 0 {
+			writeJSONError(w, http.StatusBadRequest, "username is required")
+			return
+		}
+		if bad := validateStudentEvent(targets[0], req.Date, req.StartTime, req.EndTime, req.Title); bad != "" {
 			writeJSONError(w, http.StatusBadRequest, bad)
 			return
 		}
-		if !p.userExists(school, req.Username) {
-			// Checked so an event cannot be filed against a username nothing will
-			// ever read, which is how a typo becomes an event that silently never
-			// appears on anyone's timetable.
-			writeJSONError(w, http.StatusNotFound, "no such user in this school")
+		// Every target is checked before anything is written, so a batch either
+		// lands for all of them or for none: a half-applied batch would leave an
+		// admin believing a slot is covered when it is not.
+		for _, u := range targets {
+			if !p.userExists(school, u) {
+				// Checked so an event cannot be filed against a username nothing will
+				// ever read, which is how a typo becomes an event that silently never
+				// appears on anyone's timetable.
+				writeJSONError(w, http.StatusNotFound, "no such student in this school: "+u)
+				return
+			}
+		}
+		created := make([]map[string]any, 0, len(targets))
+		var firstEv store.StudentEvent
+		for _, u := range targets {
+			ev, err := p.store.CreateStudentEvent(school, u, store.NewStudentEvent{
+				Date: req.Date, StartTime: req.StartTime, EndTime: req.EndTime,
+				Title: req.Title, Subject: req.Subject, Room: req.Room,
+				Teacher: req.Teacher, Description: req.Description,
+			}, actor)
+			if err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "store error")
+				return
+			}
+			if firstEv.ID == 0 {
+				firstEv = ev
+			}
+			created = append(created, map[string]any{"eventId": ev.ID, "username": ev.Username})
+		}
+		for _, u := range targets {
+			p.announceStudentEventChange(school, u, "created")
+		}
+		if len(created) == 1 {
+			// A single student keeps the original response shape, so an existing
+			// client that reads eventId still works.
+			p.writeJSON(w, studentEventJSON(firstEv))
 			return
 		}
-		ev, err := p.store.CreateStudentEvent(school, req.Username, store.NewStudentEvent{
-			Date: req.Date, StartTime: req.StartTime, EndTime: req.EndTime,
-			Title: req.Title, Subject: req.Subject, Room: req.Room,
-			Teacher: req.Teacher, Description: req.Description,
-		}, actor)
-		if err != nil {
-			writeJSONError(w, http.StatusInternalServerError, "store error")
-			return
-		}
-		p.announceStudentEventChange(school, ev.Username, "created")
-		p.writeJSON(w, studentEventJSON(ev))
+		p.writeJSON(w, map[string]any{"school": school, "created": created})
 
 	case http.MethodPatch:
 		if eventID == 0 {
@@ -228,6 +260,28 @@ func (p *Proxy) handleStudentEvents(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+// eventTargets resolves the create request's target students: the single
+// username, or the usernames list, de-duplicated with order kept so the response
+// reads in the order the admin picked them.
+func eventTargets(username string, usernames []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	add := func(u string) {
+		u = strings.TrimSpace(u)
+		key := strings.ToLower(u)
+		if u == "" || seen[key] {
+			return
+		}
+		seen[key] = true
+		out = append(out, u)
+	}
+	add(username)
+	for _, u := range usernames {
+		add(u)
+	}
+	return out
 }
 
 // validateStudentEvent checks a create request. Returns "" when acceptable, or the

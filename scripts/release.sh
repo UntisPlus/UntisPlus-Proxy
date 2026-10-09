@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Release gate + ship: format check, vet, build, full test run, then Docker
-# Hub push and GitHub push.
+# Release gate + ship: format check, vet, build, full test run, admin UI
+# runtime check (node, skipped if node is absent), then Docker Hub push and
+# GitHub push.
 #
 # Usage:
 #   ./scripts/release.sh                 # test everything, then push
@@ -41,31 +42,42 @@ if [ "$PUSH" = "1" ] && [ -z "$IMAGE" ]; then
   exit 2
 fi
 
-echo "==> [1/5] go vet ./..."
+echo "==> [1/6] go vet ./..."
 go vet ./...
 
-echo "==> [2/5] go build ./..."
+echo "==> [2/6] go build ./..."
 go build ./...
 
-echo "==> [3/5] go test -count=1 ./..."
+echo "==> [3/6] go test -count=1 ./..."
 go test -count=1 ./...
+
+# The Go tests cannot execute the admin page's JavaScript, so a bug there only
+# shows up in a browser. This runs admin.html's script against a small DOM shim
+# and drives the event pickers. It is not a hard requirement of the build, so a
+# machine without node warns and continues rather than blocking the release.
+if command -v node >/dev/null 2>&1; then
+  echo "==> [4/6] node scripts/check-admin-ui.js"
+  node scripts/check-admin-ui.js
+else
+  echo "==> [4/6] admin UI check skipped (node not installed)"
+fi
 
 # The database holds every account secret, calendar token and notification
 # subscription, and the next image start migrates its schema. Take the copy
 # before anything is pushed, not after.
 if [ -n "${BACKUP_DB:-}" ]; then
-  echo "==> [4/5] backup ${BACKUP_DB}"
+  echo "==> [5/6] backup ${BACKUP_DB}"
   go run ./cmd/untisctl -db "$BACKUP_DB" backup --keep "${BACKUP_KEEP:-7}"
 else
-  echo "==> [4/5] backup skipped (BACKUP_DB unset — set it to protect the live data)"
+  echo "==> [5/6] backup skipped (BACKUP_DB unset — set it to protect the live data)"
 fi
 
 if [ "$PUSH" != "1" ]; then
-  echo "==> [5/5] push skipped (PUSH=0) — local gate passed"
+  echo "==> [6/6] push skipped (PUSH=0) — local gate passed"
   exit 0
 fi
 
-echo "==> [5/5] ship ${IMAGE}:${VERSION}"
+echo "==> [6/6] ship ${IMAGE}:${VERSION}"
 echo "==> docker build"
 docker build --build-arg VERSION="${VERSION}" -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" .
 echo "==> docker push"

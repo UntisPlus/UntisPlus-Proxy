@@ -459,3 +459,127 @@ func TestAdminEventsRequireAStudentOfThatSchool(t *testing.T) {
 		t.Errorf("a real student was refused: %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// TestAdminEventBatchCreateForSeveralStudents covers the multi-student picker.
+//
+// The store holds one row per student on purpose, so a batch is N rows rather
+// than one shared group row: a group row would have to be joined against every
+// reader to decide what they may see, and a row per student is the only shape
+// that cannot hand one student's entry to another.
+func TestAdminEventBatchCreateForSeveralStudents(t *testing.T) {
+	p, st := adminEventProxy(t)
+	for _, u := range []string{"dee", "sam", "kim"} {
+		if err := st.UpsertUser(&store.User{
+			Username: u, School: "testschool", PersonType: 5, PersonID: int64(len(u)) + 100, ClassID: 5000,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", u, err)
+		}
+	}
+
+	rec := doAdmin(t, p, "adm", http.MethodPost, "/api/admin/events",
+		`{"usernames":["dee","sam","kim"],"date":"2026-10-01","startTime":"14:00","endTime":"15:00","title":"Technik","room":"R12, R13"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("batch create: %d %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Created []struct {
+			EventID  int64  `json:"eventId"`
+			Username string `json:"username"`
+		} `json:"created"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("bad json: %v (%s)", err, rec.Body.String())
+	}
+	if len(out.Created) != 3 {
+		t.Fatalf("created %d events, want 3: %s", len(out.Created), rec.Body.String())
+	}
+	// Each student has their own row, carrying the same slot.
+	for _, u := range []string{"dee", "sam", "kim"} {
+		evs, err := st.StudentEvents("testschool", u)
+		if err != nil {
+			t.Fatalf("StudentEvents(%s): %v", u, err)
+		}
+		if len(evs) != 1 {
+			t.Fatalf("%s has %d events, want 1: %+v", u, len(evs), evs)
+		}
+		if evs[0].Title != "Technik" || evs[0].Room != "R12, R13" {
+			t.Errorf("%s got %+v, want the shared title and rooms", u, evs[0])
+		}
+	}
+	// The whole batch raised each student's own counter.
+	for _, u := range []string{"dee", "sam", "kim"} {
+		if v, err := st.StudentEventVersion("testschool", u); err != nil || v != 1 {
+			t.Errorf("%s eventVersion = %d (%v), want 1", u, v, err)
+		}
+	}
+}
+
+// TestAdminEventBatchIsAllOrNothing: a batch naming one student who does not
+// exist must write nothing at all, or the admin believes a slot is covered for
+// people it never reached.
+func TestAdminEventBatchIsAllOrNothing(t *testing.T) {
+	p, st := adminEventProxy(t)
+	for _, u := range []string{"dee", "sam"} {
+		if err := st.UpsertUser(&store.User{
+			Username: u, School: "testschool", PersonType: 5, PersonID: int64(len(u)) + 100, ClassID: 5000,
+		}); err != nil {
+			t.Fatalf("seed %s: %v", u, err)
+		}
+	}
+	rec := doAdmin(t, p, "adm", http.MethodPost, "/api/admin/events",
+		`{"usernames":["dee","ghost","sam"],"date":"2026-10-01","startTime":"14:00","endTime":"15:00","title":"Technik"}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("a batch with an unknown student returned %d, want 404: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "ghost") {
+		t.Errorf("the error should name the student that failed: %s", rec.Body.String())
+	}
+	for _, u := range []string{"dee", "sam"} {
+		evs, err := st.StudentEvents("testschool", u)
+		if err != nil {
+			t.Fatalf("StudentEvents(%s): %v", u, err)
+		}
+		if len(evs) != 0 {
+			t.Errorf("%s got %d events from a rejected batch, want none: %+v", u, len(evs), evs)
+		}
+		if v, _ := st.StudentEventVersion("testschool", u); v != 0 {
+			t.Errorf("%s eventVersion = %d after a rejected batch, want 0", u, v)
+		}
+	}
+}
+
+// TestAdminEventBatchDedupesAndAcceptsBothFields: the picker sends a list, an
+// older client sends a single username, and an admin may do both at once.
+func TestAdminEventBatchDedupesAndAcceptsBothFields(t *testing.T) {
+	p, st := adminEventProxy(t)
+	if err := st.UpsertUser(&store.User{
+		Username: "dee", School: "testschool", PersonType: 5, PersonID: 101, ClassID: 5000,
+	}); err != nil {
+		t.Fatalf("seed dee: %v", err)
+	}
+	rec := doAdmin(t, p, "adm", http.MethodPost, "/api/admin/events",
+		`{"username":"dee","usernames":["DEE"," dee ","dee"],"date":"2026-10-01","startTime":"14:00","endTime":"15:00","title":"Technik"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("mixed fields: %d %s", rec.Code, rec.Body.String())
+	}
+	// Deduplicated to one student, so the original single-event response shape
+	// comes back and an existing client still finds eventId.
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if _, ok := out["eventId"]; !ok {
+		t.Errorf("a one-student batch should answer in the single-event shape: %v", out)
+	}
+	evs, _ := st.StudentEvents("testschool", "dee")
+	if len(evs) != 1 {
+		t.Errorf("dee has %d events, want exactly 1 after de-duplication: %+v", len(evs), evs)
+	}
+
+	// An empty list with no username is a bad request, not a silent no-op.
+	rec = doAdmin(t, p, "adm", http.MethodPost, "/api/admin/events",
+		`{"usernames":[],"date":"2026-10-01","startTime":"14:00","endTime":"15:00","title":"Technik"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("an empty batch returned %d, want 400", rec.Code)
+	}
+}

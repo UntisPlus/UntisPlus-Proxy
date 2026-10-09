@@ -33,6 +33,11 @@
   .pickitem { padding: .35rem .5rem; cursor: pointer; font-size: .8rem; }
   .pickitem:hover { background: #2a2d37; }
   .pickitem.dim { color: #9aa0ae; cursor: default; }
+  .pickitem.sel { background: #24405e; }
+  /* Scrollable multi-select. Bounded so a school with hundreds of
+     students or rooms does not push the rest of the page off-screen. */
+  .pickbox { max-height: 11rem; overflow-y: auto; border: 1px solid #2f3440;
+             border-radius: 4px; background: #191b22; }
   pre.log { background:#0d0f14; padding:.6rem; border-radius:6px; max-height:16rem; overflow:auto; font-size:.76rem; }
 </style>
 </head>
@@ -128,17 +133,29 @@
   <h2>Student events <button class="mini" onclick="loadEvents()">refresh</button></h2>
   <div class="row" style="margin-bottom:.5rem">
     <select id="evSchool"></select>
-    <input id="evUser" placeholder="username" style="width:12rem">
-    <button class="mini" onclick="loadEvents()">show</button>
+    <input id="evUser" list="evStudents" placeholder="filter students" style="width:12rem" autocomplete="off">
+    <datalist id="evStudents"></datalist>
+    <button class="mini" onclick="loadEvents()">show events for</button>
   </div>
   <div class="row" style="margin-bottom:.5rem">
     <input id="evTitle" placeholder="title" style="width:12rem">
     <input id="evDate" type="date" style="width:10rem">
     <input id="evStart" type="time" value="14:00" style="width:7rem">
     <input id="evEnd" type="time" value="15:00" style="width:7rem">
-    <input id="evRoom" placeholder="room" style="width:7rem">
     <input id="evTeacher" placeholder="teacher" style="width:10rem">
     <button onclick="addEvent()">add</button>
+  </div>
+  <div class="row" style="margin-bottom:.5rem;align-items:flex-start">
+    <div style="flex:1 1 22rem;min-width:18rem">
+      <div class="lbl" style="margin-bottom:.25rem">students <span class="dim">(click to toggle, several at once)</span></div>
+      <div class="pickbox" id="evStudentBox"></div>
+    </div>
+    <div style="flex:1 1 22rem;min-width:18rem">
+      <div class="lbl" style="margin-bottom:.25rem">rooms <span class="dim">(click to toggle, several at once)</span></div>
+      <input id="evRoomFilter" placeholder="filter rooms" style="width:100%;margin-bottom:.25rem" autocomplete="off" oninput="renderRoomPicker()">
+      <div class="pickbox" id="evRoomBox"></div>
+      <input id="evRoomExtra" placeholder="or type a room not in the list" style="width:100%;margin-top:.25rem">
+    </div>
   </div>
   <table id="events"><thead><tr><th>date</th><th>time</th><th>title</th><th>room</th><th>teacher</th><th>rev</th><th></th></tr></thead><tbody></tbody></table>
 </section>
@@ -154,6 +171,11 @@
 <div id="logCard"><section><h2>Recent activity</h2><pre class="log" id="log"></pre></section></div>
 
 <script>
+// schoolList is the full school list from /admin/schools, which is what fills
+// every school selector. The status payload carries only a count of schools.
+// allUsers caches /admin/users for the student picker.
+let allUsers=null;
+let schoolList=[];
 let status;
 const $ = function(id){ return document.getElementById(id); };
 function log(msg){ const e=$('log'); e.textContent = (new Date().toISOString().slice(11,19))+' '+msg+'\n'+e.textContent; }
@@ -187,14 +209,39 @@ async function renderCards(){
   c.insertAdjacentHTML('beforeend', card('boosted', status.boosted));
   c.insertAdjacentHTML('beforeend', card('editors', status.editors));
   for(const id of ['whSchool','ntfySchool','tokSchool','poolSchool','evSchool']) fillSchoolSelect(id);
-  $('evUser').addEventListener('keydown', function(ev){ if(ev.key==='Enter') loadEvents(); });
-  $('poolSchool').addEventListener('change', loadPool);
+  if(!$('evUser').dataset.bound){
+    $('evUser').dataset.bound='1';
+    $('evUser').addEventListener('keydown', function(ev){ if(ev.key==='Enter') loadEvents(); });
+    $('evUser').addEventListener('input', renderStudentPicker);
+  }
+  if(!$('poolSchool').dataset.bound){ $('poolSchool').dataset.bound='1'; $('poolSchool').addEventListener('change', loadPool); }
+  if(!$('evSchool').dataset.bound){ $('evSchool').dataset.bound='1'; $('evSchool').addEventListener('change', loadEventPickers); }
+  loadEventPickers();
+  refreshDependentLists();
+}
+
+// defaultSchool is the school a section falls back to when its own selector has
+// nothing selected: the one the proxy was started with, else the first known
+// school. It used to be the literal string "testschool", a fixture name from the
+// test suite, which meant every school-scoped section queried a school that does
+// not exist and came back empty on a real deployment.
+function defaultSchool(){
+  if(status && status.school) return status.school;
+  if(schoolList && schoolList.length) return schoolList[0].name;
+  return '';
+}
+
+// refreshDependentLists reloads the sections whose contents depend on which
+// school is selected. Selecting a different school used to leave the pool list
+// showing the previous school's classes until the page was reloaded.
+function refreshDependentLists(){
+  if($('poolSchool').value !== loadPool._school) loadPool();
 }
 
 function makePicker(o){
   const inp=$(o.input), menu=$(o.menu), hidden=o.hidden?$(o.hidden):null;
   let timer=null;
-  function school(){ const s=o.schoolSel?$(o.schoolSel):null; return s?s.value:'testschool'; }
+  function school(){ const s=o.schoolSel?$(o.schoolSel):null; return (s&&s.value)||defaultSchool(); }
   async function search(){
     const q=inp.value.trim();
     try {
@@ -222,10 +269,31 @@ function makePicker(o){
   if(sel) sel.addEventListener('change', function(){ if(hidden) hidden.value='0'; inp.value=''; });
 }
 
+// fillSchoolSelect populates a school selector.
+//
+// The list comes from the schools endpoint, which returns objects; the status
+// payload carries only a count of schools, so iterating that number threw a
+// TypeError. The throw happened while the cards were still rendering, so every
+// selector on the page stayed empty *and* the two listeners registered after it
+// in that function were never attached — which is why the pool list showed
+// nothing and the events section ignored the Enter key.
 function fillSchoolSelect(id){
-  const sel=$(id); sel.innerHTML='';
-  (status.schools||[]).forEach(function(s){ const o=document.createElement('option'); o.value=s.name; o.textContent=s.name; sel.appendChild(o); });
-  if(!sel.options.length){ const o=document.createElement('option'); o.value='testschool'; o.textContent='testschool'; sel.appendChild(o); }
+  const sel=$(id); if(!sel) return;
+  // Remember what this selector was showing, so a re-render does not move a
+  // section to a different school than the admin picked.
+  if(sel.value) sel.dataset.pick=sel.value;
+  sel.innerHTML='';
+  (schoolList||[]).forEach(function(s){
+    const o=document.createElement('option'); o.value=s.name; o.textContent=s.name; sel.appendChild(o);
+  });
+  // No schools registered yet, or a selector whose school was removed: keep an
+  // explicit empty option rather than inventing a school name.
+  if(!sel.options.length){
+    const o=document.createElement('option'); o.value=''; o.textContent='(no school)'; sel.appendChild(o);
+  }
+  const want=sel.dataset.pick || defaultSchool();
+  if(want && Array.prototype.some.call(sel.options, function(o){ return o.value===want; })) sel.value=want;
+  if(!sel.value && sel.options.length) sel.value=sel.options[0].value;
 }
 
 // Student events are per-student entries on one person's own timetable: a
@@ -242,8 +310,94 @@ async function eventApi(method, path, body){
   return r.json();
 }
 
+// Students and rooms are picked from lists rather than typed. Both come from
+// endpoints the dashboard already calls — /admin/users for people, the element
+// catalog for rooms — so picking is a matter of pointing at a name that already
+// exists instead of spelling it. Typing a username was how an event ended up
+// filed against somebody who never sees it.
+let evStudentPicks=[], evRoomPicks=[], evRoomCatalog=[];
+
+// evStudentsFor returns the students of the selected school. personType 5 is a
+// student; a teacher account has no per-student timetable to put an event on.
+function evStudentsFor(){
+  const sc=$('evSchool').value;
+  return (allUsers||[]).filter(function(u){ return u.personType===5 && (!sc || u.school===sc); });
+}
+
+function renderStudentPicker(){
+  const box=$('evStudentBox'); if(!box) return;
+  const q=($('evUser').value||'').trim().toLowerCase();
+  const all=evStudentsFor();
+  // Picks are usernames, not the user objects in `all`. Prune against the full
+  // student set, never the filtered view: narrowing the filter must not drop a
+  // selection the admin already made.
+  const known={}; for(const u of all) known[u.username]=1;
+  evStudentPicks=evStudentPicks.filter(function(n){ return known[n]; });
+  const list=all.filter(function(u){
+    if(!q) return true;
+    return (u.username+' '+(u.displayName||'')+' '+(u.className||'')).toLowerCase().indexOf(q)>=0;
+  });
+  box.innerHTML='';
+  if(!list.length){ box.innerHTML='<div class="pickitem dim">no students signed up</div>'; }
+  for(const u of list){
+    const on=evStudentPicks.indexOf(u.username)>=0;
+    const it=document.createElement('div');
+    it.className='pickitem'+(on?' sel':'');
+    const cls=u.className?(' · '+u.className):'';
+    it.textContent=(on?'✓ ':'')+u.username+(u.displayName?(' ('+u.displayName+')'):'')+cls;
+    it.onclick=function(){
+      const i=evStudentPicks.indexOf(u.username);
+      if(i>=0) evStudentPicks.splice(i,1); else evStudentPicks.push(u.username);
+      renderStudentPicker();
+    };
+    box.appendChild(it);
+  }
+  // The datalist mirrors the picker so the filter box also autocompletes.
+  const dl=$('evStudents'); if(dl){ dl.innerHTML='';
+    for(const u of list){ const o=document.createElement('option'); o.value=u.username; dl.appendChild(o); } }
+}
+
+function renderRoomPicker(){
+  const box=$('evRoomBox'); if(!box) return;
+  const q=($('evRoomFilter').value||'').trim().toLowerCase();
+  const names=evRoomCatalog.filter(function(n){ return !q || n.toLowerCase().indexOf(q)>=0; }).sort();
+  evRoomPicks=evRoomPicks.filter(function(n){ return evRoomCatalog.indexOf(n)>=0; });
+  box.innerHTML='';
+  if(!evRoomCatalog.length){ box.innerHTML='<div class="pickitem dim">no rooms known yet</div>'; }
+  for(const n of names){
+    const on=evRoomPicks.indexOf(n)>=0;
+    const it=document.createElement('div');
+    it.className='pickitem'+(on?' sel':'');
+    it.textContent=(on?'✓ ':'')+n;
+    it.onclick=function(){
+      const i=evRoomPicks.indexOf(n);
+      if(i>=0) evRoomPicks.splice(i,1); else evRoomPicks.push(n);
+      renderRoomPicker();
+    };
+    box.appendChild(it);
+  }
+}
+
+async function loadEventPickers(){
+  const sc=$('evSchool').value || defaultSchool();
+  try{
+    if(!allUsers) allUsers=(await api('GET','users')).users||[];
+  }catch(e){ allUsers=[]; }
+  try{
+    const d=await api('GET','search?school='+encodeURIComponent(sc)+'&type=ROOM');
+    const rooms={};
+    for(const r of (d.results||[])) if(r.name) rooms[r.name]=1;
+    evRoomCatalog=Object.keys(rooms);
+  }catch(e){ evRoomCatalog=[]; }
+  renderStudentPicker(); renderRoomPicker();
+}
+
 async function loadEvents(){
-  const user=$('evUser').value.trim(); if(!user) return;
+  // Works from the picker as well as the filter box: picking students in the
+  // list is the normal way in now, so requiring the filter box to hold text
+  // would make the table silently empty.
+  const user=$('evUser').value.trim() || evStudentPicks[0] || '';
+  if(!user) return log('pick a student first');
   const d = await eventApi('GET','?username='+encodeURIComponent(user));
   const tb=$('events').querySelector('tbody'); tb.innerHTML='';
   for(const e of d.events){
@@ -260,11 +414,28 @@ async function loadEvents(){
 function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
 
 async function addEvent(){
-  const user=$('evUser').value.trim(); if(!user) return log('pick a username first');
+  // Several students at once is the normal case for a Technik slot, and several
+  // rooms happens whenever a group is split across two. Both become one row per
+  // student, which is what keeps an entry private to its owner.
+  const picks=evStudentPicks.slice();
+  const typed=$('evUser').value.trim();
+  if(!picks.length && typed) picks.push(typed);
+  if(!picks.length) return log('pick at least one student');
+  const rooms=evRoomPicks.slice();
+  const typedRoom=$('evRoomExtra')?$('evRoomExtra').value.trim():'';
+  if(typedRoom) rooms.push(typedRoom);
   try{
-    await eventApi('POST','',{username:user, title:$('evTitle').value.trim(), date:$('evDate').value,
-      startTime:$('evStart').value, endTime:$('evEnd').value, room:$('evRoom').value, teacher:$('evTeacher').value});
-    $('evTitle').value=''; log('event added for '+user); loadEvents();
+    const d=await eventApi('POST','',{usernames:picks, title:$('evTitle').value.trim(), date:$('evDate').value,
+      startTime:$('evStart').value, endTime:$('evEnd').value,
+      room:rooms.join(', '), teacher:$('evTeacher').value});
+    const made=d.created?d.created.length:1;
+    $('evTitle').value='';
+    // Point the table at one of the students just given the event, so the result
+    // is visible without a second click.
+    if(!$('evUser').value.trim()) $('evUser').value=picks[0];
+    evStudentPicks=[]; renderStudentPicker();
+    log('event added for '+made+' student'+(made===1?'':'s')+': '+picks.join(', '));
+    loadEvents();
   }catch(e){ log('add failed: '+e.message); }
 }
 
@@ -319,6 +490,10 @@ async function delUser(u){ if(!confirm('delete '+u+'?')) return; await api('DELE
 
 async function loadSchools(){
   const d=await api('GET','schools');
+  // Recorded for fillSchoolSelect. Loading this before the cards render is what
+  // makes the school selectors usable; renderCards used to fill them from a
+  // count, which is not iterable.
+  schoolList = d.schools || [];
   const tb=$('schools').querySelector('tbody'); tb.innerHTML='';
   for(const s of d.schools){ const tr=document.createElement('tr');
     tr.innerHTML='<td>'+s.name+'</td><td>'+new Date(s.addedAt*1000||0).toLocaleDateString()+'</td><td>'+new Date(s.lastSeen*1000||0).toLocaleString()+'</td>'; tb.appendChild(tr); }
@@ -421,8 +596,10 @@ async function editToken(tk,name){
 }
 
 async function loadPool(){
-  const sc=$('poolSchool').value || 'testschool';
+  const sc=$('poolSchool').value || defaultSchool();
+  loadPool._school=sc;
   const d=await api('GET','pool/'+sc);
+  if(!d.pool.length) log('no pooled classes for '+(sc||'(no school)')+': a class appears once a student of it has logged in');
   const tb=$('pool').querySelector('tbody'); tb.innerHTML='';
   for(const c of d.pool){ const tr=document.createElement('tr');
     tr.innerHTML='<td>'+c.id+'</td><td>'+c.name+'</td><td>'+c.owner+'</td>'; tb.appendChild(tr); }
@@ -431,8 +608,11 @@ async function loadPool(){
 async function refreshAll(){
   const mark = new Date().toISOString().slice(11,19);
   const hint = $('refreshHint'); if(hint) hint.textContent = 'last refresh '+mark;
-  const jobs = {users:loadUsers, schools:loadSchools, webhooks:loadWebhooks,
+  const jobs = {users:loadUsers, webhooks:loadWebhooks,
                 ntfy:loadNtfy, tokens:loadTokens, pool:loadPool};
+  // The school list has to land before the cards render, because rendering the
+  // cards is what fills the school selectors.
+  try { await loadSchools(); } catch(e){ log('schools: '+e); }
   try { await renderCards(); } catch(e){ log('cards: '+e); }
   const results = await Promise.allSettled(Object.keys(jobs).map(k => jobs[k]().catch(function(e){ log(k+' load: '+e); })));
   results.forEach(function(r, i){ if(r.status === 'rejected') log(Object.keys(jobs)[i]+' load failed'); });
