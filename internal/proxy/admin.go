@@ -149,7 +149,7 @@ func (p *Proxy) adminStatus(w http.ResponseWriter) {
 	}
 
 	p.writeJSON(w, map[string]any{
-		"version":    p.opts.School,
+		"version":    version,
 		"school":     p.opts.School,
 		"users":      userCount,
 		"admins":     adminCount,

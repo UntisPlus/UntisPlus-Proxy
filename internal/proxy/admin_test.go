@@ -614,3 +614,54 @@ func TestAdminNtfyTestButtonUsesPerTopicBase(t *testing.T) {
 		t.Fatalf("publish error: %v", err)
 	}
 }
+
+// TestAdminStatusSchoolContract pins the two fields the dashboard's school
+// selectors depend on, because the mismatch between them is what emptied the
+// pool list and left every selector on the page blank.
+//
+// `schools` is a count, rendered as a card. `school` is the school the proxy was
+// started with, which is what a section falls back to when its own selector has
+// nothing chosen. The dashboard used to iterate `status.schools` as if it were
+// the list, which threw while the cards were rendering — after the cards and
+// before the listeners for the pool and events sections were attached.
+func TestAdminStatusSchoolContract(t *testing.T) {
+	p, _ := newTestProxy(t)
+	rec := adminRequest(t, p, "bob", http.MethodGet, "/admin/status", "")
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	school, ok := out["school"].(string)
+	if !ok || school == "" {
+		t.Errorf("status.school = %#v, want the configured school as a non-empty string so the dashboard has a default", out["school"])
+	}
+	if _, ok := out["schools"].(float64); !ok {
+		t.Errorf("status.schools = %#v, want a count (the dashboard card shows a number)", out["schools"])
+	}
+	if v, ok := out["version"].(string); !ok || v == school {
+		t.Errorf("status.version = %#v, want the proxy version, not the school name", out["version"])
+	}
+}
+
+// TestAdminDashboardHasNoTestFixtures guards the shipped admin page against the
+// fixture names that made every school-scoped section query a school that does
+// not exist: with an empty selector the page fell back to "testschool", so the
+// pool list came back empty and the events section queried the wrong school.
+func TestAdminDashboardHasNoTestFixtures(t *testing.T) {
+	page := adminDashboardHTML
+	for _, fixture := range []string{"testschool", "5000", "bob"} {
+		if strings.Contains(page, "'"+fixture+"'") {
+			t.Errorf("the admin page hardcodes the fixture %q, which is not a school on a real deployment", fixture)
+		}
+	}
+	// The school selector has to read the list, not the count.
+	if strings.Contains(page, "status.schools||[]") {
+		t.Error("fillSchoolSelect still iterates status.schools, which is a count and throws")
+	}
+	if !strings.Contains(page, "schoolList") {
+		t.Error("the admin page never records the school list from /admin/schools")
+	}
+	if !strings.Contains(page, "defaultSchool()") {
+		t.Error("the admin page has no default-school fallback")
+	}
+}

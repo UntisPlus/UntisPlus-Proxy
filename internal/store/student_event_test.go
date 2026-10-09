@@ -456,3 +456,56 @@ func TestStudentEventCreatedAtIsRecent(t *testing.T) {
 		t.Errorf("createdAt = %v, want between %v and now", ev.CreatedAt, before)
 	}
 }
+
+// TestPoolWithNoSchoolReturnsEverySchool pins the overview case.
+//
+// The comment on Pool promised that an empty school matches all of them, and the
+// SQL did not: `school=? OR school=”` with an empty bound value matches only
+// rows whose school is itself empty. On the dashboard that meant the pool card
+// and the pool list were empty for a single-school deployment — the one case
+// where there is a pool to show.
+func TestPoolWithNoSchoolReturnsEverySchool(t *testing.T) {
+	st := openTestStore(t)
+	for _, u := range []*User{
+		{Username: "dee", School: "schoolA", ClassID: 10},
+		{Username: "sam", School: "schoolB", ClassID: 20},
+		{Username: "kim", ClassID: 10}, // pre-multi-school row, no school
+		{Username: "noat", School: "schoolA", ClassID: 0},
+	} {
+		if err := st.UpsertUser(u); err != nil {
+			t.Fatalf("seed %s: %v", u.Username, err)
+		}
+	}
+	all, err := st.Pool("")
+	if err != nil {
+		t.Fatalf("Pool(\"\"): %v", err)
+	}
+	if len(all) != 2 {
+		t.Fatalf("Pool(\"\") returned %d classes, want 2 (every school): %+v", len(all), all)
+	}
+	seen := map[int64]bool{}
+	for _, c := range all {
+		seen[c.ID] = true
+	}
+	for _, want := range []int64{10, 20} {
+		if !seen[want] {
+			t.Errorf("class %d missing from the overview pool: %+v", want, all)
+		}
+	}
+	// A school-scoped read still only returns its own.
+	a, err := st.Pool("schoolA")
+	if err != nil {
+		t.Fatalf("Pool(schoolA): %v", err)
+	}
+	if len(a) != 1 || a[0].ID != 10 {
+		t.Errorf("Pool(schoolA) = %+v, want just class 10", a)
+	}
+	// The legacy no-school row still counts for a named school, which is the
+	// documented pre-multi-school allowance; it is only the empty argument that
+	// had to change.
+	if b, err := st.Pool("schoolB"); err != nil {
+		t.Fatalf("Pool(schoolB): %v", err)
+	} else if len(b) != 2 || b[1].ID != 20 {
+		t.Errorf("Pool(schoolB) = %+v, want class 20 plus the legacy no-school class 10", b)
+	}
+}

@@ -1342,11 +1342,26 @@ func (s *Store) ClassForPerson(school string, personID int64) (int64, error) {
 
 // Pool returns the pooled classes for a school: every class whose users belong
 // to the given school (or whose school has not been recorded, a pre-multi-
-// school account, treated as matching any school). Empty school matches all.
+// school account, treated as matching any school). An empty school matches every
+// school, which is what the admin dashboard's overview wants.
+//
+// The empty case needs its own SQL rather than a parameter: passing "" as the
+// bound value turns `(school=? OR school='')` into `school='' OR school=''`,
+// which matches only the legacy rows with no school recorded — so a dashboard
+// overview over a single-school deployment asked for the pool of its own school
+// and was told the pool was empty.
 func (s *Store) Pool(school string) ([]Class, error) {
-	rows, err := s.db.Query(`SELECT class_id, COALESCE(MAX(class_name),'') AS name
+	query := `SELECT class_id, COALESCE(MAX(class_name),'') AS name
 		FROM users WHERE class_id > 0 AND (school=? OR school='')
-		GROUP BY class_id ORDER BY class_id`, school)
+		GROUP BY class_id ORDER BY class_id`
+	args := []any{school}
+	if school == "" {
+		query = `SELECT class_id, COALESCE(MAX(class_name),'') AS name
+			FROM users WHERE class_id > 0
+			GROUP BY class_id ORDER BY class_id`
+		args = nil
+	}
+	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
