@@ -422,10 +422,13 @@ independent of admin/boosted/editor/recon and is checked on every request.
 - [ ] 15.37 the aggregate is not offered to a **class/teacher/room/subject**
       calendar token (`/api/calendar/...ics`, `/week/...`): those feeds remain
       event-free
-- [ ] 15.38 `/admin` → *Room map*: search a room and **add / update** it, then
-      **refresh** → it persists per school (reload the page and it is still
-      there); an event naming that room references the pinned id the real lessons
-      use, and clearing the entry falls back to the school catalogue
+- [ ] 15.38 `/admin` → *Room map*: entries are keyed by the room text an event
+      carries (the import's `Ort` column), not by a catalogue room name. Type an
+      imported name (e.g. `Aula`) into the *event room text* field or pick one of
+      the suggestions, choose the real *Untis room* with the picker, then *add /
+      update* → the pair is saved (event room text → Untis room id) and the text
+      drops out of the suggestions; *refresh* / reload and it persists per school.
+      An entry here wins over the school catalogue; a text in neither is still shown
 
 ### Events on a room or organiser timetable
 

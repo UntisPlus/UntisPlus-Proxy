@@ -70,8 +70,12 @@ var clearTimeout = function(){};
 // Stub the two endpoints the pickers read and the events POST, so the check is
 // offline and deterministic. The recorded POST body is what the driver asserts.
 const stub = `
-var posted=null, logs=[];
+var posted=null, roomPosted=null, logs=[];
 var fetch = async function(url, opts){
+  if(url.indexOf('/admin/rooms')>=0){
+    if(opts && opts.method==='POST'){ roomPosted=JSON.parse(opts.body); return {ok:true,status:200,json:async()=>({ok:true,school:'schuldorf',rooms:roomPosted.rooms,texts:[]})}; }
+    return {ok:true,status:200,json:async()=>({school:'schuldorf',rooms:{},texts:['Aula','Turnhalle']})};
+  }
   if(opts && opts.method==='POST'){ posted=JSON.parse(opts.body); return {ok:true,status:200,json:async()=>({created:[{eventId:1,username:'dee'},{eventId:2,username:'sam'}]})}; }
   if(url.indexOf('/admin/users')>=0) return {ok:true,status:200,json:async()=>({users:[
     {username:'dee',displayName:'Dee',personType:5,school:'schuldorf',className:'10a'},
@@ -134,6 +138,19 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
   must(posted.room==='R12, R13', 'rooms not joined: '+JSON.stringify(posted.room));
   must(posted.startTime==='9:00' && posted.endTime==='10:00', 'times mangled: '+posted.startTime+'..'+posted.endTime);
   must(logs.length && logs[logs.length-1].indexOf('2 students')>=0, 'success not logged as a batch');
+
+  // Room map: the event-side room text is free text (suggested from the import's
+  // texts), the id comes from the room picker, and add / update saves the pair. An
+  // earlier UI keyed the map on the picker's room name, so an imported text like
+  // "Aula" could not be mapped at all.
+  await loadRoomMap();
+  must($('rmSrcList').options.length===2, 'event room texts not offered as suggestions: '+$('rmSrcList').options.length);
+  $('rmSrcIn').value='Aula';
+  $('rmElVal').value='169';
+  await addRoomMap();
+  must(roomPosted && roomPosted.rooms && roomPosted.rooms['Aula']===169,
+    'the room map did not post the import text -> room id: '+JSON.stringify(roomPosted));
+  must($('rmSrcIn').value==='', 'the source field was not cleared after add');
 
   console.log('check-admin-ui: all admin UI checks passed');
 })().catch(function(e){ console.error('FAIL: ' + (e && e.stack || e)); process.exit(1); });

@@ -586,3 +586,33 @@ func TestStudentEventPatchMovesOwner(t *testing.T) {
 		t.Errorf("the new owner's version did not move: %d -> %d", samBefore, v)
 	}
 }
+
+// TestEventRoomTextsDistinct: the admin room-map editor is fed the distinct room
+// strings on a school's events, so the same room on many events is offered once
+// and an empty room is not offered at all.
+func TestEventRoomTextsDistinct(t *testing.T) {
+	st := openTestStore(t)
+	add := func(user, room string) {
+		t.Helper()
+		ev := sampleEvent()
+		ev.Room = room
+		if _, err := st.CreateStudentEvent("testschool", user, ev, "admin"); err != nil {
+			t.Fatalf("seed room %q: %v", room, err)
+		}
+	}
+	add("dee", "Aula")
+	add("sam", "Aula")
+	add("dee", "Turnhalle")
+	add("dee", "")
+	if _, err := st.CreateStudentEvent("otherschool", "dee", sampleEvent(), "admin"); err != nil {
+		t.Fatalf("seed other school: %v", err)
+	}
+
+	rooms, err := st.EventRoomTexts("testschool")
+	if err != nil {
+		t.Fatalf("EventRoomTexts: %v", err)
+	}
+	if len(rooms) != 2 || rooms[0] != "Aula" || rooms[1] != "Turnhalle" {
+		t.Errorf("EventRoomTexts = %v, want [Aula Turnhalle]", rooms)
+	}
+}

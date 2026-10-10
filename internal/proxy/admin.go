@@ -1011,7 +1011,7 @@ func (p *Proxy) adminRooms(w http.ResponseWriter, r *http.Request, parts []strin
 		if m == nil {
 			m = map[string]int64{}
 		}
-		p.writeJSON(w, map[string]any{"school": school, "rooms": m})
+		p.writeJSON(w, map[string]any{"school": school, "rooms": m, "texts": p.unmappedEventRooms(school, m)})
 	case http.MethodPost:
 		if school == "" {
 			p.writeJSON(w, map[string]any{"error": "school is required"})
@@ -1032,10 +1032,38 @@ func (p *Proxy) adminRooms(w http.ResponseWriter, r *http.Request, parts []strin
 		if m == nil {
 			m = map[string]int64{}
 		}
-		p.writeJSON(w, map[string]any{"ok": true, "school": school, "rooms": m})
+		p.writeJSON(w, map[string]any{"ok": true, "school": school, "rooms": m, "texts": p.unmappedEventRooms(school, m)})
 	default:
 		p.writeJSON(w, map[string]any{"error": "not found"})
 	}
+}
+
+// unmappedEventRooms lists the room texts that appear on a school's events but
+// have no override yet, so the dashboard can offer them for pinning. A field that
+// holds several names ("Aula, Turnhalle") is split the way the resolver splits it,
+// and a name already mapped is dropped. Order is stable for the picker.
+func (p *Proxy) unmappedEventRooms(school string, overrides map[string]int64) []string {
+	if strings.TrimSpace(school) == "" {
+		return nil
+	}
+	fields, err := p.store.EventRoomTexts(school)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		for _, name := range splitElementNames(field) {
+			key := strings.ToLower(name)
+			if seen[key] || overrides[key] != 0 {
+				continue
+			}
+			seen[key] = true
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // forbidden issues the standard 403 JSON body used across the REST API.

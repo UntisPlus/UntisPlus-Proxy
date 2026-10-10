@@ -2844,6 +2844,29 @@ func (s *Store) AllStudentEventsForRange(school, from, to string) ([]StudentEven
 	return scanStudentEvents(rows)
 }
 
+// EventRoomTexts returns the distinct non-empty room strings carried by a
+// school's events. They feed the admin room-map editor, which needs the room text
+// as it actually appears on an imported appointment ("Aula", "Sporthalle") so it
+// can be pinned to the Untis room id the real lessons use. A single field may hold
+// several names ("Aula, Turnhalle"); the caller splits them.
+func (s *Store) EventRoomTexts(school string) ([]string, error) {
+	rows, err := s.db.Query(`SELECT DISTINCT room FROM student_events
+		WHERE school=? AND room<>'' ORDER BY room`, school)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var room string
+		if err := rows.Scan(&room); err != nil {
+			return nil, err
+		}
+		out = append(out, room)
+	}
+	return out, rows.Err()
+}
+
 // StudentEvents returns every event for a student, for the admin listing. Unlike
 // the range read this is not bounded, so it is only for administration.
 func (s *Store) StudentEvents(school, username string) ([]StudentEvent, error) {

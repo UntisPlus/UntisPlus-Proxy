@@ -167,7 +167,16 @@ func TestAdminUsersListingShowsPermStatus(t *testing.T) {
 // back; the POST echoes the stored (normalized) map so the page never shows a
 // value the proxy did not keep. A missing school is rejected.
 func TestAdminRoomsRoundTrip(t *testing.T) {
-	p, _ := newTestProxy(t)
+	p, st := newTestProxy(t)
+
+	// Two events whose room text carries one room, and one that carries two: the
+	// editor is offered each distinct name so it can be pinned to a real room.
+	first := testEvent()
+	first.Room = "Aula, Turnhalle"
+	seedEvent(t, st, "dee", first)
+	second := testEvent()
+	second.Room = "Aula"
+	seedEvent(t, st, "sam", second)
 
 	rec := adminRequest(t, p, "bob", http.MethodGet, "/admin/rooms?school=testschool", "")
 	if rec.Code != http.StatusOK {
@@ -176,6 +185,9 @@ func TestAdminRoomsRoundTrip(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `"rooms":{}`) {
 		t.Errorf("empty map not returned: %s", rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `"texts":["Aula","Turnhalle"]`) {
+		t.Errorf("unmapped event room texts not offered: %s", rec.Body.String())
+	}
 
 	rec = adminRequest(t, p, "bob", http.MethodPost, "/admin/rooms?school=testschool", `{"rooms":{"Aula":169,"CSS":238}}`)
 	if rec.Code != http.StatusOK {
@@ -183,6 +195,10 @@ func TestAdminRoomsRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(rec.Body.String(), `"aula":169`) || !strings.Contains(rec.Body.String(), `"css":238`) {
 		t.Errorf("normalized map not echoed: %s", rec.Body.String())
+	}
+	// Aula is mapped now, so it leaves the suggestions; Turnhalle is still open.
+	if !strings.Contains(rec.Body.String(), `"texts":["Turnhalle"]`) {
+		t.Errorf("mapped text not dropped from suggestions: %s", rec.Body.String())
 	}
 
 	rec = adminRequest(t, p, "bob", http.MethodGet, "/admin/rooms?school=testschool", "")

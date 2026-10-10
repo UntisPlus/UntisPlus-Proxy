@@ -207,13 +207,16 @@
   <h2>Room map <button class="mini" onclick="loadRoomMap()">refresh</button></h2>
   <div class="row" style="margin-bottom:.5rem">
     <select id="rmSchool"></select>
-    <span class="pickwrap"><input id="rmElIn" placeholder="search room…" style="width:16rem">
+    <input id="rmSrcIn" list="rmSrcList" placeholder="event room text…" style="width:14rem">
+    <datalist id="rmSrcList"></datalist>
+    <span class="dim">→</span>
+    <span class="pickwrap"><input id="rmElIn" placeholder="Untis room…" style="width:16rem">
       <input type="hidden" id="rmElVal" value="0"><input type="hidden" id="rmElName"><div class="pickmenu" id="rmElMenu"></div></span>
-    <span class="dim">→ id <b id="rmPickId">—</b></span>
+    <span class="dim">id <b id="rmPickId">—</b></span>
     <button onclick="addRoomMap()">add / update</button>
   </div>
-  <div class="dim" style="margin-bottom:.4rem">Pin an event's room text to the Untis id the real lessons use (e.g. Aula → 169), per school. An entry here wins over the school catalogue; a room in neither is still shown.</div>
-  <table id="roommap"><thead><tr><th>room name</th><th>Untis room id</th><th></th></tr></thead><tbody></tbody></table>
+  <div class="dim" style="margin-bottom:.4rem">Map the room text an event carries (e.g. from the import) to the Untis room id the real lessons use, per school. Pick a suggested text or type your own, choose the real room, then add / update. An entry here wins over the school catalogue; a room in neither is still shown.</div>
+  <table id="roommap"><thead><tr><th>event room text</th><th>Untis room id</th><th></th></tr></thead><tbody></tbody></table>
 </section>
 
 <section>
@@ -730,16 +733,25 @@ async function importEvents(){
 }
 
 // Room overrides pin a room's plain text to the Untis id the real lessons use,
-// per school. The picker offers real rooms (with their ids) so the admin links a
-// name to an id rather than typing one; the whole map is saved on every change.
+// The map pins the room text an event carries — typically the "Ort" column of an
+// import — to the Untis room id the real lessons use, per school. The event-side
+// text is a free-text field (with the school's event room texts offered as
+// suggestions); the id comes from the room picker. The whole map is saved on
+// every change.
 let roomMap={};
 async function loadRoomMap(){
   const sc=$('rmSchool').value || defaultSchool();
   try{
     const d=await api('GET','rooms?school='+encodeURIComponent(sc));
     roomMap=d.rooms||{};
+    renderRoomTexts(d.texts||[]);
   }catch(e){ roomMap={}; log('room map load: '+e.message); }
   renderRoomMap();
+}
+function renderRoomTexts(texts){
+  const dl=$('rmSrcList'); if(!dl) return;
+  dl.innerHTML='';
+  for(const t of texts){ const o=document.createElement('option'); o.value=t; dl.appendChild(o); }
 }
 function renderRoomMap(){
   const tb=$('roommap').querySelector('tbody'); tb.innerHTML='';
@@ -757,14 +769,15 @@ async function saveRoomMap(){
   if(!sc){ log('no school selected'); return; }
   const d=await api('POST','rooms?school='+encodeURIComponent(sc),{rooms:roomMap});
   if(d.error){ log('room map save failed: '+d.error); return; }
-  roomMap=d.rooms||roomMap; renderRoomMap(); log('room map saved for '+sc);
+  roomMap=d.rooms||roomMap; renderRoomTexts(d.texts||[]); renderRoomMap(); log('room map saved for '+sc);
 }
 async function addRoomMap(){
-  const name=($('rmElIn').value||'').trim();
+  const name=($('rmSrcIn').value||'').trim();
   const id=parseInt($('rmElVal').value)||0;
-  if(!name || !id){ log('search a room and pick it first'); return; }
+  if(!name){ log('type the event room text first'); return; }
+  if(!id){ log('pick the Untis room to map it to'); return; }
   roomMap[name]=id;
-  $('rmElIn').value=''; $('rmElVal').value='0'; $('rmElName').value=''; $('rmPickId').textContent='—';
+  $('rmSrcIn').value=''; $('rmElIn').value=''; $('rmElVal').value='0'; $('rmElName').value=''; $('rmPickId').textContent='—';
   await saveRoomMap();
 }
 async function delRoomMap(name){ delete roomMap[name]; await saveRoomMap(); }
