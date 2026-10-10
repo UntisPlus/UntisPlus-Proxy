@@ -162,3 +162,36 @@ func TestAdminUsersListingShowsPermStatus(t *testing.T) {
 		t.Errorf("user listing missing perm badges: %s", rec.Body.String())
 	}
 }
+
+// TestAdminRoomsRoundTrip: the dashboard saves a school's room map and reads it
+// back; the POST echoes the stored (normalized) map so the page never shows a
+// value the proxy did not keep. A missing school is rejected.
+func TestAdminRoomsRoundTrip(t *testing.T) {
+	p, _ := newTestProxy(t)
+
+	rec := adminRequest(t, p, "bob", http.MethodGet, "/admin/rooms?school=testschool", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"rooms":{}`) {
+		t.Errorf("empty map not returned: %s", rec.Body.String())
+	}
+
+	rec = adminRequest(t, p, "bob", http.MethodPost, "/admin/rooms?school=testschool", `{"rooms":{"Aula":169,"CSS":238}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"aula":169`) || !strings.Contains(rec.Body.String(), `"css":238`) {
+		t.Errorf("normalized map not echoed: %s", rec.Body.String())
+	}
+
+	rec = adminRequest(t, p, "bob", http.MethodGet, "/admin/rooms?school=testschool", "")
+	if !strings.Contains(rec.Body.String(), `"aula":169`) {
+		t.Errorf("GET after POST did not return the stored map: %s", rec.Body.String())
+	}
+
+	rec = adminRequest(t, p, "bob", http.MethodPost, "/admin/rooms", `{"rooms":{"Aula":169}}`)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"error":"school is required"`) {
+		t.Errorf("POST without a school = %d %s, want a school-required error", rec.Code, rec.Body.String())
+	}
+}

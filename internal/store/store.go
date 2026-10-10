@@ -19,6 +19,32 @@ func norm(username string) string {
 	return strings.ToLower(strings.TrimSpace(username))
 }
 
+// eventKey is the key a hand-authored student event is filed under. It is `norm`
+// plus a German fold of the umlauts, because a short name an admin types in the
+// transit calendar ("Gruen") and the same student's login ("grün") differ only
+// in how the umlaut was spelled. Folding both sides to "grun" is what lets an
+// imported event reach a student whose login the import could not see yet.
+//
+// It is deliberately separate from `norm`: the users table is keyed by the exact
+// login, and widening that key would risk two distinct accounts collapsing into
+// one. Only the proxy-owned events table, which no login ever queries directly,
+// is addressed by this looser key.
+func eventKey(username string) string {
+	folded := norm(username)
+	return umlautFolder.Replace(folded)
+}
+
+// umlautFolder folds the umlaut spellings that differ between a typed short name
+// and an Untis login. "ae"/"oe"/"ue" are left alone: folding them to the base
+// vowel too would merge genuinely different accounts ("mueller" and "müller"),
+// which is a worse failure than a missed match.
+var umlautFolder = strings.NewReplacer(
+	"ä", "a",
+	"ö", "o",
+	"ü", "u",
+	"ß", "ss",
+)
+
 // userCols lists the users table columns in scan order (scanUser/scanUserRow).
 const userCols = "id,username,password,method,person_id,person_type,class_id,class_name,email,display_name,created_at,last_seen,school,admin"
 
@@ -722,6 +748,12 @@ const (
 	// (set/add/update/delete/change). It implies boosted: an editor is a
 	// boosted user who may also edit, a boosted user alone may only read.
 	FeatureEditor = "editor"
+	// FeatureTechniker grants sight of the synthetic "Technik" aggregate class,
+	// whose timetable carries every student's hand-authored Technik events. It
+	// is independent of the other flags: it neither implies nor is implied by
+	// boosted, editor or recon. Events stay per-student on every other surface;
+	// this flag only decides whether the merged class is offered and served.
+	FeatureTechniker = "techniker"
 )
 
 // BoostFeatures are the per-user features that imply Boosted raw timetable
@@ -902,6 +934,46 @@ func (s *Store) MarkAdminBootstrapSeeded() error {
 	_, err := s.db.Exec(`INSERT INTO settings (key, value) VALUES (?, '1')
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, adminBootstrapKey)
 	return err
+}
+
+// SetSetting stores an arbitrary opaque blob under a key. It is used to
+// persist process-local caches (the raw getUserData2017 masterData) so a
+// restart does not reset them.
+func (s *Store) SetSetting(key, value string) error {
+	_, err := s.db.Exec(`INSERT INTO settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
+	return err
+}
+
+// GetSetting reads a stored blob. The boolean reports whether the key exists.
+func (s *Store) GetSetting(key string) (string, bool, error) {
+	var v string
+	err := s.db.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&v)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return v, true, nil
+}
+
+// SettingsByPrefix returns every setting whose key starts with the prefix.
+func (s *Store) SettingsByPrefix(prefix string) (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT key, value FROM settings WHERE key LIKE ?`, prefix+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
 }
 
 // School is one registered upstream Untis school.
@@ -1346,7 +1418,7 @@ func (s *Store) ClassForPerson(school string, personID int64) (int64, error) {
 // school, which is what the admin dashboard's overview wants.
 //
 // The empty case needs its own SQL rather than a parameter: passing "" as the
-// bound value turns `(school=? OR school='')` into `school='' OR school=''`,
+// bound value turns `(school=? OR school=”)` into `school=” OR school=”`,
 // which matches only the legacy rows with no school recorded — so a dashboard
 // overview over a single-school deployment asked for the pool of its own school
 // and was told the pool was empty.
@@ -2411,7 +2483,7 @@ func (s *Store) CreateStudentEvent(school, username string, ev NewStudentEvent, 
 		(school, username, date, start_time, end_time, title, subject, room, teacher,
 		 description, created_by, created_at, updated_at, revision)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1)`,
-		school, norm(username), ev.Date, ev.StartTime, ev.EndTime, ev.Title,
+		school, eventKey(username), ev.Date, ev.StartTime, ev.EndTime, ev.Title,
 		ev.Subject, ev.Room, ev.Teacher, ev.Description, norm(createdBy),
 		now.Unix(), now.Unix())
 	if err != nil {
@@ -2425,7 +2497,7 @@ func (s *Store) CreateStudentEvent(school, username string, ev NewStudentEvent, 
 		return StudentEvent{}, err
 	}
 	return StudentEvent{
-		ID: id, School: school, Username: norm(username),
+		ID: id, School: school, Username: eventKey(username),
 		Date: ev.Date, StartTime: ev.StartTime, EndTime: ev.EndTime, Title: ev.Title,
 		Subject: ev.Subject, Room: ev.Room, Teacher: ev.Teacher, Description: ev.Description,
 		CreatedBy: norm(createdBy), CreatedAt: now, UpdatedAt: now, Revision: 1,
@@ -2436,6 +2508,10 @@ func (s *Store) CreateStudentEvent(school, username string, ev NewStudentEvent, 
 // makes "change only the room" possible without the caller reading the row first
 // and racing another admin.
 type StudentEventPatch struct {
+	// Username moves the event to another student. A nil value leaves the owner
+	// alone; the handler validates that the new owner is a student before it is
+	// passed here.
+	Username    *string
 	Date        *string
 	StartTime   *string
 	EndTime     *string
@@ -2459,9 +2535,13 @@ func (s *Store) UpdateStudentEvent(school string, id int64, patch StudentEventPa
 	}
 	// Applied by hand rather than built from a map so every column is named once
 	// and a field absent from the patch cannot be overwritten with a zero value.
+	username := before.Username
 	date, start, end := before.Date, before.StartTime, before.EndTime
 	title, subject, room := before.Title, before.Subject, before.Room
 	teacher, description := before.Teacher, before.Description
+	if patch.Username != nil {
+		username = eventKey(*patch.Username)
+	}
 	if patch.Date != nil {
 		date = *patch.Date
 	}
@@ -2488,16 +2568,25 @@ func (s *Store) UpdateStudentEvent(school string, id int64, patch StudentEventPa
 	}
 	now := time.Now().Truncate(time.Second)
 	_, err = s.db.Exec(`UPDATE student_events SET
-			date=?, start_time=?, end_time=?, title=?, subject=?, room=?, teacher=?,
+			username=?, date=?, start_time=?, end_time=?, title=?, subject=?, room=?, teacher=?,
 			description=?, updated_at=?, revision=revision+1
 		WHERE school=? AND event_id=?`,
-		date, start, end, title, subject, room, teacher, description, now.Unix(), school, id)
+		username, date, start, end, title, subject, room, teacher, description, now.Unix(), school, id)
 	if err != nil {
 		return StudentEvent{}, false, err
 	}
+	// A move is a change for both students:
+	// the old owner's client has to drop the event and the new owner's has to
+	// pick it up, so both counters advance.
 	if err := s.BumpStudentEventVersion(school, before.Username); err != nil {
 		return StudentEvent{}, false, err
 	}
+	if username != before.Username {
+		if err := s.BumpStudentEventVersion(school, username); err != nil {
+			return StudentEvent{}, false, err
+		}
+	}
+	before.Username = username
 	before.Date, before.StartTime, before.EndTime = date, start, end
 	before.Title, before.Subject, before.Room = title, subject, room
 	before.Teacher, before.Description = teacher, description
@@ -2541,7 +2630,7 @@ func (s *Store) BumpStudentEventVersion(school, username string) error {
 	_, err := s.db.Exec(`INSERT INTO student_event_versions (school, username, version)
 		VALUES (?,?,1)
 		ON CONFLICT(school, username) DO UPDATE SET version=version+1`,
-		school, norm(username))
+		school, eventKey(username))
 	return err
 }
 
@@ -2551,7 +2640,7 @@ func (s *Store) BumpStudentEventVersion(school, username string) error {
 func (s *Store) StudentEventVersion(school, username string) (int64, error) {
 	var v int64
 	err := s.db.QueryRow(`SELECT version FROM student_event_versions WHERE school=? AND username=?`,
-		school, norm(username)).Scan(&v)
+		school, eventKey(username)).Scan(&v)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
@@ -2592,6 +2681,25 @@ func scanStudentEvent(row scanner) (StudentEvent, error) {
 	return ev, nil
 }
 
+// StudentEventDuplicate returns an existing event for the same student at the
+// same time, if one exists.
+//
+// The key is school + username + date + start + end, and deliberately ignores
+// the title: a student cannot be in two places in one slot, so a second row for
+// the same slot is the same appointment entered twice, whatever the admin typed
+// the second time. The lowest event id wins so the report is stable across
+// calls.
+func (s *Store) StudentEventDuplicate(school, username, date, start, end string) (StudentEvent, bool, error) {
+	row := s.db.QueryRow(`SELECT `+studentEventCols+` FROM student_events
+		WHERE school=? AND username=? AND date=? AND start_time=? AND end_time=?
+		ORDER BY event_id LIMIT 1`, school, eventKey(username), date, start, end)
+	ev, err := scanStudentEvent(row)
+	if err == sql.ErrNoRows {
+		return StudentEvent{}, false, nil
+	}
+	return ev, err == nil, err
+}
+
 // StudentEventsForRange returns a student's events whose date lies in [from, to],
 // both ends included.
 //
@@ -2604,7 +2712,22 @@ func scanStudentEvent(row scanner) (StudentEvent, error) {
 func (s *Store) StudentEventsForRange(school, username, from, to string) ([]StudentEvent, error) {
 	rows, err := s.db.Query(`SELECT `+studentEventCols+` FROM student_events
 		WHERE school=? AND username=? AND date>=? AND date<=?
-		ORDER BY date, start_time, event_id`, school, norm(username), from, to)
+		ORDER BY date, start_time, event_id`, school, eventKey(username), from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanStudentEvents(rows)
+}
+
+// AllStudentEventsForRange returns every student's events whose date lies in
+// [from, to], across the whole school. It backs the synthetic Technik aggregate
+// class, which is served only to holders of the techniker permission; the
+// per-viewer read StudentEventsForRange remains the path for a single student.
+func (s *Store) AllStudentEventsForRange(school, from, to string) ([]StudentEvent, error) {
+	rows, err := s.db.Query(`SELECT `+studentEventCols+` FROM student_events
+		WHERE school=? AND date>=? AND date<=?
+		ORDER BY date, start_time, event_id`, school, from, to)
 	if err != nil {
 		return nil, err
 	}
@@ -2616,7 +2739,7 @@ func (s *Store) StudentEventsForRange(school, username, from, to string) ([]Stud
 // the range read this is not bounded, so it is only for administration.
 func (s *Store) StudentEvents(school, username string) ([]StudentEvent, error) {
 	rows, err := s.db.Query(`SELECT `+studentEventCols+` FROM student_events
-		WHERE school=? AND username=? ORDER BY date, start_time, event_id`, school, norm(username))
+		WHERE school=? AND username=? ORDER BY date, start_time, event_id`, school, eventKey(username))
 	if err != nil {
 		return nil, err
 	}

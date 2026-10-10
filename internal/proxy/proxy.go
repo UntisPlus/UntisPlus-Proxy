@@ -15,6 +15,11 @@ import (
 	"untis-proxy/internal/untis"
 )
 
+// masterDataSettingPrefix keys the persisted copies of the raw getUserData2017
+// result body in the settings table, so masterData survives a restart and the
+// first request of a fresh process does not have to invent element ids.
+const masterDataSettingPrefix = "masterdata_raw:"
+
 type Options struct {
 	School string
 	TTL    time.Duration
@@ -106,7 +111,7 @@ func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *
 	if opts.TTL <= 0 {
 		opts.TTL = 5 * time.Minute
 	}
-	return &Proxy{
+	p := &Proxy{
 		store:       st,
 		untis:       uc,
 		sessions:    sm,
@@ -117,6 +122,25 @@ func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *
 		schools:     map[string]*schoolState{},
 		absenceDiag: &absenceDiagnostics{},
 	}
+	// The raw masterData of every known school survives a restart, so the first
+	// timetable request after a restart (before a fresh login) still resolves
+	// real element names and ids. Entries that do not parse are dropped: serving
+	// a corrupt body would be worse than serving a synthetic one.
+	if settings, err := st.SettingsByPrefix(masterDataSettingPrefix); err == nil {
+		mdRaw := map[string][]byte{}
+		for key, val := range settings {
+			candidate := []byte(val)
+			var probe map[string]any
+			if json.Unmarshal(candidate, &probe) != nil {
+				continue
+			}
+			mdRaw[strings.TrimPrefix(key, masterDataSettingPrefix)] = candidate
+		}
+		if len(mdRaw) > 0 {
+			p.mdRaw = mdRaw
+		}
+	}
+	return p
 }
 
 // stateFor returns the per-school live state, creating it on first use and
@@ -327,6 +351,7 @@ func (p *Proxy) Handler() http.Handler {
 	// session only, GET to read and POST to write.
 	mux.HandleFunc("/api/absence/notes", p.handleAbsenceNotes)
 	mux.HandleFunc("/api/admin/events", p.handleStudentEvents)
+	mux.HandleFunc("POST /api/admin/events/import", p.handleStudentEventImport)
 	mux.HandleFunc("/api/admin/events/{id}", p.handleStudentEvents)
 	mux.HandleFunc("/admin", p.handleAdminDashboard)
 	mux.HandleFunc("/admin/login", p.handleAdminLogin)

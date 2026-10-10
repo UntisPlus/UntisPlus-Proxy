@@ -107,6 +107,8 @@ func (p *Proxy) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		p.adminOutbox(w, r)
 	case parts[0] == "recon":
 		p.adminRecon(w, r, parts[1:])
+	case parts[0] == "rooms":
+		p.adminRooms(w, r, parts[1:])
 	default:
 		p.writeJSON(w, map[string]any{"error": "not found"})
 	}
@@ -217,6 +219,16 @@ func (p *Proxy) adminSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	typ := strings.ToUpper(r.URL.Query().Get("type"))
+	// limit bounds the response so a picker that fetches a whole element list
+	// (rooms, say) is not silently cut off before the user can filter it. It
+	// defaults to the historical 60 and is clamped to a sane maximum.
+	limit := 60
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 {
+		limit = n
+	}
+	if limit > 2000 {
+		limit = 2000
+	}
 
 	type res struct {
 		Type string `json:"type"`
@@ -279,8 +291,8 @@ func (p *Proxy) adminSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
 	})
-	if len(out) > 60 {
-		out = out[:60]
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	p.writeJSON(w, map[string]any{"school": school, "results": out})
 }
@@ -874,6 +886,7 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 				"boosted":      p.isBoosted(u.Username),
 				"editor":       p.isEditor(u.Username),
 				"reconAllowed": p.hasPerm(u.Username, store.FeatureRecon),
+				"techniker":    p.hasPerm(u.Username, store.FeatureTechniker),
 			})
 		}
 		p.writeJSON(w, map[string]any{"users": out})
@@ -946,6 +959,8 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 					err = p.store.SetPerm(username, store.FeatureEditor, allowed)
 				case store.FeatureRecon:
 					err = p.store.SetPerm(username, store.FeatureRecon, allowed)
+				case store.FeatureTechniker:
+					err = p.store.SetPerm(username, store.FeatureTechniker, allowed)
 				default:
 					err = p.store.SetPerm(username, feature, allowed)
 				}
@@ -969,6 +984,50 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 		}
 	}
 	p.writeJSON(w, map[string]any{"error": "not found"})
+}
+
+// adminRooms reads and writes the per-school room-name overrides used when
+// synthesizing event elements. A GET returns the current map; a POST replaces it
+// with the posted one. Names and ids are normalized (lowercased, positive ids
+// only), and the normalized map is echoed back so the dashboard reflects exactly
+// what was stored.
+func (p *Proxy) adminRooms(w http.ResponseWriter, r *http.Request, parts []string) {
+	if len(parts) != 0 {
+		p.writeJSON(w, map[string]any{"error": "not found"})
+		return
+	}
+	school := strings.TrimSpace(r.URL.Query().Get("school"))
+	switch r.Method {
+	case http.MethodGet:
+		m := p.roomOverrides(school)
+		if m == nil {
+			m = map[string]int64{}
+		}
+		p.writeJSON(w, map[string]any{"school": school, "rooms": m})
+	case http.MethodPost:
+		if school == "" {
+			p.writeJSON(w, map[string]any{"error": "school is required"})
+			return
+		}
+		var req struct {
+			Rooms map[string]int64 `json:"rooms"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			p.writeJSON(w, map[string]any{"error": "bad request"})
+			return
+		}
+		if err := p.setRoomOverrides(school, req.Rooms); err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		m := p.roomOverrides(school)
+		if m == nil {
+			m = map[string]int64{}
+		}
+		p.writeJSON(w, map[string]any{"ok": true, "school": school, "rooms": m})
+	default:
+		p.writeJSON(w, map[string]any{"error": "not found"})
+	}
 }
 
 // forbidden issues the standard 403 JSON body used across the REST API.

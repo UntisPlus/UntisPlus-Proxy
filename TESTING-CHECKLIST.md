@@ -265,8 +265,9 @@ Signed in as an admin. Pick a student who has real lessons on the chosen date.
       list, enter a date, `14:00`–`15:00`, a title, pick a room and set a teacher
       → **add**
 - [ ] 15.1a the student picker lists only students of the chosen school (no
-      teacher accounts); the room picker lists that school's rooms, and the
-      room filter box narrows it
+      teacher accounts); the room picker lists **all** of that school's rooms
+      (a school with hundreds of rooms still offers *Aula* and *CSS* — the list
+      is not cut off at 60), and the room filter box narrows it
 - [ ] 15.1b select **two or more students** and **two rooms**, add once → one
       event per student, each carrying both rooms; the table shows it for a
       picked student
@@ -278,10 +279,50 @@ Signed in as an admin. Pick a student who has real lessons on the chosen date.
       is refused and **nothing** is written for the others
 - [ ] 15.1f the automated equivalent: `node scripts/check-admin-ui.js` passes
       (also run by `scripts/release.sh` when node is installed)
+- [ ] 15.1g add the same student, date and time a second time → the add is
+      reported as *already had that slot*, the table still shows **one** row, and
+      that student's `eventVersion` does not move
+- [ ] 15.1h add a batch where one student already has the slot → that student is
+      reported as skipped and the others still get the event
+- [ ] 15.1i leave the **subject** field empty and add → the event is stored with
+      the default subject *Technik*; the events table's subject column shows it,
+      and the app shows *Technik* as the lesson unless you typed another subject
+- [ ] 15.1j the app **places** the event rather than dropping it: the served
+      period names `SUBJECT`, `ROOM` and `TEACHER` elements, and `masterData`
+      carries a catalogue entry for each name so the app can resolve them
+- [ ] 15.1k paste the `technikkalender` JSON into the **Import Technik calendar**
+      box and import → each appointment creates one row per named technician; the
+      summary reports how many were added
+- [ ] 15.1l import the same JSON again → every slot is reported as already
+      present and nothing new is written
+- [ ] 15.1m a code that names no technician (a teacher, *SISS Technik*) is listed
+      under *skipped non-technicians* and creates no event
+- [ ] 15.1n a technician who has not signed up is listed under *no account yet*;
+      after that username first logs in, their appointments appear with no second
+      import
+- [ ] 15.1o choose the exported **CSV** file and import → it decodes the
+      Windows-1252 umlauts (a room *Büro* shows as *Büro*, not mojibake) and
+      creates the same events
+- [ ] 15.1p an existing **teacher** code in the import (e.g. the CSV's teacher
+      codes) is skipped rather than filed as a student event
+- [ ] 15.1q `POST /api/admin/events/import` as a **non-admin** → 401/403
+- [ ] 15.1r pick two rooms (*Aula* and *CSS*) → both are added to the one event as
+      `Aula, CSS`; the same works by typing `Aula, CSS` in the *room not in the
+      list* box
 - [ ] 15.2 the table lists it with revision 1
 - [ ] 15.3 the same student again after an edit → the revision reads 2 (each edit
       increments it)
-- [ ] 15.4 **edit** the time to `16:00`–`17:00` → the row updates
+- [ ] 15.4 **edit** → the row's values fill the form above (date, start/end,
+      title, subject, room, teacher, description and the student); change the time
+      to `16:00`–`17:00` and **save** → the row updates. Nothing was hidden behind
+      a `prompt()` popup
+- [ ] 15.4a in the edit form, click a **different student** and **save** → the
+      event moves to that student: it leaves the old student's table and appears
+      under the new one. Both students' `eventVersion` rises (the old client drops
+      it, the new one picks it up)
+- [ ] 15.4b clear the **description** and **save** → the description is actually
+      removed (the form submits every field it shows, so a cleared field stays
+      cleared)
 - [ ] 15.5 **del** the row → it disappears; deleting again is not an error
 - [ ] 15.6 add with the end before the start → refused, nothing written
 - [ ] 15.7 add for a username that does not exist → refused with *no such user*
@@ -293,9 +334,23 @@ Signed in as an admin. Pick a student who has real lessons on the chosen date.
       the week with the *Termin* marker and the time you entered
 - [ ] 15.10 the entry is on the **correct day and time** — the app shows the
       school-clock time you typed, not a shifted one
-- [ ] 15.11 the entry is visually distinct from a real lesson (marker, no subject
-      column clash)
-- [ ] 15.12 subject, room and teacher show exactly as typed
+- [ ] 15.10a put the event on a date **inside a school holiday** (e.g. the autumn
+      break) → the app still shows it on that day: the proxy splits the holiday
+      range in `masterData.holidays` around the event date so the day is not
+      hidden, and raises `masterData.timeStamp` so a caching client notices
+- [ ] 15.10b a holiday with no event on it is left untouched — its range is
+      unchanged. (`masterData.timeStamp` may still rise, because the synthesized
+      subject/room/teacher catalogue is a masterData change a caching client has
+      to see; that is expected.)
+- [ ] 15.11 the entry is visually distinct from a real lesson (marker) and shows
+      the subject in the lesson cell
+- [ ] 15.12 subject, room and teacher show exactly as typed, with the subject
+      defaulting to *Technik* when left empty
+- [ ] 15.12a grant a student the **boosted** flag, add them an event, and open
+      their own timetable in the app → the event still appears. The boosted path
+      forwards the timetable raw from a teacher account, so before the fix the
+      events were skipped entirely; a *different* class or student's timetable the
+      boosted user can read must still carry **no** event
 - [ ] 15.13 open `/week/{your student token}` → the event appears there too
 - [ ] 15.14 subscribe `/api/calendar/{your student token}.ics` and refresh the
       calendar → one new all-day-or-timed entry, with `SUMMARY` carrying
@@ -337,6 +392,59 @@ Signed in as an admin. Pick a student who has real lessons on the chosen date.
       `student-events` frame and no `eventVersion` change
 - [ ] 15.31 no event change appears on the shared **ntfy topic** or **webhook**
       destinations configured for the class
+
+### The Technik aggregate class
+
+Events stay per-student on every surface above. A user holding the **techniker**
+permission additionally sees one synthetic class, *Technik*, whose timetable is
+the union of every student's events in the requested range. The permission is
+independent of admin/boosted/editor/recon and is checked on every request.
+
+- [ ] 15.32 `/admin` → *Users*: the **techniker** button toggles the permission;
+      granting or revoking takes effect on the user's next request, without a
+      re-login (the class list and the aggregate both follow)
+- [ ] 15.33 with the permission **off**, the *Technik* class is absent from the
+      app's class list, and a `getTimetable2017` for `type=CLASS` naming the
+      aggregate id returns `-8509` (no right) rather than an empty timetable
+- [ ] 15.34 with the permission **on**, the *Technik* class appears in the class
+      list next to the real classes; opening it shows **every** student's events
+      in the window, each row labeled with the assigned student(s) (`text.info`)
+      and the event's title as the lesson cell
+- [ ] 15.35 a second student **without** the permission sees no *Technik* class
+      and cannot fetch it
+- [ ] 15.36 a **boosted** user who also holds techniker still gets the aggregate:
+      it is answered by the proxy itself, never forwarded to the teacher account
+- [ ] 15.37 the aggregate is not offered to a **class/teacher/room/subject**
+      calendar token (`/api/calendar/...ics`, `/week/...`): those feeds remain
+      event-free
+- [ ] 15.38 `/admin` → *Room map*: search a room and **add / update** it, then
+      **refresh** → it persists per school (reload the page and it is still
+      there); an event naming that room references the pinned id the real lessons
+      use, and clearing the entry falls back to the school catalogue
+
+### Events on a room or organiser timetable
+
+The techniker permission also unlocks the events where they happen: an event
+whose room resolves to the requested room id, or whose teacher resolves to the
+requested teacher id, is added to that room's / teacher's timetable. A viewer
+without the permission gets exactly the old response — the events never leak.
+
+- [ ] 15.39 as a **techniker**, open a room that an event names: the event
+      appears on the room timetable even when recon never enabled that room, in
+      the school's timezone, with the event title and the assigned student; a
+      room no event names stays as it was
+- [ ] 15.40 as a **techniker**, open the organiser's (teacher's) timetable: the
+      event appears there too, matched by the resolved teacher id
+- [ ] 15.41 the same room request from a user **without** the permission returns
+      the former `-8509` (recon off) and never the events
+- [ ] 15.42 a **boosted** techniker (the common case) sees the events on the raw
+      teacher-forwarded room/teacher timetable as well, not only on the
+      reconstructed one
+
+- [ ] 15.43 an event staffed by several students (the import writes one row per
+      assigned person) shows **once** on the Technik class and on its room /
+      organiser timetable, with all assigned students listed together, not once
+      per person
 
 ## 16. Packaging
 - [ ] 16.1 `/status` reports the published tag, and **not** `dev` — a plain

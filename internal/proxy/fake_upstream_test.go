@@ -192,6 +192,14 @@ func (f *fakeUpstream) setTimetable(t *testing.T, periods []map[string]any) {
 	f.mu.Unlock()
 }
 
+// setTimetableBody serves an arbitrary getTimetable2017 body, so tests can
+// include a masterData block alongside the periods.
+func (f *fakeUpstream) setTimetableBody(body string) {
+	f.mu.Lock()
+	f.timetable = body
+	f.mu.Unlock()
+}
+
 // setTimetableStatus makes every getTimetable2017 forward fail with code.
 func (f *fakeUpstream) setTimetableStatus(code int) {
 	f.mu.Lock()

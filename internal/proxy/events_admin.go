@@ -139,6 +139,12 @@ func (p *Proxy) handleStudentEvents(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusBadRequest, bad)
 			return
 		}
+		// Every event shows a lesson in the app, and these are Technik appointments,
+		// so an unnamed subject defaults to Technik. The admin can change it per
+		// event; the default is what stops the lesson cell from coming back blank.
+		if strings.TrimSpace(req.Subject) == "" {
+			req.Subject = customSubjectDefault
+		}
 		// Every target is checked before anything is written, so a batch either
 		// lands for all of them or for none: a half-applied batch would leave an
 		// admin believing a slot is covered when it is not.
@@ -151,9 +157,22 @@ func (p *Proxy) handleStudentEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		// A student cannot be in two places at once, so an event that already sits
+		// in the same slot is the same appointment entered twice. It is skipped
+		// rather than created a second time, and the skip is reported so the admin
+		// can see the slot was already covered instead of silently getting a
+		// duplicate. Skips are not errors: the rest of the batch still lands.
 		created := make([]map[string]any, 0, len(targets))
+		skipped := make([]map[string]any, 0)
 		var firstEv store.StudentEvent
 		for _, u := range targets {
+			if dup, found, err := p.store.StudentEventDuplicate(school, u, req.Date, req.StartTime, req.EndTime); err != nil {
+				writeJSONError(w, http.StatusInternalServerError, "store error")
+				return
+			} else if found {
+				skipped = append(skipped, map[string]any{"username": u, "eventId": dup.ID, "reason": "duplicate"})
+				continue
+			}
 			ev, err := p.store.CreateStudentEvent(school, u, store.NewStudentEvent{
 				Date: req.Date, StartTime: req.StartTime, EndTime: req.EndTime,
 				Title: req.Title, Subject: req.Subject, Room: req.Room,
@@ -167,17 +186,15 @@ func (p *Proxy) handleStudentEvents(w http.ResponseWriter, r *http.Request) {
 				firstEv = ev
 			}
 			created = append(created, map[string]any{"eventId": ev.ID, "username": ev.Username})
-		}
-		for _, u := range targets {
 			p.announceStudentEventChange(school, u, "created")
 		}
-		if len(created) == 1 {
+		if len(targets) == 1 && len(created) == 1 {
 			// A single student keeps the original response shape, so an existing
 			// client that reads eventId still works.
 			p.writeJSON(w, studentEventJSON(firstEv))
 			return
 		}
-		p.writeJSON(w, map[string]any{"school": school, "created": created})
+		p.writeJSON(w, map[string]any{"school": school, "created": created, "skipped": skipped})
 
 	case http.MethodPatch:
 		if eventID == 0 {

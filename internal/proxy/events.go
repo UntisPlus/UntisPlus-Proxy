@@ -14,17 +14,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"untis-proxy/internal/store"
 )
 
-// customEventField marks a period as hand-authored. It is the only thing that
-// distinguishes an event from a real lesson on the wire, and it is present on
-// every surface rather than derived per renderer, so the app, the .ics feed and
-// the /week page all agree.
-const customEventField = "isCustom"
+// A synthesized period is deliberately indistinguishable from a normal lesson on
+// the wire. The official app marks editor-created events with isCustom and
+// renders them with a distinct look — and a class view, which a group of people
+// shares, has no reason to show an editor's private event, so it drops the
+// period. The Technik events are meant to be ordinary lessons for now, so the
+// marker is not sent. The proxy's own renderers (the .ics feed and the /week
+// page) detect the event through the customEventId field instead, and the app
+// ignores what it does not know.
 
 // customEventIDSpace keeps synthetic ids from colliding with real period ids.
 //
@@ -79,32 +83,55 @@ func customEventPeriods(events []store.StudentEvent, loc *time.Location) []map[s
 		if !end.After(start) {
 			end = start
 		}
+		// The lesson cell is what the app shows as the subject. A Technik event
+		// carries the subject ("Technik") the admin chose; an event without one
+		// falls back to its title so the cell is never blank.
+		lesson := ev.Title
+		if s := strings.TrimSpace(ev.Subject); s != "" {
+			lesson = s
+		}
 		out = append(out, map[string]any{
-			"id":                customEventID(ev),
-			"startDateTime":     start.Format("2006-01-02T15:04Z07:00"),
-			"endDateTime":       end.Format("2006-01-02T15:04Z07:00"),
-			customEventField:    true,
-			"customEventId":     ev.ID,
-			"customRevision":    ev.Revision,
-			"customTitle":       ev.Title,
-			"subject":           ev.Subject,
-			"teacher":           ev.Teacher,
-			"room":              ev.Room,
-			"description":       ev.Description,
-			"date":              dateInt(ev.Date),
-			"startTime":         hmInt(start),
-			"endTime":           hmInt(end),
-			"lessonText":        ev.Title,
-			"lessonCode":        "CUSTOM",
-			"lessonNumber":      0,
-			"is":                map[string]any{"standard": false, "event": true},
-			"cellState":         "CUSTOM",
-			"code":              0,
-			"priority":          5,
-			"hasInfo":           ev.Description != "",
-			"periodAttachments": []any{},
-			"elements":          []any{},
-			"debugInfo":         fmt.Sprintf("custom,%d", ev.ID),
+			"id":       customEventID(ev),
+			"lessonId": 0,
+			// WebUntis labels a period's wall-clock time with a literal "Z" — it
+			// is not a UTC instant, and the app parses exactly that shape. A real
+			// offset (what this used to emit) is dropped by the app, so the
+			// aggregate and room/teacher surfaces looked empty while the student's
+			// own timetable, whose zone is read from the real periods and therefore
+			// produced "Z", worked. The wall time is kept exactly, matching how the
+			// same event is written on every surface and how the ICS feed reads it.
+			"startDateTime":  start.Format("2006-01-02T15:04") + "Z",
+			"endDateTime":    end.Format("2006-01-02T15:04") + "Z",
+			"foreColor":      "#000000",
+			"backColor":      "#FFF3DE",
+			"innerForeColor": "#000000",
+			"innerBackColor": "#000000",
+			"text": map[string]any{
+				"lesson":       lesson,
+				"substitution": "",
+				"info":         ev.Description,
+				"attachments":  []any{},
+			},
+			"elements":       []any{},
+			"can":            []any{"READ_LESSONTOPIC", "READ_HOMEWORK", "READ_CLASSROLE", "READ_PERIODINFO"},
+			"is":             []any{"REGULAR"},
+			"homeWorks":      []any{},
+			"exam":           nil,
+			"isOnlinePeriod": false,
+			"blockHash":      ev.ID,
+			// The fields below are not part of an upstream period and are meant
+			// only for the proxy's own renderers (the .ics feed and the /week
+			// page); the official app ignores what it does not know.
+			"customEventId":  ev.ID,
+			"customRevision": ev.Revision,
+			"customTitle":    ev.Title,
+			"subject":        ev.Subject,
+			"teacher":        ev.Teacher,
+			"room":           ev.Room,
+			"description":    ev.Description,
+			"date":           dateInt(ev.Date),
+			"startTime":      hmInt(start),
+			"endTime":        hmInt(end),
 		})
 	}
 	// Sorted by instant so a client merging events into real periods sees them in
@@ -199,27 +226,194 @@ func (p *Proxy) decorateStudentEvents(raw []byte, school, username, from, to str
 	if len(periods) == 0 {
 		return raw
 	}
+	// The viewer's own class timetable keeps the periods addressed to them, so an
+	// event served on a CLASS request is tagged with the Technik class the same
+	// way the aggregate is.
+	return p.appendEventPeriods(raw, school, username, periods, technikClassID)
+}
+
+// appendEventPeriods merges custom-event periods into a timetable result: it
+// stamps the viewer's capabilities, attaches the subject/room/teacher elements
+// the app resolves names from, cuts the event dates out of the holiday list, and
+// advances the masterData timestamp when any of that changed it. classID, when
+// non-zero, is prepended as a CLASS element (used for the viewer's own
+// timetable); the shared room/teacher surfaces pass zero.
+//
+// It goes through enrichJSON so every one of that helper's guarantees applies:
+// unknown upstream fields survive, an error response is left alone, any failure
+// returns the original bytes, and a response that gains nothing is returned
+// un-re-encoded rather than reformatted.
+func (p *Proxy) appendEventPeriods(raw []byte, school, username string, periods []map[string]any, classID int64) []byte {
+	if len(periods) == 0 {
+		return raw
+	}
 	return enrichJSON(raw, func(result jsonObject) {
 		tt, ok := result["timetable"].(jsonObject)
 		if !ok {
 			return
 		}
-		raw, _ := tt["periods"].([]any)
+		existing, _ := tt["periods"].([]any)
 		// jsonArray drops any entry that is not an object, so it is used only to
 		// check. Rebuilding the list from the original slice keeps every entry
 		// upstream sent: a period list is always all objects, but a response
 		// carrying something else would otherwise have it silently deleted, which
 		// is the one failure this module must never cause.
-		if len(jsonArray(tt["periods"])) != len(raw) {
+		if len(jsonArray(tt["periods"])) != len(existing) {
 			return
 		}
-		merged := make([]any, 0, len(raw)+len(periods))
-		merged = append(merged, raw...)
+		merged := make([]any, 0, len(existing)+len(periods))
+		merged = append(merged, existing...)
 		for _, ev := range periods {
+			// A synthesized period arrives with an empty `can` list and the app
+			// hides the lesson line without READ_LESSONTOPIC, so give it the same
+			// capability set a viewer of that timetable would carry. This mirrors
+			// how every other serving path stamps the requester's caps.
+			p.capsInPeriod(username, ev)
 			merged = append(merged, ev)
 		}
 		tt["periods"] = merged
+		if md, ok := result["masterData"].(jsonObject); ok {
+			// The app places a period by the elements it references and drops one
+			// that references nothing, so the event is given a subject, room and
+			// teacher element. Any element whose name is not in the school's
+			// catalogue is synthesized into masterData, so the app has a name to
+			// resolve and the event is visible.
+			changed := attachEventElements(periods, md, p.roomOverrides(school))
+			// A client that hides a holiday week hides the event with it. The break is
+			// declared in masterData, which the client reads to decide the day is not a
+			// school day, so the event dates are cut out of that list: this is the one
+			// place the decision can be reversed without the client's cooperation.
+			if stripHolidayDates(md, periodDates(periods)) {
+				changed = true
+			}
+			// The client caches master data by its timestamp. Changing it (a stripped
+			// holiday, a synthesized element) without moving the timestamp would leave
+			// a client that already holds this version serving the old list, so the
+			// version is advanced. It is derived from upstream's own value, so repeated
+			// requests stay in step.
+			if changed {
+				bumpMasterTimestamp(md)
+			}
+		}
+		if classID != 0 {
+			tagClassElement(periods, classID)
+		}
 	})
+}
+
+// periodDates collects the distinct YYYY-MM-DD dates the served events fall on.
+func periodDates(periods []map[string]any) map[string]bool {
+	out := make(map[string]bool, len(periods))
+	for _, pd := range periods {
+		v, ok := pd["date"].(int64)
+		if !ok {
+			continue
+		}
+		out[fmt.Sprintf("%04d-%02d-%02d", v/10000, v/100%100, v%100)] = true
+	}
+	return out
+}
+
+// stripHolidayDates removes the given dates from a masterData holiday list,
+// splitting a range around a date in its middle and dropping it when it is the
+// last day of the range. It reports whether anything changed.
+//
+// The first fragment of a split keeps the original id; later fragments get a
+// derived id so two holidays are never confused for one. Ids generated this way
+// depend only on the original id and position, so the same strip on the same
+// response produces the same list every time.
+func stripHolidayDates(md jsonObject, dates map[string]bool) bool {
+	if len(dates) == 0 {
+		return false
+	}
+	holidays, ok := md["holidays"].([]any)
+	if !ok || len(holidays) == 0 {
+		return false
+	}
+	out := make([]any, 0, len(holidays))
+	changed := false
+	for _, h := range holidays {
+		hm, ok := h.(jsonObject)
+		if !ok {
+			out = append(out, h)
+			continue
+		}
+		start, _ := hm["startDate"].(string)
+		end, _ := hm["endDate"].(string)
+		if !validDate(start) || !validDate(end) || end < start {
+			out = append(out, h)
+			continue
+		}
+		var cut []string
+		for d := range dates {
+			if d >= start && d <= end {
+				cut = append(cut, d)
+			}
+		}
+		if len(cut) == 0 {
+			out = append(out, h)
+			continue
+		}
+		sort.Strings(cut)
+		changed = true
+		segStart := start
+		idx := 0
+		for _, d := range cut {
+			if d > segStart {
+				out = append(out, holidayFragment(hm, segStart, dayBefore(d), idx))
+				idx++
+			}
+			segStart = dayAfter(d)
+		}
+		if segStart <= end {
+			out = append(out, holidayFragment(hm, segStart, end, idx))
+		}
+	}
+	if changed {
+		md["holidays"] = out
+	}
+	return changed
+}
+
+// holidayFragment copies a holiday with a new span. idx 0 keeps the original id
+// so the common "trim the start or end" case is untouched.
+func holidayFragment(h jsonObject, start, end string, idx int) jsonObject {
+	frag := make(jsonObject, len(h))
+	for k, v := range h {
+		frag[k] = v
+	}
+	frag["startDate"] = start
+	frag["endDate"] = end
+	if idx > 0 {
+		if id, ok := jsonID(h["id"]); ok {
+			frag["id"] = id*1000 + int64(idx)
+		}
+	}
+	return frag
+}
+
+func dayBefore(date string) string { return shiftDay(date, -1) }
+func dayAfter(date string) string  { return shiftDay(date, 1) }
+
+func shiftDay(date string, days int) string {
+	t, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		return date
+	}
+	return t.AddDate(0, 0, days).Format("2006-01-02")
+}
+
+// bumpMasterTimestamp advances a masterData version in place, leaving a value of
+// an unexpected type alone rather than dropping it.
+func bumpMasterTimestamp(md jsonObject) {
+	switch v := md["timeStamp"].(type) {
+	case json.Number:
+		if n, err := v.Int64(); err == nil {
+			md["timeStamp"] = json.Number(strconv.FormatInt(n+1, 10))
+		}
+	case float64:
+		md["timeStamp"] = v + 1
+	}
 }
 
 // buildCustomICSVEVENT renders a hand-authored event as a VEVENT.
@@ -373,8 +567,8 @@ func responseLocation(raw []byte) *time.Location {
 
 // isCustomPeriod reports whether a period is a hand-authored event.
 func isCustomPeriod(pd map[string]any) bool {
-	v, _ := pd[customEventField].(bool)
-	return v
+	_, ok := pd["customEventId"]
+	return ok
 }
 
 // announceStudentEventChange tells a student's connected clients their schedule

@@ -80,10 +80,11 @@ func TestCustomEventPeriodCarriesTheAdminText(t *testing.T) {
 		pd["description"] != "Arbeitsblatt mitbringen" {
 		t.Errorf("the admin's text did not survive the conversion: %+v", pd)
 	}
-	// Written in the school's zone, matching how upstream expresses real periods.
-	// If this came back as Z, the event would sit two hours off for a Berlin school.
-	if pd["startDateTime"] != "2026-10-01T14:00+02:00" || pd["endDateTime"] != "2026-10-01T15:00+02:00" {
-		t.Errorf("times = %v .. %v, want 14:00-15:00 in the school zone", pd["startDateTime"], pd["endDateTime"])
+	// WebUntis labels wall-clock time with a literal Z, and the app parses that
+	// shape; an offset made it drop the period. The wall time is what matters:
+	// 14:00 stays 14:00 whether the school is on CET or CEST.
+	if pd["startDateTime"] != "2026-10-01T14:00Z" || pd["endDateTime"] != "2026-10-01T15:00Z" {
+		t.Errorf("times = %v .. %v, want 14:00-15:00 wall time", pd["startDateTime"], pd["endDateTime"])
 	}
 	if pd["date"] != int64(20261001) {
 		t.Errorf("date = %v, want 20261001", pd["date"])
@@ -508,6 +509,9 @@ func TestDecorateStudentEventsAppendsToPeriods(t *testing.T) {
 	if !isCustomPeriod(periods[1]) {
 		t.Errorf("the appended period is not marked custom: %+v", periods[1])
 	}
+	if !hasCap(toCanList(periods[1]["can"]), readLessonTopicCap) {
+		t.Errorf("the appended period lacks READ_LESSONTOPIC, so the app would hide its lesson text: %+v", periods[1]["can"])
+	}
 }
 
 func TestDecorateStudentEventsPreservesUpstreamFields(t *testing.T) {
@@ -579,7 +583,7 @@ func TestDecorateStudentEventsFallsBackToTheResponseSpan(t *testing.T) {
 	// the only one the client has anywhere to draw.
 	raw := timetableResponse(realPeriodJSON("2026-10-01"))
 	got := p.decorateStudentEvents(raw, "testschool", "dee", "", "")
-	if !strings.Contains(string(got), `"isCustom":true`) {
+	if !strings.Contains(string(got), `"customEventId":`) {
 		t.Errorf("the span fallback did not attach the event:\n%s", got)
 	}
 }
@@ -590,7 +594,7 @@ func TestDecorateStudentEventsIgnoresEventsOutsideTheRange(t *testing.T) {
 	raw := timetableResponse(realPeriodJSON("2026-10-01"))
 	// The event is on 2026-10-01; a request for a different week must not get it.
 	got := p.decorateStudentEvents(raw, "testschool", "dee", "2026-10-05", "2026-10-12")
-	if strings.Contains(string(got), `"isCustom":true`) {
+	if strings.Contains(string(got), `"customEventId":`) {
 		t.Errorf("an event outside the requested range was attached:\n%s", got)
 	}
 }
@@ -600,7 +604,7 @@ func TestDecorateStudentEventsNeverAttachesAnotherStudentsEvents(t *testing.T) {
 	seedEvent(t, st, "dee", testEvent())
 	raw := timetableResponse(realPeriodJSON("2026-10-01"))
 	got := p.decorateStudentEvents(raw, "testschool", "sam", "2026-10-01", "2026-10-07")
-	if strings.Contains(string(got), `"isCustom":true`) {
+	if strings.Contains(string(got), `"customEventId":`) {
 		t.Errorf("sam's response carries dee's event:\n%s", got)
 	}
 }
@@ -754,17 +758,24 @@ func timeZoneOffsetAt(loc *time.Location, date string) int {
 }
 
 func TestEventTimesAreWallClockInTheSchoolZone(t *testing.T) {
-	// The distinction that matters: an admin's 14:00 is 14:00 on the school clock.
-	// Parsed in UTC it would be a two-hour-later instant, and every surface that
-	// converts the timestamp to display it would show the wrong time.
+	// WebUntis writes a period's wall-clock time with a literal "Z" — it is not
+	// a UTC instant — and both the app and this proxy's own feeds read the time
+	// part as the local wall time. An offset here (what this used to emit) is
+	// dropped by the app, so the aggregate and room/teacher surfaces looked
+	// empty while the student's own timetable, whose zone is read from the real
+	// periods and therefore produced "Z", worked. The wall time must survive.
 	ev := seedEvent(t, eventStore(t), "dee", testEvent())
 	pd := customEventPeriods([]store.StudentEvent{ev}, berlin)[0]
-	start, err := parsePeriodTime(rawString(pd, "startDateTime"))
-	if err != nil {
-		t.Fatalf("parse: %v", err)
+	if got := rawString(pd, "startDateTime"); got != "2026-10-01T14:00Z" {
+		t.Errorf("start = %q, want 2026-10-01T14:00Z (wall time, WebUntis style)", got)
 	}
-	if h := start.In(berlin).Hour(); h != 14 {
-		t.Errorf("the event reads as %02d:00 in the school zone, want 14:00", h)
+	if got := rawString(pd, "endDateTime"); got != "2026-10-01T15:00Z" {
+		t.Errorf("end = %q, want 2026-10-01T15:00Z", got)
+	}
+	// The ICS feed parses it and re-labels the same wall time in the feed zone.
+	ics := buildCustomICSVEVENT(pd, "Europe/Berlin", time.Now())
+	if !strings.Contains(ics, "DTSTART;TZID=Europe/Berlin:20261001T140000") {
+		t.Errorf("ICS does not carry 14:00 in the feed zone: %s", ics)
 	}
 }
 
@@ -948,4 +959,447 @@ func periodsFromTimetable(t *testing.T, raw []byte) []map[string]any {
 		t.Fatalf("response is not JSON: %v", err)
 	}
 	return parsed.Result.Timetable.Periods
+}
+
+// --- the wire shape the official app parses ---
+
+// TestCustomEventPeriodMatchesUpstreamShape pins the fields the official Untis
+// app reads. It does not know the proxy's isCustom marker, so a period that only
+// made sense to the proxy's own renderers was delivered but not displayed: a real
+// period names its label in text.lesson and its status in an is array.
+func TestCustomEventPeriodMatchesUpstreamShape(t *testing.T) {
+	ev := seedEvent(t, eventStore(t), "dee", testEvent())
+	pd := customEventPeriods([]store.StudentEvent{ev}, berlin)[0]
+
+	text, ok := pd["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("text is %T, want the upstream object shape: %+v", pd["text"], pd)
+	}
+	if text["lesson"] != "Mathe" {
+		t.Errorf("text.lesson = %v, want the event's subject", text["lesson"])
+	}
+	is, ok := pd["is"].([]any)
+	if !ok || len(is) != 1 || is[0] != "REGULAR" {
+		t.Errorf("is = %#v, want [\"REGULAR\"] like a real period", pd["is"])
+	}
+	for _, gone := range []string{"cellState", "lessonCode", "lessonText", "debugInfo"} {
+		if _, present := pd[gone]; present {
+			t.Errorf("the proxy-only field %q is still on the wire", gone)
+		}
+	}
+	if v, present := pd["exam"]; !present || v != nil {
+		t.Errorf("exam = %v (present %v), want a null key like upstream", v, present)
+	}
+	if !isCustomPeriod(pd) {
+		t.Error("the reshape dropped the custom marker")
+	}
+}
+
+// TestDecorateStudentEventsAttachSubjectRoomTeacherElements: the app places a
+// period by the elements it references and drops one that references nothing. An
+// event has no real element ids to name, so the subject, room and teacher are
+// synthesized and catalogued in the same masterData the app reads names from.
+func TestDecorateStudentEventsAttachSubjectRoomTeacherElements(t *testing.T) {
+	p, st := eventProxy(t)
+	seedEvent(t, st, "dee", testEvent())
+	// The event is 2026-10-01; the holiday sits in December so only the element
+	// attachment is under test here.
+	raw := holidayResponse(map[string]any{"id": 417, "name": "Herbstferien", "startDate": "2026-12-05", "endDate": "2026-12-18"})
+	got := p.decorateStudentEvents(raw, "testschool", "dee", "2026-10-01", "2026-10-01")
+
+	var pd map[string]any
+	for _, period := range periodsFromTimetable(t, got) {
+		if isCustomPeriod(period) {
+			pd = period
+		}
+	}
+	if pd == nil {
+		t.Fatal("the event period was not served")
+	}
+	els, _ := pd["elements"].([]any)
+	if len(els) != 4 {
+		t.Fatalf("elements = %#v, want a CLASS, SUBJECT, ROOM and TEACHER ref", pd["elements"])
+	}
+	byType := map[string]int64{}
+	for _, e := range els {
+		el, _ := e.(map[string]any)
+		id, _ := jsonID(el["id"])
+		typ, _ := el["type"].(string)
+		byType[typ] = id
+		if org, _ := jsonID(el["orgId"]); org != id {
+			t.Errorf("element %s orgId = %v, want id %v", typ, el["orgId"], id)
+		}
+	}
+	if byType["CLASS"] != technikClassID {
+		t.Errorf("CLASS id = %d, want the Technik class %d, so the event reads as a Technik lesson", byType["CLASS"], technikClassID)
+	}
+	for _, typ := range []string{"SUBJECT", "ROOM", "TEACHER"} {
+		if byType[typ] < syntheticElementBase {
+			t.Errorf("%s id = %d, want a synthesized id at or above %d", typ, byType[typ], syntheticElementBase)
+		}
+	}
+	if text, _ := pd["text"].(map[string]any); text["lesson"] != "Mathe" {
+		t.Errorf("text.lesson = %v, want the subject", text["lesson"])
+	}
+	// Each referenced id has to resolve in this same response's masterData.
+	for _, list := range []string{"subjects", "rooms", "teachers"} {
+		if !strings.Contains(string(got), `"`+list+`"`) {
+			t.Errorf("masterData has no %q catalogue for the synthesized element:\n%s", list, got)
+		}
+	}
+}
+
+// TestEventRoomOverrideWinsOverCatalogue: an admin can pin a room's text to the
+// exact Untis id the real lessons use, and that entry has to beat the school
+// catalogue (which here maps "R12" to a different, wrong id) and be resolvable in
+// the response.
+func TestEventRoomOverrideWinsOverCatalogue(t *testing.T) {
+	p, st := eventProxy(t)
+	if err := p.setRoomOverrides("testschool", map[string]int64{"R12": 169}); err != nil {
+		t.Fatalf("set overrides: %v", err)
+	}
+	seedEvent(t, st, "dee", testEvent()) // room R12
+	raw, _ := json.Marshal(map[string]any{
+		"result": map[string]any{
+			"masterData": map[string]any{
+				"timeStamp": 1000,
+				"rooms":     []any{map[string]any{"id": 777, "name": "R12", "longName": "R12", "active": true}},
+			},
+			"timetable": map[string]any{"periods": []any{}},
+		},
+	})
+	got := p.decorateStudentEvents(raw, "testschool", "dee", "2026-10-01", "2026-10-01")
+
+	var pd map[string]any
+	for _, period := range periodsFromTimetable(t, got) {
+		if isCustomPeriod(period) {
+			pd = period
+		}
+	}
+	if pd == nil {
+		t.Fatalf("the event period was not served: %s", got)
+	}
+	var roomID int64
+	for _, e := range jsonArray(pd["elements"]) {
+		if asString(e["type"]) == "ROOM" {
+			roomID, _ = jsonID(e["id"])
+		}
+	}
+	if roomID != 169 {
+		t.Errorf("room id = %d, want the override 169 rather than the catalogue's 777", roomID)
+	}
+	if !strings.Contains(string(got), `"id":169`) {
+		t.Errorf("the override room 169 is not in the response catalogue:\n%s", got)
+	}
+}
+
+// TestRoomOverridesNormalizeAndRoundTrip: names are lowercased and trimmed and
+// non-positive ids dropped, so "Aula", " aula " and "AULA" are one key.
+func TestRoomOverridesNormalizeAndRoundTrip(t *testing.T) {
+	p, _ := eventProxy(t)
+	if err := p.setRoomOverrides("testschool", map[string]int64{" Aula ": 169, "CSS": 238, "zero": 0, "": 5}); err != nil {
+		t.Fatalf("set overrides: %v", err)
+	}
+	got := p.roomOverrides("testschool")
+	if got["aula"] != 169 || got["css"] != 238 {
+		t.Errorf("overrides = %v, want aula→169 and css→238", got)
+	}
+	if _, ok := got["zero"]; ok {
+		t.Errorf("a zero id survived: %v", got)
+	}
+	if _, ok := got[""]; ok {
+		t.Errorf("an empty name survived: %v", got)
+	}
+	if p.roomOverrides("other-school") != nil {
+		t.Errorf("overrides leaked across schools: %v", p.roomOverrides("other-school"))
+	}
+}
+
+// roomTimetableEventsMasterData is a catalogue where "Aula" is room 169 and
+// "Mr Smith" is teacher 5009, so an event naming either resolves to a real id.
+const roomTimetableEventsMasterData = `{"result":{"masterData":{"timeStamp":1,` +
+	`"klassen":[{"id":5000,"name":"10aR"}],` +
+	`"subjects":[],` +
+	`"teachers":[{"id":5009,"name":"Smith","longName":"Mr Smith","active":true}],` +
+	`"rooms":[{"id":169,"name":"01-Aula","longName":"Aula","active":true},` +
+	`{"id":238,"name":"CSS","longName":"Christian Stock Stadion","active":true}],` +
+	`"holidays":[]}}}`
+
+// TestTechnikerSeesEventsOnARoomTimetable: the techniker permission is the gate
+// for the shared surfaces, so a techniker who opens the Aula room timetable sees
+// the event booked into it even though recon never enabled that room.
+func TestTechnikerSeesEventsOnARoomTimetable(t *testing.T) {
+	p, st := eventProxy(t)
+	p.cacheRawMasterData("testschool", []byte(roomTimetableEventsMasterData))
+	if err := st.SetPerm("dee", store.FeatureTechniker, true); err != nil {
+		t.Fatalf("grant techniker: %v", err)
+	}
+	ev := testEvent()
+	ev.Room = "Aula"
+	ev.Teacher = "Mr Smith"
+	seedEvent(t, st, "dee", ev)
+
+	rec := internReq(t, p, "getTimetable2017", "dee",
+		internBody("getTimetable2017", ttParam(169, "ROOM", "2026-10-01", "2026-10-01", "dee")))
+	periods := periodsOfResponse(t, rec)
+	if len(periods) != 1 || !isCustomPeriod(periods[0]) {
+		t.Fatalf("periods = %#v, want the one event on the room", periods)
+	}
+	if !periodReferencesElement(periods[0], "ROOM", 169) {
+		t.Errorf("the event does not reference the requested room: %#v", periods[0]["elements"])
+	}
+	if !hasCap(toCanList(periods[0]["can"]), "READ_LESSONTOPIC") {
+		t.Errorf("the event row hides its topic: %v", periods[0]["can"])
+	}
+}
+
+// TestTechnikerSeesOneRowPerEventOnARoom: one room booking staffed by two
+// students must draw once, naming both, not twice with identical text.
+func TestTechnikerSeesOneRowPerEventOnARoom(t *testing.T) {
+	p, st := eventProxy(t)
+	p.cacheRawMasterData("testschool", []byte(roomTimetableEventsMasterData))
+	if err := st.SetPerm("dee", store.FeatureTechniker, true); err != nil {
+		t.Fatalf("grant techniker: %v", err)
+	}
+	ev := testEvent()
+	ev.Room = "Aula"
+	ev.Teacher = "Mr Smith"
+	seedEvent(t, st, "dee", ev)
+	seedEvent(t, st, "sam", ev)
+
+	rec := internReq(t, p, "getTimetable2017", "dee",
+		internBody("getTimetable2017", ttParam(169, "ROOM", "2026-10-01", "2026-10-01", "dee")))
+	periods := periodsOfResponse(t, rec)
+	if len(periods) != 1 {
+		t.Fatalf("periods = %d, want one merged row: %s", len(periods), rec.Body.String())
+	}
+	names := strings.ToLower(asString(periods[0]["student"]))
+	if !strings.Contains(names, "dee") || !strings.Contains(names, "sam") {
+		t.Errorf("student = %q, want both assigned students", periods[0]["student"])
+	}
+}
+
+// TestTechnikerSeesEventsOnATeacherTimetable: the organiser's surface gets the
+// event too, matched by the resolved teacher id.
+func TestTechnikerSeesEventsOnATeacherTimetable(t *testing.T) {
+	p, st := eventProxy(t)
+	p.cacheRawMasterData("testschool", []byte(roomTimetableEventsMasterData))
+	if err := st.SetPerm("dee", store.FeatureTechniker, true); err != nil {
+		t.Fatalf("grant techniker: %v", err)
+	}
+	ev := testEvent()
+	ev.Room = "Aula"
+	ev.Teacher = "Mr Smith"
+	seedEvent(t, st, "dee", ev)
+
+	rec := internReq(t, p, "getTimetable2017", "dee",
+		internBody("getTimetable2017", ttParam(5009, "TEACHER", "2026-10-01", "2026-10-01", "dee")))
+	periods := periodsOfResponse(t, rec)
+	if len(periods) != 1 || !periodReferencesElement(periods[0], "TEACHER", 5009) {
+		t.Fatalf("periods = %#v, want the event on the organiser", periods)
+	}
+}
+
+// TestNonTechnikerGetsNoEventsOnASharedSurface: without the permission the room
+// timetable is exactly the old -8509, never a leak of somebody's appointments.
+func TestNonTechnikerGetsNoEventsOnASharedSurface(t *testing.T) {
+	p, st := eventProxy(t)
+	p.cacheRawMasterData("testschool", []byte(roomTimetableEventsMasterData))
+	ev := testEvent()
+	ev.Room = "Aula"
+	seedEvent(t, st, "dee", ev)
+
+	rec := internReq(t, p, "getTimetable2017", "dee",
+		internBody("getTimetable2017", ttParam(169, "ROOM", "2026-10-01", "2026-10-01", "dee")))
+	if code := errCode(t, rec); code != -8509 {
+		t.Errorf("code = %d, want -8509 (a non-techniker must not get the events)", code)
+	}
+}
+
+// TestTechnikerSeesNoEventsOnAnUnrelatedRoom: only the room an event names gets
+// it; another room stays empty rather than showing somebody else's booking.
+func TestTechnikerSeesNoEventsOnAnUnrelatedRoom(t *testing.T) {
+	p, st := eventProxy(t)
+	p.cacheRawMasterData("testschool", []byte(roomTimetableEventsMasterData))
+	if err := st.SetPerm("dee", store.FeatureTechniker, true); err != nil {
+		t.Fatalf("grant techniker: %v", err)
+	}
+	ev := testEvent()
+	ev.Room = "Aula"
+	seedEvent(t, st, "dee", ev)
+
+	rec := internReq(t, p, "getTimetable2017", "dee",
+		internBody("getTimetable2017", ttParam(238, "ROOM", "2026-10-01", "2026-10-01", "dee")))
+	if code := errCode(t, rec); code != -8509 {
+		t.Errorf("code = %d, want -8509 (no event names CSS)", code)
+	}
+}
+
+// TestBoostedTechnikerSeesEventsOnARoomTimetable: in production the coordinator
+// is often boosted as well, so a room request is served raw from the saved
+// teacher account and returns from serveRawFromBoostedSource before the
+// element-timetable path runs. The events must be added to that raw answer too,
+// or the very users the feature is for would never see them.
+func TestBoostedTechnikerSeesEventsOnARoomTimetable(t *testing.T) {
+	f := &fakeUpstream{}
+	p, st := newFakeProxyUpstream(t, f)
+	f.setTimetableBody(`{"jsonrpc":"2.0","id":"upstream","result":{"timetable":{"periods":[]},` +
+		`"masterData":{"timeStamp":1,"klassen":[{"id":5000,"name":"10aR"}],"subjects":[],` +
+		`"teachers":[{"id":5009,"name":"Smith","longName":"Mr Smith","active":true}],` +
+		`"rooms":[{"id":169,"name":"01-Aula","longName":"Aula","active":true}],"holidays":[]}}}`)
+	seedTeacherSource(t, st, "mrTeacher", 5009)
+	seedSessionUser(t, st, "dee", 5, 7, 5000)
+	if err := st.SetBoostedFlag("dee", true); err != nil {
+		t.Fatalf("boost dee: %v", err)
+	}
+	if err := st.SetPerm("dee", store.FeatureTechniker, true); err != nil {
+		t.Fatalf("grant techniker: %v", err)
+	}
+	ev := testEvent()
+	ev.Room = "Aula"
+	ev.Teacher = "Mr Smith"
+	seedEvent(t, st, "dee", ev)
+
+	rec := internReq(t, p, "getTimetable2017", "",
+		internBody("getTimetable2017", ttParam(169, "ROOM", "2026-10-01", "2026-10-01", "dee")))
+	periods := periodsOfResponse(t, rec)
+	if len(periods) != 1 || !isCustomPeriod(periods[0]) {
+		t.Fatalf("periods = %#v, want the one event on the boosted room view", periods)
+	}
+	if !periodReferencesElement(periods[0], "ROOM", 169) {
+		t.Errorf("the event does not reference the requested room: %#v", periods[0]["elements"])
+	}
+	// The room was read through a teacher account, so it must not be degraded to
+	// a non-techniker's empty view: the forwarded calls prove the raw path ran.
+	if len(f.Forwards()) == 0 {
+		t.Error("no upstream forward; the boosted raw path did not run")
+	}
+}
+
+// --- holidays ---
+
+// holidayResponse wraps a timetable with the given holidays in masterData.
+func holidayResponse(holidays ...map[string]any) []byte {
+	hs := make([]any, 0, len(holidays))
+	for _, h := range holidays {
+		hs = append(hs, h)
+	}
+	b, _ := json.Marshal(map[string]any{
+		"result": map[string]any{
+			"masterData": map[string]any{"timeStamp": 1000, "holidays": hs},
+			"timetable":  map[string]any{"periods": []any{realPeriodJSON("2026-10-12")}},
+		},
+	})
+	return b
+}
+
+// TestDecorateStudentEventsUnHolidaysTheEventDate: a client that hides a holiday
+// week hides the event with it. The break is declared in masterData, so the event
+// date has to be cut out of that list for the day to come back.
+func TestDecorateStudentEventsUnHolidaysTheEventDate(t *testing.T) {
+	p, st := eventProxy(t)
+	ev := testEvent()
+	ev.Date = "2026-10-12"
+	seedEvent(t, st, "dee", ev)
+
+	raw := holidayResponse(
+		map[string]any{"id": 417, "name": "Herbstferien", "startDate": "2026-10-05", "endDate": "2026-10-18"},
+		map[string]any{"id": 999, "name": "Weihnachten", "startDate": "2026-12-23", "endDate": "2027-01-12"},
+	)
+	got := p.decorateStudentEvents(raw, "testschool", "dee", "2026-10-12", "2026-10-12")
+
+	var parsed struct {
+		Result struct {
+			MasterData struct {
+				TimeStamp float64          `json:"timeStamp"`
+				Holidays  []map[string]any `json:"holidays"`
+			} `json:"masterData"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("decode: %v (%s)", err, got)
+	}
+	hs := parsed.Result.MasterData.Holidays
+	if len(hs) != 3 {
+		t.Fatalf("holidays = %+v, want 3 (two halves plus the untouched one)", hs)
+	}
+	for _, h := range hs {
+		s, _ := h["startDate"].(string)
+		e, _ := h["endDate"].(string)
+		if s <= "2026-10-12" && "2026-10-12" <= e {
+			t.Errorf("a holiday still covers the event date: %+v", h)
+		}
+	}
+	spans := map[string]string{}
+	for _, h := range hs {
+		s, _ := h["startDate"].(string)
+		e, _ := h["endDate"].(string)
+		spans[s] = e
+	}
+	if spans["2026-10-05"] != "2026-10-11" || spans["2026-10-13"] != "2026-10-18" {
+		t.Errorf("the break was not split around the 12th: %+v", spans)
+	}
+	if parsed.Result.MasterData.TimeStamp != 1001 {
+		t.Errorf("timeStamp = %v, want 1001 so a caching client sees the change", parsed.Result.MasterData.TimeStamp)
+	}
+}
+
+// TestStripHolidayDatesTrimsEdgesAndDropsSingletons covers the helper directly,
+// where the edge cases are cheap to enumerate.
+func TestStripHolidayDatesTrimsEdgesAndDropsSingletons(t *testing.T) {
+	holiday := func(start, end string) jsonObject {
+		return jsonObject{"id": int64(1), "startDate": start, "endDate": end}
+	}
+	for _, tc := range []struct {
+		name     string
+		start    string
+		end      string
+		cut      string
+		wantSpan [][2]string
+	}{
+		{"first day", "2026-10-05", "2026-10-18", "2026-10-05", [][2]string{{"2026-10-06", "2026-10-18"}}},
+		{"last day", "2026-10-05", "2026-10-18", "2026-10-18", [][2]string{{"2026-10-05", "2026-10-17"}}},
+		{"middle", "2026-10-05", "2026-10-18", "2026-10-10", [][2]string{{"2026-10-05", "2026-10-09"}, {"2026-10-11", "2026-10-18"}}},
+		{"whole range", "2026-10-10", "2026-10-10", "2026-10-10", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			md := jsonObject{"holidays": []any{holiday(tc.start, tc.end)}}
+			if !stripHolidayDates(md, map[string]bool{tc.cut: true}) {
+				t.Fatal("stripHolidayDates reported no change")
+			}
+			got := md["holidays"].([]any)
+			if len(got) != len(tc.wantSpan) {
+				t.Fatalf("got %d fragments, want %d: %+v", len(got), len(tc.wantSpan), got)
+			}
+			for i, want := range tc.wantSpan {
+				h := got[i].(jsonObject)
+				if h["startDate"] != want[0] || h["endDate"] != want[1] {
+					t.Errorf("fragment %d = %v..%v, want %v..%v", i, h["startDate"], h["endDate"], want[0], want[1])
+				}
+			}
+		})
+	}
+}
+
+// TestDecorateStudentEventsLeavesUnrelatedHolidaysAlone: the strip is keyed to
+// the dates the events fall on, so a break with no event on it is untouched.
+func TestDecorateStudentEventsLeavesUnrelatedHolidaysAlone(t *testing.T) {
+	p, st := eventProxy(t)
+	ev := testEvent()
+	ev.Date = "2026-11-03"
+	seedEvent(t, st, "dee", ev)
+
+	raw := holidayResponse(map[string]any{"id": 417, "name": "Herbstferien", "startDate": "2026-10-05", "endDate": "2026-10-18"})
+	got := p.decorateStudentEvents(raw, "testschool", "dee", "2026-11-03", "2026-11-03")
+	if !strings.Contains(string(got), "Herbstferien") {
+		t.Errorf("an unrelated holiday was removed:\n%s", got)
+	}
+	if !strings.Contains(string(got), `"2026-10-05"`) || !strings.Contains(string(got), `"2026-10-18"`) {
+		t.Errorf("the unrelated holiday's span changed:\n%s", got)
+	}
+	// The timestamp does move here, but for the synthesized subject catalogue,
+	// not the holiday: masterData gained an entry the caching client has to see.
+	if !strings.Contains(string(got), `"timeStamp":1001`) {
+		t.Errorf("the synthesized catalogue did not bump the timestamp:\n%s", got)
+	}
 }

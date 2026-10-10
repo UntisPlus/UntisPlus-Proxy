@@ -509,3 +509,80 @@ func TestPoolWithNoSchoolReturnsEverySchool(t *testing.T) {
 		t.Errorf("Pool(schoolB) = %+v, want class 20 plus the legacy no-school class 10", b)
 	}
 }
+
+// TestAllStudentEventsForRangeSpansTheSchool backs the synthetic Technik class:
+// the merged read has to return every student's events in the window and only
+// those, regardless of owner.
+func TestAllStudentEventsForRangeSpansTheSchool(t *testing.T) {
+	st := openTestStore(t)
+	for _, tc := range []struct{ user, date string }{
+		{"dee", "2026-10-01"},
+		{"sam", "2026-10-02"},
+		{"dee", "2026-11-01"}, // outside the window
+	} {
+		ev := sampleEvent()
+		ev.Date = tc.date
+		if _, err := st.CreateStudentEvent("testschool", tc.user, ev, "bob"); err != nil {
+			t.Fatalf("CreateStudentEvent(%s): %v", tc.user, err)
+		}
+	}
+	if _, err := st.CreateStudentEvent("otherschool", "dee", sampleEvent(), "bob"); err != nil {
+		t.Fatalf("CreateStudentEvent(other): %v", err)
+	}
+	evs, err := st.AllStudentEventsForRange("testschool", "2026-10-01", "2026-10-31")
+	if err != nil {
+		t.Fatalf("AllStudentEventsForRange: %v", err)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("got %d events, want the two in-window events from both students: %+v", len(evs), evs)
+	}
+	for _, ev := range evs {
+		if ev.School != "testschool" {
+			t.Errorf("another school's event leaked in: %+v", ev)
+		}
+		if ev.Date < "2026-10-01" || ev.Date > "2026-10-31" {
+			t.Errorf("event outside the window: %+v", ev)
+		}
+	}
+}
+
+// TestStudentEventPatchMovesOwner checks that an edit can hand an event to
+// another student: the row changes owner, both students' counters move so both
+// clients refresh, and neither student keeps a copy.
+func TestStudentEventPatchMovesOwner(t *testing.T) {
+	st := openTestStore(t)
+	ev, err := st.CreateStudentEvent("testschool", "dee", sampleEvent(), "bob")
+	if err != nil {
+		t.Fatalf("CreateStudentEvent: %v", err)
+	}
+	deeBefore, _ := st.StudentEventVersion("testschool", "dee")
+	samBefore, _ := st.StudentEventVersion("testschool", "sam")
+
+	to := "sam"
+	got, ok, err := st.UpdateStudentEvent("testschool", ev.ID, StudentEventPatch{Username: &to})
+	if err != nil || !ok {
+		t.Fatalf("UpdateStudentEvent(move): %v (found %v)", err, ok)
+	}
+	if got.Username != "sam" {
+		t.Errorf("username = %q, want sam", got.Username)
+	}
+	dee, err := st.StudentEvents("testschool", "dee")
+	if err != nil {
+		t.Fatalf("StudentEvents(dee): %v", err)
+	}
+	sam, err := st.StudentEvents("testschool", "sam")
+	if err != nil {
+		t.Fatalf("StudentEvents(sam): %v", err)
+	}
+	if len(dee) != 0 || len(sam) != 1 {
+		t.Errorf("after the move dee has %d events and sam has %d, want 0 and 1", len(dee), len(sam))
+	}
+	// Both counters must move: the old owner has to drop the row and the new
+	// owner has to pick it up.
+	if v, _ := st.StudentEventVersion("testschool", "dee"); v <= deeBefore {
+		t.Errorf("the old owner's version did not move: %d -> %d", deeBefore, v)
+	}
+	if v, _ := st.StudentEventVersion("testschool", "sam"); v <= samBefore {
+		t.Errorf("the new owner's version did not move: %d -> %d", samBefore, v)
+	}
+}

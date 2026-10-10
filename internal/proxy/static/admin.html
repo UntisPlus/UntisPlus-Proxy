@@ -56,7 +56,7 @@
     <input id="uName" placeholder="username">
     <button onclick="addUser()">promote to admin</button>
   </div>
-  <table id="users"><thead><tr><th>user</th><th>class</th><th>school</th><th>admin</th><th>recon</th><th>boosted</th><th>editor</th><th></th></tr></thead><tbody></tbody></table>
+  <table id="users"><thead><tr><th>user</th><th>class</th><th>school</th><th>admin</th><th>recon</th><th>boosted</th><th>editor</th><th>techniker</th><th></th></tr></thead><tbody></tbody></table>
 </section>
 
 <section>
@@ -139,11 +139,15 @@
   </div>
   <div class="row" style="margin-bottom:.5rem">
     <input id="evTitle" placeholder="title" style="width:12rem">
+    <input id="evSubject" placeholder="subject (Technik)" style="width:11rem">
     <input id="evDate" type="date" style="width:10rem">
     <input id="evStart" type="time" value="14:00" style="width:7rem">
     <input id="evEnd" type="time" value="15:00" style="width:7rem">
     <input id="evTeacher" placeholder="teacher" style="width:10rem">
-    <button onclick="addEvent()">add</button>
+    <input id="evDescription" placeholder="description" style="width:14rem">
+    <button id="evSubmit" onclick="addEvent()">add</button>
+    <button class="mini" id="evCancel" style="display:none" onclick="cancelEdit()">cancel</button>
+    <span class="dim" id="evEditHint"></span>
   </div>
   <div class="row" style="margin-bottom:.5rem;align-items:flex-start">
     <div style="flex:1 1 22rem;min-width:18rem">
@@ -157,7 +161,31 @@
       <input id="evRoomExtra" placeholder="or type a room not in the list" style="width:100%;margin-top:.25rem">
     </div>
   </div>
-  <table id="events"><thead><tr><th>date</th><th>time</th><th>title</th><th>room</th><th>teacher</th><th>rev</th><th></th></tr></thead><tbody></tbody></table>
+  <table id="events"><thead><tr><th>date</th><th>time</th><th>title</th><th>subject</th><th>room</th><th>teacher</th><th>rev</th><th></th></tr></thead><tbody></tbody></table>
+  <div class="row" style="margin-top:.75rem;align-items:flex-start">
+    <div style="flex:1 1 30rem;min-width:20rem">
+      <div class="lbl">Import Technik calendar <span class="dim">(paste the technikkalender JSON, or choose the export file; slots a student already has are skipped)</span></div>
+      <textarea id="evImport" rows="5" style="width:100%;font-family:monospace;font-size:.75rem" placeholder='{"techniker":[...],"veranstaltungen":[...]}'></textarea>
+      <div class="row" style="margin-top:.25rem">
+        <input type="file" id="evImportFile" accept=".json,.csv,.txt">
+        <button onclick="importEvents()">import</button>
+      </div>
+    </div>
+    <pre class="log" id="evImportLog" style="flex:1 1 20rem;min-width:16rem;max-height:9rem;overflow:auto"></pre>
+  </div>
+</section>
+
+<section>
+  <h2>Room map <button class="mini" onclick="loadRoomMap()">refresh</button></h2>
+  <div class="row" style="margin-bottom:.5rem">
+    <select id="rmSchool"></select>
+    <span class="pickwrap"><input id="rmElIn" placeholder="search room…" style="width:16rem">
+      <input type="hidden" id="rmElVal" value="0"><input type="hidden" id="rmElName"><div class="pickmenu" id="rmElMenu"></div></span>
+    <span class="dim">→ id <b id="rmPickId">—</b></span>
+    <button onclick="addRoomMap()">add / update</button>
+  </div>
+  <div class="dim" style="margin-bottom:.4rem">Pin an event's room text to the Untis id the real lessons use (e.g. Aula → 169), per school. An entry here wins over the school catalogue; a room in neither is still shown.</div>
+  <table id="roommap"><thead><tr><th>room name</th><th>Untis room id</th><th></th></tr></thead><tbody></tbody></table>
 </section>
 
 <section>
@@ -208,7 +236,7 @@ async function renderCards(){
   c.insertAdjacentHTML('beforeend', card('recon', status.recon));
   c.insertAdjacentHTML('beforeend', card('boosted', status.boosted));
   c.insertAdjacentHTML('beforeend', card('editors', status.editors));
-  for(const id of ['whSchool','ntfySchool','tokSchool','poolSchool','evSchool']) fillSchoolSelect(id);
+  for(const id of ['whSchool','ntfySchool','tokSchool','poolSchool','evSchool','rmSchool']) fillSchoolSelect(id);
   if(!$('evUser').dataset.bound){
     $('evUser').dataset.bound='1';
     $('evUser').addEventListener('keydown', function(ev){ if(ev.key==='Enter') loadEvents(); });
@@ -216,6 +244,7 @@ async function renderCards(){
   }
   if(!$('poolSchool').dataset.bound){ $('poolSchool').dataset.bound='1'; $('poolSchool').addEventListener('change', loadPool); }
   if(!$('evSchool').dataset.bound){ $('evSchool').dataset.bound='1'; $('evSchool').addEventListener('change', loadEventPickers); }
+  if(!$('rmSchool').dataset.bound){ $('rmSchool').dataset.bound='1'; $('rmSchool').addEventListener('change', loadRoomMap); }
   loadEventPickers();
   refreshDependentLists();
 }
@@ -316,6 +345,11 @@ async function eventApi(method, path, body){
 // exists instead of spelling it. Typing a username was how an event ended up
 // filed against somebody who never sees it.
 let evStudentPicks=[], evRoomPicks=[], evRoomCatalog=[];
+// evRows caches the last loaded list by event id so editEvent can fill the form
+// without another round-trip. evEditing is the event id being edited, or 0 for
+// the add form; evEditingUser is its current owner, used to decide whether an
+// edit actually moves the event to another student.
+let evRows={}, evEditing=0, evEditingUser='';
 
 // evStudentsFor returns the students of the selected school. personType 5 is a
 // student; a teacher account has no per-student timetable to put an event on.
@@ -346,6 +380,9 @@ function renderStudentPicker(){
     const cls=u.className?(' · '+u.className):'';
     it.textContent=(on?'✓ ':'')+u.username+(u.displayName?(' ('+u.displayName+')'):'')+cls;
     it.onclick=function(){
+      // An edit moves one event between students, so it takes exactly one: a
+      // click replaces the current pick instead of toggling a set.
+      if(evEditing){ evStudentPicks=[u.username]; renderStudentPicker(); return; }
       const i=evStudentPicks.indexOf(u.username);
       if(i>=0) evStudentPicks.splice(i,1); else evStudentPicks.push(u.username);
       renderStudentPicker();
@@ -384,10 +421,13 @@ async function loadEventPickers(){
     if(!allUsers) allUsers=(await api('GET','users')).users||[];
   }catch(e){ allUsers=[]; }
   try{
-    const d=await api('GET','search?school='+encodeURIComponent(sc)+'&type=ROOM');
+    // The whole room list, not the default 60: a school has hundreds of rooms,
+    // and a picker that only ever receives the first 60 could never offer Aula
+    // or CSS no matter what the admin typed in the filter.
+    const d=await api('GET','search?school='+encodeURIComponent(sc)+'&type=ROOM&limit=2000');
     const rooms={};
     for(const r of (d.results||[])) if(r.name) rooms[r.name]=1;
-    evRoomCatalog=Object.keys(rooms);
+    evRoomCatalog=Object.keys(rooms).sort();
   }catch(e){ evRoomCatalog=[]; }
   renderStudentPicker(); renderRoomPicker();
 }
@@ -400,20 +440,53 @@ async function loadEvents(){
   if(!user) return log('pick a student first');
   const d = await eventApi('GET','?username='+encodeURIComponent(user));
   const tb=$('events').querySelector('tbody'); tb.innerHTML='';
+  evRows={};
   for(const e of d.events){
+    evRows[e.eventId]=e;
     const tr=document.createElement('tr');
     tr.innerHTML='<td>'+e.date+'</td><td>'+e.startTime+'\u2013'+e.endTime+'</td><td>'+esc(e.title)+'</td>'+
-      '<td>'+esc(e.room||'')+'</td><td>'+esc(e.teacher||'')+'</td><td>'+e.revision+'</td>'+
+      '<td>'+esc(e.subject||'')+'</td><td>'+esc(e.room||'')+'</td><td>'+esc(e.teacher||'')+'</td><td>'+e.revision+'</td>'+
       '<td><button class="mini" onclick="editEvent('+e.eventId+')">edit</button> '+
       '<button class="mini danger" onclick="delEvent('+e.eventId+')">del</button></td>';
     tb.appendChild(tr);
   }
-  if(!d.events.length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="7">no events for this student</td>'; tb.appendChild(tr); }
+  if(!d.events.length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="8">no events for this student</td>'; tb.appendChild(tr); }
 }
 
 function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
 
+// The form above doubles as the editor. With no edit in progress addEvent
+// creates the event for every picked student; with one it patches the event and
+// may move it to another student.
 async function addEvent(){
+  const title=$('evTitle').value.trim();
+  if(!title) return log('title is required');
+  const date=$('evDate').value;
+  if(!date) return log('pick a date');
+  const rooms=evRoomPicks.slice();
+  const typedRoom=$('evRoomExtra')?$('evRoomExtra').value.trim():'';
+  if(typedRoom) rooms.push(typedRoom);
+  const body={title:title, subject:$('evSubject').value.trim(), date:date,
+    startTime:$('evStart').value, endTime:$('evEnd').value,
+    room:rooms.join(', '), teacher:$('evTeacher').value.trim(),
+    description:$('evDescription').value.trim()};
+  if(evEditing){
+    const picked=evStudentPicks[0]||evEditingUser;
+    // Only send the owner when it actually changed, so an ordinary edit does not
+    // re-key the row and bump two students' event versions.
+    if(picked && picked!==evEditingUser) body.username=picked;
+    try{
+      await eventApi('PATCH','/'+evEditing, body);
+      log('event '+evEditing+' updated');
+      resetEventForm();
+      // The table is filtered by the box above; if the admin reached the row
+      // through the student picker rather than by typing, the box is empty and
+      // the reload would refuse. Point it at the (possibly new) owner first.
+      if(!$('evUser').value.trim()) $('evUser').value=picked;
+      loadEvents();
+    }catch(e){ log('update failed: '+e.message); }
+    return;
+  }
   // Several students at once is the normal case for a Technik slot, and several
   // rooms happens whenever a group is split across two. Both become one row per
   // student, which is what keeps an entry private to its owner.
@@ -421,40 +494,57 @@ async function addEvent(){
   const typed=$('evUser').value.trim();
   if(!picks.length && typed) picks.push(typed);
   if(!picks.length) return log('pick at least one student');
-  const rooms=evRoomPicks.slice();
-  const typedRoom=$('evRoomExtra')?$('evRoomExtra').value.trim():'';
-  if(typedRoom) rooms.push(typedRoom);
   try{
-    const d=await eventApi('POST','',{usernames:picks, title:$('evTitle').value.trim(), date:$('evDate').value,
-      startTime:$('evStart').value, endTime:$('evEnd').value,
-      room:rooms.join(', '), teacher:$('evTeacher').value});
-    const made=d.created?d.created.length:1;
-    $('evTitle').value='';
+    const d=await eventApi('POST','',Object.assign({usernames:picks}, body));
+    const made=d.created?d.created.length:(d.eventId?1:0);
+    const skipped=d.skipped?d.skipped.length:0;
     // Point the table at one of the students just given the event, so the result
     // is visible without a second click.
     if(!$('evUser').value.trim()) $('evUser').value=picks[0];
-    evStudentPicks=[]; renderStudentPicker();
-    log('event added for '+made+' student'+(made===1?'':'s')+': '+picks.join(', '));
+    if(made){
+      log('event added for '+made+' student'+(made===1?'':'s')+': '+picks.join(', ')
+        +(skipped?'; '+skipped+' already had that slot':''));
+    }else{
+      log('nothing added: '+skipped+' already had that slot ('+picks.join(', ')+')');
+    }
+    resetEventForm();
     loadEvents();
   }catch(e){ log('add failed: '+e.message); }
 }
 
-// Editing replaces the whole entry. The API takes a partial patch, but a form
-// that silently keeps a field the admin meant to clear is worse than one that
-// submits everything it shows.
+// resetEventForm returns the form to its add state after a save or cancel.
+function resetEventForm(){
+  evEditing=0; evEditingUser='';
+  $('evTitle').value=''; $('evSubject').value=''; $('evDescription').value='';
+  evStudentPicks=[]; evRoomPicks=[]; $('evRoomExtra').value='';
+  $('evSubmit').textContent='add'; $('evCancel').style.display='none';
+  $('evEditHint').textContent='';
+  renderStudentPicker(); renderRoomPicker();
+}
+
+function cancelEdit(){ resetEventForm(); }
+
+// Editing fills the form above rather than a chain of prompt() popups: the same
+// controls that create an event edit it, so every field — the student and the
+// description included — is visible and changeable at once.
 async function editEvent(id){
-  const title=prompt('title'); if(title===null) return;
-  const room=prompt('room'); if(room===null) return;
-  const teacher=prompt('teacher'); if(teacher===null) return;
-  const when=prompt('date + start - end (YYYY-MM-DD 14:00 15:00)','');
-  if(when===null) return;
-  const m=when.trim().split(/\s+/);
-  if(m.length!==3) return log('expected: date start end');
-  try{
-    await eventApi('PATCH','/'+id,{title:title, room:room, teacher:teacher,
-      date:m[0], startTime:m[1], endTime:m[2]});
-    log('event '+id+' updated'); loadEvents();
-  }catch(e){ log('update failed: '+e.message); }
+  const ev=evRows[id]; if(!ev) return;
+  evEditing=id; evEditingUser=ev.username;
+  $('evTitle').value=ev.title||'';
+  $('evSubject').value=ev.subject||'';
+  $('evDate').value=ev.date||'';
+  $('evStart').value=ev.startTime||'';
+  $('evEnd').value=ev.endTime||'';
+  $('evTeacher').value=ev.teacher||'';
+  $('evDescription').value=ev.description||'';
+  evStudentPicks=[ev.username];
+  evRoomPicks=(ev.room||'').split(/[,/;|]/).map(function(s){ return s.trim(); }).filter(function(s){ return s; });
+  $('evRoomExtra').value='';
+  renderStudentPicker(); renderRoomPicker();
+  $('evSubmit').textContent='save';
+  $('evCancel').style.display='';
+  $('evEditHint').textContent='editing event '+id;
+  $('evTitle').focus();
 }
 
 async function delEvent(id){
@@ -462,6 +552,79 @@ async function delEvent(id){
   try{ await eventApi('DELETE','/'+id); log('event '+id+' deleted'); loadEvents(); }
   catch(e){ log('delete failed: '+e.message); }
 }
+
+// evImportNote writes to the import's own log as well as the activity log, so the
+// summary of a large import stays next to the box it came from instead of
+// scrolling away in the shared feed.
+function evImportNote(msg){
+  const e=$('evImportLog'); if(e) e.textContent=msg+'\n'+e.textContent;
+  log(msg);
+}
+
+// importEvents posts the Technik export to the bulk endpoint. A chosen file is
+// sent as its raw bytes because the CSV is Windows-1252; pasted JSON is UTF-8.
+async function importEvents(){
+  const file=$('evImportFile').files[0];
+  let payload;
+  try{
+    payload = file ? await file.arrayBuffer() : new TextEncoder().encode($('evImport').value);
+  }catch(e){ return evImportNote('could not read the file: '+e.message); }
+  if(!payload || (payload.byteLength===0)) return log('paste the export or choose a file first');
+  try{
+    const r=await fetch('/api/admin/events/import?school='+encodeURIComponent($('evSchool').value||''),
+      {method:'POST',headers:{'Content-Type':'application/octet-stream'},body:payload});
+    const d=await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(d.error||('http '+r.status));
+    const made=(d.created||[]).length, skipped=(d.skipped||[]).length;
+    let line='import: '+made+' event'+(made===1?'':'s')+' added'+(skipped?'; '+skipped+' already present':'');
+    if((d.unknown||[]).length) line+='; no account yet: '+d.unknown.join(', ');
+    if((d.ignored||[]).length) line+='; skipped non-technicians: '+d.ignored.join(', ');
+    if(d.skippedTimes) line+='; '+d.skippedTimes+' with no usable time';
+    evImportNote(line);
+    $('evImport').value=''; $('evImportFile').value='';
+    loadEvents();
+  }catch(e){ evImportNote('import failed: '+e.message); }
+}
+
+// Room overrides pin a room's plain text to the Untis id the real lessons use,
+// per school. The picker offers real rooms (with their ids) so the admin links a
+// name to an id rather than typing one; the whole map is saved on every change.
+let roomMap={};
+async function loadRoomMap(){
+  const sc=$('rmSchool').value || defaultSchool();
+  try{
+    const d=await api('GET','rooms?school='+encodeURIComponent(sc));
+    roomMap=d.rooms||{};
+  }catch(e){ roomMap={}; log('room map load: '+e.message); }
+  renderRoomMap();
+}
+function renderRoomMap(){
+  const tb=$('roommap').querySelector('tbody'); tb.innerHTML='';
+  const names=Object.keys(roomMap).sort();
+  if(!names.length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="3" class="dim">no room overrides</td>'; tb.appendChild(tr); return; }
+  for(const n of names){
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+esc(n)+'</td><td>'+roomMap[n]+'</td>'+
+      '<td><button class="mini danger" onclick="delRoomMap(\''+n.replace(/'/g,"\\'")+'\')">del</button></td>';
+    tb.appendChild(tr);
+  }
+}
+async function saveRoomMap(){
+  const sc=$('rmSchool').value || defaultSchool();
+  if(!sc){ log('no school selected'); return; }
+  const d=await api('POST','rooms?school='+encodeURIComponent(sc),{rooms:roomMap});
+  if(d.error){ log('room map save failed: '+d.error); return; }
+  roomMap=d.rooms||roomMap; renderRoomMap(); log('room map saved for '+sc);
+}
+async function addRoomMap(){
+  const name=($('rmElIn').value||'').trim();
+  const id=parseInt($('rmElVal').value)||0;
+  if(!name || !id){ log('search a room and pick it first'); return; }
+  roomMap[name]=id;
+  $('rmElIn').value=''; $('rmElVal').value='0'; $('rmElName').value=''; $('rmPickId').textContent='—';
+  await saveRoomMap();
+}
+async function delRoomMap(name){ delete roomMap[name]; await saveRoomMap(); }
 
 async function loadUsers(){
   const d = await api('GET','users');
@@ -474,6 +637,7 @@ async function loadUsers(){
       '<td><button class="mini '+(u.reconAllowed?'danger':'')+'" onclick="setPerm(\''+u.username+'\',\'recon\','+(!u.reconAllowed)+')">'+(u.reconAllowed?'on':'off')+'</button></td>'+
       '<td><button class="mini '+(u.boosted?'danger':'')+'" onclick="setPerm(\''+u.username+'\',\'boosted\','+(!u.boosted)+')">'+(u.boosted?'on':'off')+'</button></td>'+
       '<td><button class="mini '+(u.editor?'danger':'')+'" onclick="setPerm(\''+u.username+'\',\'editor\','+(!u.editor)+')">'+(u.editor?'on':'off')+'</button></td>'+
+      '<td><button class="mini '+(u.techniker?'danger':'')+'" onclick="setPerm(\''+u.username+'\',\'techniker\','+(!u.techniker)+')" title="see the merged Technik class">'+(u.techniker?'on':'off')+'</button></td>'+
       '<td><button class="mini danger" onclick="delUser(\''+u.username+'\')">del</button></td>';
     tb.appendChild(tr);
   }
@@ -609,7 +773,7 @@ async function refreshAll(){
   const mark = new Date().toISOString().slice(11,19);
   const hint = $('refreshHint'); if(hint) hint.textContent = 'last refresh '+mark;
   const jobs = {users:loadUsers, webhooks:loadWebhooks,
-                ntfy:loadNtfy, tokens:loadTokens, pool:loadPool};
+                ntfy:loadNtfy, tokens:loadTokens, pool:loadPool, roommap:loadRoomMap};
   // The school list has to land before the cards render, because rendering the
   // cards is what fills the school selectors.
   try { await loadSchools(); } catch(e){ log('schools: '+e); }
@@ -644,6 +808,8 @@ async function refreshAll(){
     $('tokElIn').value=''; $('tokElVal').value=''; $('tokElName').value='';
     tokPicker($('tokType').value);
   });
+  makePicker({input:'rmElIn', hidden:'rmElVal', menu:'rmElMenu', schoolSel:'rmSchool', type:'ROOM',
+    onpick:function(id,name){ $('rmElName').value=name||''; const b=$('rmPickId'); if(b) b.textContent=id?('#'+id):'—'; }});
   refreshAll();
 })();
 </script>

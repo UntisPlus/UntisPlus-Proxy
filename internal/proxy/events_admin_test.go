@@ -583,3 +583,90 @@ func TestAdminEventBatchDedupesAndAcceptsBothFields(t *testing.T) {
 		t.Errorf("an empty batch returned %d, want 400", rec.Code)
 	}
 }
+
+// TestAdminEventDuplicateIsSkippedNotCreated: a student cannot be in two places
+// in one slot, so a second entry for the same day and time is the same
+// appointment entered twice. It must not create a duplicate row, and the admin
+// must be told the slot was already covered.
+func TestAdminEventDuplicateIsSkippedNotCreated(t *testing.T) {
+	p, st := adminEventProxy(t)
+	first := doAdmin(t, p, "adm", http.MethodPost, "/api/admin/events",
+		`{"username":"dee","date":"2026-10-12","startTime":"14:00","endTime":"15:00","title":"Technik"}`)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first create: %d %s", first.Code, first.Body.String())
+	}
+	original := decodeEvent(t, first)
+
+	// Same slot, a different title: still the same appointment.
+	second := doAdmin(t, p, "adm", http.MethodPost, "/api/admin/events",
+		`{"username":"dee","date":"2026-10-12","startTime":"14:00","endTime":"15:00","title":"Anders"}`)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second create: %d %s", second.Code, second.Body.String())
+	}
+	var out struct {
+		Created []map[string]any `json:"created"`
+		Skipped []struct {
+			Username string `json:"username"`
+			EventID  int64  `json:"eventId"`
+			Reason   string `json:"reason"`
+		} `json:"skipped"`
+	}
+	if err := json.Unmarshal(second.Body.Bytes(), &out); err != nil {
+		t.Fatalf("bad json: %v (%s)", err, second.Body.String())
+	}
+	if len(out.Created) != 0 || len(out.Skipped) != 1 {
+		t.Fatalf("created=%v skipped=%v, want 0 created and 1 skipped", out.Created, out.Skipped)
+	}
+	if out.Skipped[0].Username != "dee" || out.Skipped[0].EventID != original.EventID || out.Skipped[0].Reason != "duplicate" {
+		t.Errorf("skip = %+v, want dee / %d / duplicate", out.Skipped[0], original.EventID)
+	}
+	if evs, _ := st.StudentEvents("testschool", "dee"); len(evs) != 1 {
+		t.Errorf("dee has %d events after a duplicate add, want 1: %+v", len(evs), evs)
+	}
+	if v, _ := st.StudentEventVersion("testschool", "dee"); v != 1 {
+		t.Errorf("eventVersion = %d after a no-op add, want 1 (no change signal)", v)
+	}
+}
+
+// TestAdminEventBatchSkipsOnlyTheDuplicates: a batch is still useful when only
+// some of the students already have the slot.
+func TestAdminEventBatchSkipsOnlyTheDuplicates(t *testing.T) {
+	p, st := adminEventProxy(t)
+	if err := st.UpsertUser(&store.User{
+		Username: "kim", School: "testschool", PersonType: 5, PersonID: 111, ClassID: 5000,
+	}); err != nil {
+		t.Fatalf("seed kim: %v", err)
+	}
+	if rec := doAdmin(t, p, "adm", http.MethodPost, "/api/admin/events",
+		`{"username":"dee","date":"2026-10-12","startTime":"14:00","endTime":"15:00","title":"Technik"}`); rec.Code != http.StatusOK {
+		t.Fatalf("seed create: %s", rec.Body.String())
+	}
+
+	rec := doAdmin(t, p, "adm", http.MethodPost, "/api/admin/events",
+		`{"usernames":["dee","sam","kim"],"date":"2026-10-12","startTime":"14:00","endTime":"15:00","title":"Technik"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("batch: %d %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Created []struct {
+			Username string `json:"username"`
+		} `json:"created"`
+		Skipped []struct {
+			Username string `json:"username"`
+		} `json:"skipped"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if len(out.Created) != 2 || out.Created[0].Username != "sam" || out.Created[1].Username != "kim" {
+		t.Errorf("created = %+v, want sam and kim", out.Created)
+	}
+	if len(out.Skipped) != 1 || out.Skipped[0].Username != "dee" {
+		t.Errorf("skipped = %+v, want only dee", out.Skipped)
+	}
+	for _, u := range []string{"dee", "sam", "kim"} {
+		if evs, _ := st.StudentEvents("testschool", u); len(evs) != 1 {
+			t.Errorf("%s has %d events, want exactly 1", u, len(evs))
+		}
+	}
+}

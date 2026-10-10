@@ -405,6 +405,10 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 // Element reconstruction access is granted per type (TEACHER/ROOM/SUBJECT) via
 // a per-user override or the global switch; un-granted types stay hidden.
 func (p *Proxy) markPooledElementsDisplayable(school string, body []byte, username string) []byte {
+	return p.injectTechnikClass(username, p.markPooledElementsDisplayableInner(school, body, username))
+}
+
+func (p *Proxy) markPooledElementsDisplayableInner(school string, body []byte, username string) []byte {
 	var resp struct {
 		Result struct {
 			MasterData struct {
@@ -556,17 +560,23 @@ func (p *Proxy) persistElementNames(school string, md map[string]any) {
 	}
 }
 
+// timetableParams is the first element of a getTimetable2017 request's params
+// array: what the caller wants (element type and id) and over what span. Naming
+// it lets getTimetable2017, serveElementTimetable and the boosted path all read
+// the same fields without repeating the anonymous struct.
+type timetableParams struct {
+	ID        int64  `json:"id"`
+	Type      string `json:"type"`
+	StartDate string `json:"startDate"`
+	EndDate   string `json:"endDate"`
+	Auth      struct {
+		User string `json:"user"`
+	} `json:"auth"`
+}
+
 func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school string, id json.RawMessage, body []byte) {
 	var req struct {
-		Params []struct {
-			ID        int64  `json:"id"`
-			Type      string `json:"type"`
-			StartDate string `json:"startDate"`
-			EndDate   string `json:"endDate"`
-			Auth      struct {
-				User string `json:"user"`
-			} `json:"auth"`
-		} `json:"params"`
+		Params []timetableParams `json:"params"`
 	}
 	_ = json.Unmarshal(body, &req)
 	if len(req.Params) == 0 {
@@ -593,13 +603,22 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 		return
 	}
 
+	// The synthetic Technik aggregate class is answered by the proxy itself, so
+	// it must be caught before the boosted path forwards the request to a teacher
+	// account that has never heard of it. Access is its own permission, not
+	// boosted/recon/admin.
+	if pr.Type == "CLASS" && pr.ID == technikClassID {
+		p.serveTechnikClass(w, id, school, requester, pr.StartDate, pr.EndDate)
+		return
+	}
+
 	// boost: serve ALL timetables (class/teacher/room/subject AND the user's own
 	// personal student timetable) raw from the saved teacher accounts. This gives
 	// boosted users teacher-grade visibility — e.g. unlimited future weeks on
 	// their own timetable, which a student account caps at ~1 week. If no
 	// teacher account is saved, fall back to the pool path below.
 	if p.isBoosted(requesterName) {
-		if p.serveRawFromBoostedSource(w, r, school, id, requesterName, body) {
+		if p.serveRawFromBoostedSource(w, r, school, id, requesterName, requester, pr, body) {
 			return
 		}
 	}
@@ -641,6 +660,9 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 			// event in either would hand it to everyone else looking at the same
 			// response, so those paths deliberately carry no events.
 			b = p.decorateStudentEvents(b, school, requesterName, pr.StartDate, pr.EndDate)
+			// Keep the Technik class in the class list this response carries, so a
+			// techniker sees it without waiting for the next getUserData2017.
+			b = p.injectTechnikClass(requesterName, b)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = w.Write(b)
@@ -673,6 +695,7 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 			// the proxy can rely on: a classmate in the same class sends the same
 			// request and gets their own events, never anyone else's.
 			b = p.decorateStudentEvents(b, school, requesterName, pr.StartDate, pr.EndDate)
+			b = p.injectTechnikClass(requesterName, b)
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(status)
 			_, _ = w.Write(b)
@@ -769,7 +792,7 @@ func (p *Proxy) withRequesterMasterData(school, username string, b []byte) []byt
 // ROOM/SUBJECT) raw from the saved teacher accounts when the requester is
 // boosted. It picks the first available teacher source account and forwards the
 // request with rewritten auth to that account.
-func (p *Proxy) serveRawFromBoostedSource(w http.ResponseWriter, r *http.Request, school string, id json.RawMessage, requesterName string, body []byte) bool {
+func (p *Proxy) serveRawFromBoostedSource(w http.ResponseWriter, r *http.Request, school string, id json.RawMessage, requesterName string, requester *store.User, pr timetableParams, body []byte) bool {
 	owner := p.boostedSource(school)
 	if owner == nil {
 		return false
@@ -784,13 +807,51 @@ func (p *Proxy) serveRawFromBoostedSource(w http.ResponseWriter, r *http.Request
 		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 		return true
 	}
+	// A boosted user's own timetable is decorated with their events exactly as a
+	// non-boosted student's would be. The raw teacher path normally returns
+	// before any event code runs, which is why a boosted user previously saw
+	// their lessons but none of their Technik appointments. Only the requester's
+	// own STUDENT or CLASS timetable is touched; every other element the account
+	// can read stays someone else's and carries no events.
+	if p.ownsTimetable(requester, pr) {
+		b = p.decorateStudentEvents(b, school, requesterName, pr.StartDate, pr.EndDate)
+	}
+	// A boosted coordinator still sees the appointments booked into a room or on
+	// an organiser: the raw teacher timetable the account can read is kept, and
+	// the matching events are added to it, exactly as serveElementTimetable does
+	// for an unboosted techniker. The techniker permission is the gate, and only
+	// the room and teacher surfaces carry it.
+	if !p.ownsTimetable(requester, pr) && !(pr.Type == "TEACHER" && requester.PersonID == pr.ID) &&
+		p.hasTechniker(requesterName) && (pr.Type == "ROOM" || pr.Type == "TEACHER") &&
+		validDate(pr.StartDate) && validDate(pr.EndDate) && pr.StartDate <= pr.EndDate {
+		if md := masterDataOf(b); md != nil {
+			evs := p.elementEventPeriods(school, pr.Type, pr.ID, pr.StartDate, pr.EndDate, responseLocation(b), md)
+			b = p.appendEventPeriods(b, school, requesterName, evs, 0)
+		}
+	}
 	// The teacher account answers with its full capability set. Without the
 	// editor flag the boosted user gets visibility, never write access.
 	b = p.viewerBody(requesterName, b)
+	b = p.injectTechnikClass(requesterName, b)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(b)
 	return true
+}
+
+// ownsTimetable reports whether a timetable request is for the requester's own
+// schedule: their own student id, or their own class's id.
+func (p *Proxy) ownsTimetable(requester *store.User, pr timetableParams) bool {
+	if requester == nil {
+		return false
+	}
+	switch pr.Type {
+	case "STUDENT":
+		return requester.PersonType == 5 && pr.ID == requester.PersonID
+	case "CLASS":
+		return requester.PersonType == 5 && pr.ID == requester.ClassID
+	}
+	return false
 }
 
 // boostedSource returns the most recently active saved teacher account
@@ -807,15 +868,7 @@ func (p *Proxy) boostedSource(school string) *store.User {
 // by reconstructing the element's schedule from the pooled classes' timetables.
 // Only elements that appear in pooled data are served; everything else gets the
 // same -8509 the real server would return.
-func (p *Proxy) serveElementTimetable(w http.ResponseWriter, r *http.Request, school string, id json.RawMessage, pr struct {
-	ID        int64  `json:"id"`
-	Type      string `json:"type"`
-	StartDate string `json:"startDate"`
-	EndDate   string `json:"endDate"`
-	Auth      struct {
-		User string `json:"user"`
-	} `json:"auth"`
-}, body []byte) {
+func (p *Proxy) serveElementTimetable(w http.ResponseWriter, r *http.Request, school string, id json.RawMessage, pr timetableParams, body []byte) {
 	requesterName := pr.Auth.User
 	if requesterName == "" {
 		if u := p.sessionUser(r); u != nil {
@@ -845,26 +898,42 @@ func (p *Proxy) serveElementTimetable(w http.ResponseWriter, r *http.Request, sc
 		_, _ = w.Write(b)
 		return
 	}
+	// Event rows are attached to a room or teacher timetable only for a
+	// techniker, and are served even when recon did not enable that element:
+	// seeing the appointments booked into a room is what the techniker permission
+	// grants. A non-techniker's response is byte-for-byte unchanged, and the
+	// subject surface carries no events.
+	techniker := p.hasTechniker(requester.Username)
+	var eventPeriods []map[string]any
+	var md jsonObject
+	if techniker && (pr.Type == "ROOM" || pr.Type == "TEACHER") &&
+		validDate(pr.StartDate) && validDate(pr.EndDate) && pr.StartDate <= pr.EndDate {
+		md = p.rewrittenMasterData(school, requesterName)
+		eventPeriods = p.elementEventPeriods(school, pr.Type, pr.ID, pr.StartDate, pr.EndDate, p.schoolLocation(school), md)
+	}
 	// Reconstructed teacher/room/subject timetables are gated per element type
 	// (individual override or global switch); nothing is enabled by default.
 	allowed, _ := p.store.ReconAccess(requester.Username, pr.Type)
-	if !allowed {
+	reconReady := allowed && p.stateFor(school).recon.has(pr.Type, pr.ID) &&
+		pr.StartDate != "" && pr.EndDate != ""
+	if !reconReady && len(eventPeriods) == 0 {
 		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 		return
 	}
-	if pr.StartDate == "" || pr.EndDate == "" {
-		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
-		return
+	var periods []map[string]any
+	if reconReady {
+		periods, err = p.elementPeriods(school, pr.Type, pr.ID, pr.StartDate, pr.EndDate)
+		if err != nil {
+			// A reconstruction failure must not hide the events a techniker is
+			// entitled to; serve them alone rather than erroring out.
+			if len(eventPeriods) == 0 {
+				p.writeJSONRPCError(w, id, "no right for timetable", -8509)
+				return
+			}
+			periods = nil
+		}
 	}
-	if !p.stateFor(school).recon.has(pr.Type, pr.ID) {
-		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
-		return
-	}
-	periods, err := p.elementPeriods(school, pr.Type, pr.ID, pr.StartDate, pr.EndDate)
-	if err != nil {
-		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
-		return
-	}
+	periods = append(periods, eventPeriods...)
 	for _, pd := range periods {
 		p.capsInPeriod(requesterName, pd)
 	}
@@ -884,7 +953,18 @@ func (p *Proxy) serveElementTimetable(w http.ResponseWriter, r *http.Request, sc
 	// masterData is stale and refetch it. Without this the app keeps its old
 	// cached copy where rooms/teachers have displayAllowed=false, so they never
 	// appear. Embed the rewritten masterData with a bumped timestamp instead.
-	if md := p.rewrittenMasterData(school, requesterName); md != nil {
+	if md == nil {
+		md = p.rewrittenMasterData(school, requesterName)
+	}
+	if md != nil {
+		// A period is placed by the elements it references, so the event is given
+		// its subject/room/teacher elements before it is written.
+		if len(eventPeriods) > 0 {
+			attachEventElements(eventPeriods, md, p.roomOverrides(school))
+		}
+		// A holiday in the window would hide an event day the way it hides a
+		// lesson week, so the event dates are cut out of the break list.
+		stripHolidayDates(md, periodDates(eventPeriods))
 		out["result"].(map[string]any)["masterData"] = md
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -907,6 +987,10 @@ func (p *Proxy) cacheRawMasterData(school string, body []byte) {
 			}
 			p.mdRaw[school] = append([]byte(nil), body...)
 			p.mdRawMu.Unlock()
+			// A fresh login replaces what a restart would otherwise have to
+			// rebuild from scratch, so the body is persisted for the next run.
+			// A failed write must not break serving.
+			_ = p.store.SetSetting(masterDataSettingPrefix+school, string(body))
 			return
 		}
 	}
