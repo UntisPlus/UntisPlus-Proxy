@@ -83,12 +83,19 @@ func customEventPeriods(events []store.StudentEvent, loc *time.Location) []map[s
 		if !end.After(start) {
 			end = start
 		}
-		// The lesson cell is what the app shows as the subject. A Technik event
-		// carries the subject ("Technik") the admin chose; an event without one
-		// falls back to its title so the cell is never blank.
-		lesson := ev.Title
-		if s := strings.TrimSpace(ev.Subject); s != "" {
-			lesson = s
+		// The lesson cell carries what the appointment needs — the admin's
+		// description ("Laptop, Beamer, Stehpult"). The event's own title is shown
+		// as the lesson topic in the detail view, and the subject is not repeated in
+		// the cell. An event with no description falls back to its subject so the
+		// cell is never blank. Who the appointment is assigned to is filled on the
+		// serving surface (the personal timetable and the shared surfaces both add
+		// it), not here.
+		lesson := strings.TrimSpace(ev.Description)
+		if lesson == "" {
+			lesson = strings.TrimSpace(ev.Subject)
+		}
+		if lesson == "" {
+			lesson = customSubjectDefault
 		}
 		out = append(out, map[string]any{
 			"id":       customEventID(ev),
@@ -109,7 +116,7 @@ func customEventPeriods(events []store.StudentEvent, loc *time.Location) []map[s
 			"text": map[string]any{
 				"lesson":       lesson,
 				"substitution": "",
-				"info":         ev.Description,
+				"info":         "",
 				"attachments":  []any{},
 			},
 			"elements":       []any{},
@@ -192,7 +199,53 @@ func (p *Proxy) studentEventPeriods(school, username, from, to string, loc *time
 		enrichmentFailed("student events "+username, err)
 		return nil
 	}
-	return customEventPeriods(events, loc)
+	periods := customEventPeriods(events, loc)
+	p.labelAppointmentRoster(school, from, to, periods)
+	return periods
+}
+
+// labelAppointmentRoster fills the substitution line of a viewer's own event
+// periods with every student assigned to the same appointment, so they see who
+// else is booked and not only themselves. It reads the whole range once, groups
+// the stored rows by sharedEventKey, and matches each period back through its
+// customEventId; a read failure leaves the events themselves intact.
+func (p *Proxy) labelAppointmentRoster(school, from, to string, periods []map[string]any) {
+	if len(periods) == 0 {
+		return
+	}
+	events, err := p.store.AllStudentEventsForRange(school, from, to)
+	if err != nil {
+		enrichmentFailed("event roster "+school, err)
+		return
+	}
+	names := make(map[string][]string, len(periods))
+	seen := make(map[string]map[string]bool)
+	keyOf := make(map[int64]string, len(events))
+	for _, ev := range events {
+		key := sharedEventKey(ev)
+		keyOf[ev.ID] = key
+		if seen[key] == nil {
+			seen[key] = map[string]bool{}
+		}
+		name := p.displayNameFor(school, ev.Username)
+		if !seen[key][name] {
+			seen[key][name] = true
+			names[key] = append(names[key], name)
+		}
+	}
+	for _, pd := range periods {
+		id, ok := jsonID(pd["customEventId"])
+		if !ok {
+			continue
+		}
+		assigned := names[keyOf[id]]
+		if len(assigned) == 0 {
+			continue
+		}
+		if text, ok := pd["text"].(map[string]any); ok {
+			text["substitution"] = strings.Join(assigned, ", ")
+		}
+	}
 }
 
 // decorateStudentEvents appends a viewer's custom events to a timetable result.

@@ -25,6 +25,43 @@ import (
 // line of a period.
 const readLessonTopicCap = "READ_LESSONTOPIC"
 
+// The two capabilities that turn a period into an editable absence register. The
+// app shows the register's row for READ_STUD_ABSENCE and only opens it when
+// WRITE_STUD_ABSENCE is present too. They are stamped onto a synthetic event
+// period for a techniker and nowhere else: the absence a techniker records there
+// is a proxy-local note on the appointment, not a write to Untis, so the real
+// capabilities of the underlying lesson must never be widened.
+const (
+	readStudAbsenceCap  = "READ_STUD_ABSENCE"
+	writeStudAbsenceCap = "WRITE_STUD_ABSENCE"
+)
+
+// isSyntheticEventPeriod reports whether a decoded period was built by
+// customEventPeriods rather than delivered by Untis. Every synthetic period
+// carries the customEventId marker; an upstream period never does.
+func isSyntheticEventPeriod(pd map[string]any) bool {
+	_, ok := pd["customEventId"]
+	return ok
+}
+
+// withAbsenceCaps returns the capability list plus the two absence capabilities,
+// added once each and only when missing.
+func withAbsenceCaps(can []any) []any {
+	has := make(map[string]bool, len(can))
+	for _, c := range can {
+		if s, ok := c.(string); ok {
+			has[s] = true
+		}
+	}
+	for _, cap := range []string{readStudAbsenceCap, writeStudAbsenceCap} {
+		if !has[cap] {
+			has[cap] = true
+			can = append(can, cap)
+		}
+	}
+	return can
+}
+
 // viewerCaps returns the capability list a requester may see on one period.
 // The editor flag is the only thing that keeps write capabilities: being an
 // admin of this proxy is not the same as being allowed to write to Untis, and
@@ -52,10 +89,16 @@ func (p *Proxy) viewerCaps(username string, can []any) []any {
 	return out
 }
 
-// capsInPeriod rewrites the `can` list of a single decoded period.
+// capsInPeriod rewrites the `can` list of a single decoded period, and for a
+// techniker viewing a synthetic event period adds the absence-register
+// capabilities the app needs to open the local editor.
 func (p *Proxy) capsInPeriod(username string, pd map[string]any) {
 	can, _ := pd["can"].([]any)
-	pd["can"] = p.viewerCaps(username, can)
+	can = p.viewerCaps(username, can)
+	if isSyntheticEventPeriod(pd) && p.hasTechniker(username) {
+		can = withAbsenceCaps(can)
+	}
+	pd["can"] = can
 }
 
 // viewerBody applies viewerCaps to every period of a raw getTimetable2017

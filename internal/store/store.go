@@ -385,6 +385,68 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// event_absences is the techniker's local absence register for one
+	// hand-authored appointment. Upstream has no record for a proxy event, so
+	// there is nothing to write to Untis: a row here means "this student is
+	// marked absent from this appointment" and its absence from the table means
+	// present. The appointment is keyed by the fields every viewer sees
+	// (date, times, title, subject, room, teacher, description) rather than by a
+	// single event id, because one appointment is stored as one row per assigned
+	// technician and they must all resolve to the same register.
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS event_absences (
+		school TEXT NOT NULL,
+		appointment_key TEXT NOT NULL,
+		date TEXT NOT NULL DEFAULT '',
+		username TEXT NOT NULL,
+		start_time TEXT NOT NULL DEFAULT '',
+		end_time TEXT NOT NULL DEFAULT '',
+		created_by TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL,
+		PRIMARY KEY (school, appointment_key, username)
+	)`)
+	if err != nil {
+		return nil, err
+	}
+	// The absence register's "checked" flag, one per appointment, mirroring the
+	// upstream absenceChecked the teacher submits. Kept apart from the per-student
+	// rows so "nobody is absent" and "not yet checked" stay distinguishable.
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS event_absence_checked (
+		school TEXT NOT NULL,
+		appointment_key TEXT NOT NULL,
+		checked_by TEXT NOT NULL DEFAULT '',
+		checked_at INTEGER NOT NULL,
+		PRIMARY KEY (school, appointment_key)
+	)`)
+	if err != nil {
+		return nil, err
+	}
+	// event_absence_log is the append-only audit trail for the register: every
+	// mark, undo, edit and submit is written here and nothing here is ever
+	// deleted, so the history of who recorded what survives even after the
+	// register row itself is gone. It is the dashboard's changelog.
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS event_absence_log (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		school TEXT NOT NULL,
+		appointment_key TEXT NOT NULL DEFAULT '',
+		date TEXT NOT NULL DEFAULT '',
+		username TEXT NOT NULL DEFAULT '',
+		action TEXT NOT NULL,
+		detail TEXT NOT NULL DEFAULT '',
+		actor TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL
+	)`)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS event_absence_log_range
+		ON event_absence_log (school, created_at)`); err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS event_absences_range
+		ON event_absences (school, date)`); err != nil {
+		return nil, err
+	}
 	// migration: add person_id to class_tokens for older databases
 	if err := addColumnIfMissing(db, "class_tokens", "person_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return nil, err

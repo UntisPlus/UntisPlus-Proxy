@@ -175,6 +175,34 @@
   </div>
 </section>
 
+<section id="eventAbsencesSection">
+  <h2>Event absences <button class="mini" onclick="loadEventAbsences()">refresh</button></h2>
+  <div class="row" style="margin-bottom:.5rem">
+    <select id="abSchool"></select>
+    <input id="abFrom" type="date" style="width:10rem">
+    <input id="abTo" type="date" style="width:10rem">
+    <button class="mini" onclick="loadEventAbsences()">load</button>
+    <span class="dim">who a techniker marked absent from a proxy event, and who was present; recorded here only, never sent to Untis</span>
+  </div>
+  <table id="eventAbsences"><thead><tr><th>date</th><th>time</th><th>event</th><th>who was there</th><th>checked</th><th></th></tr></thead><tbody></tbody></table>
+  <div id="abEditRow" style="display:none;margin:.55rem 0">
+    <div class="lbl">Edit absence <span class="dim" id="abEditWhat"></span></div>
+    <div class="row" style="align-items:center">
+      <span class="dim">student</span><select id="abEditStudent"></select>
+      <span class="dim">from</span><input id="abEditStart" type="time" style="width:7rem">
+      <span class="dim">to</span><input id="abEditEnd" type="time" style="width:7rem">
+      <button class="mini" onclick="saveAbsenceEdit()">save</button>
+      <button class="mini" onclick="cancelAbsenceEdit()">cancel</button>
+    </div>
+  </div>
+  <div class="row" style="margin:.7rem 0 .3rem;align-items:center">
+    <b>Change log</b>
+    <span class="dim">append-only — every mark, undo, edit and submit; cannot be edited or deleted</span>
+    <button class="mini" onclick="loadEventAbsenceLog()">refresh</button>
+  </div>
+  <table id="eventAbsenceLog"><thead><tr><th>when</th><th>date</th><th>student</th><th>action</th><th>detail</th><th>by</th></tr></thead><tbody></tbody></table>
+</section>
+
 <section>
   <h2>Room map <button class="mini" onclick="loadRoomMap()">refresh</button></h2>
   <div class="row" style="margin-bottom:.5rem">
@@ -236,7 +264,7 @@ async function renderCards(){
   c.insertAdjacentHTML('beforeend', card('recon', status.recon));
   c.insertAdjacentHTML('beforeend', card('boosted', status.boosted));
   c.insertAdjacentHTML('beforeend', card('editors', status.editors));
-  for(const id of ['whSchool','ntfySchool','tokSchool','poolSchool','evSchool','rmSchool']) fillSchoolSelect(id);
+  for(const id of ['whSchool','ntfySchool','tokSchool','poolSchool','evSchool','rmSchool','abSchool']) fillSchoolSelect(id);
   if(!$('evUser').dataset.bound){
     $('evUser').dataset.bound='1';
     $('evUser').addEventListener('keydown', function(ev){ if(ev.key==='Enter') loadEvents(); });
@@ -245,7 +273,9 @@ async function renderCards(){
   if(!$('poolSchool').dataset.bound){ $('poolSchool').dataset.bound='1'; $('poolSchool').addEventListener('change', loadPool); }
   if(!$('evSchool').dataset.bound){ $('evSchool').dataset.bound='1'; $('evSchool').addEventListener('change', loadEventPickers); }
   if(!$('rmSchool').dataset.bound){ $('rmSchool').dataset.bound='1'; $('rmSchool').addEventListener('change', loadRoomMap); }
+  if($('abSchool') && !$('abSchool').dataset.bound){ $('abSchool').dataset.bound='1'; $('abSchool').addEventListener('change', loadEventAbsences); }
   loadEventPickers();
+  loadEventAbsences();
   refreshDependentLists();
 }
 
@@ -451,6 +481,119 @@ async function loadEvents(){
     tb.appendChild(tr);
   }
   if(!d.events.length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="8">no events for this student</td>'; tb.appendChild(tr); }
+}
+
+// abAppts holds the last-loaded appointments, indexed as the table renders them,
+// so an edit button can name a row without smuggling a key (which contains NUL
+// separators) through an onclick string.
+let abAppts=[];
+let abEditing={key:'',date:'',username:''};
+
+// abQuery builds the shared school/from/to query for both absence reads.
+function abQuery(){
+  const qs=[];
+  const sc=$('abSchool')?$('abSchool').value:'';
+  if(sc) qs.push('school='+encodeURIComponent(sc));
+  const from=$('abFrom')?$('abFrom').value:''; if(from) qs.push('from='+encodeURIComponent(from));
+  const to=$('abTo')?$('abTo').value:''; if(to) qs.push('to='+encodeURIComponent(to));
+  return qs.join('&');
+}
+
+// loadEventAbsences shows each proxy-event appointment with its whole roster: who
+// was marked absent and who was present, and whether the register was submitted.
+// The window is optional; with no dates everything is shown.
+async function loadEventAbsences(){
+  const qs=abQuery();
+  try{
+    const r=await fetch('/api/admin/events/absences'+(qs?'?'+qs:''));
+    const d=await r.json();
+    abAppts=d.appointments||[];
+    const tb=$('eventAbsences').querySelector('tbody'); tb.innerHTML='';
+    abAppts.forEach(function(a, gi){
+      const who=(a.roster||[]).map(function(m, mi){
+        const name=esc(m.displayName||m.username);
+        if(m.absent){
+          const when=m.startTime?(' '+esc((m.startTime||'').replace(/^T/,''))+'\u2013'+esc((m.endTime||'').replace(/^T/,''))):'';
+          return '<span style="color:#c62828">absent: '+name+when+
+            ' <button class="mini" onclick="editAbsence('+gi+','+mi+')">edit</button></span>';
+        }
+        return '<span class="dim">present: '+name+'</span>';
+      }).join('<br>') || '<span class="dim">no students</span>';
+      const tr=document.createElement('tr');
+      tr.innerHTML='<td>'+esc(a.date)+'</td><td>'+esc((a.startTime||'')+'\u2013'+(a.endTime||''))+'</td>'+
+        '<td>'+esc(a.title||'')+'</td><td>'+who+'</td><td>'+(a.checked?'yes':'no')+'</td>'+
+        '<td><button class="mini" onclick="loadEventAbsences()">refresh</button></td>';
+      tb.appendChild(tr);
+    });
+    if(!abAppts.length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="6">no appointments with a register in this window</td>'; tb.appendChild(tr); }
+    cancelAbsenceEdit();
+  }catch(e){ log('could not load event absences: '+e.message); }
+  loadEventAbsenceLog();
+}
+
+// loadEventAbsenceLog shows the append-only register changelog. There is no
+// delete or edit here on purpose: the history is the point.
+async function loadEventAbsenceLog(){
+  const el=$('eventAbsenceLog'); if(!el) return;
+  const qs=abQuery();
+  try{
+    const r=await fetch('/api/admin/events/absences/log'+(qs?'?'+qs:''));
+    const d=await r.json();
+    const tb=el.querySelector('tbody'); tb.innerHTML='';
+    for(const e of (d.log||[])){
+      const tr=document.createElement('tr');
+      tr.innerHTML='<td>'+esc((e.at||'').replace('T',' ').replace('Z',''))+'</td><td>'+esc(e.date)+'</td>'+
+        '<td>'+esc(e.username||'')+'</td><td>'+esc(e.action)+'</td><td>'+esc(e.detail||'')+'</td><td>'+esc(e.actor||'')+'</td>';
+      tb.appendChild(tr);
+    }
+    if(!(d.log||[]).length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="6">no changes recorded</td>'; tb.appendChild(tr); }
+  }catch(e){ log('could not load change log: '+e.message); }
+}
+
+// clockInput turns a stored clock ("T14:00" or "14:00") into the "14:00" a time
+// input expects, and anything else into empty.
+function clockInput(t){ t=(t||'').replace(/^T/,''); return /^\d\d:\d\d$/.test(t)?t:''; }
+
+// editAbsence opens the small editor for one recorded absence, letting the admin
+// fix its window or move it to another assigned student.
+function editAbsence(gi, mi){
+  const a=abAppts[gi]; if(!a) return;
+  const m=(a.roster||[])[mi]; if(!m) return;
+  abEditing={key:a.appointmentKey, date:a.date, username:m.username};
+  $('abEditWhat').textContent=(a.title||a.date)+' — '+(m.displayName||m.username);
+  const sel=$('abEditStudent'); sel.innerHTML='';
+  for(const r of (a.roster||[])){
+    const o=document.createElement('option');
+    o.value=r.username; o.textContent=r.displayName||r.username;
+    if(r.username===m.username) o.selected=true;
+    sel.appendChild(o);
+  }
+  $('abEditStart').value=clockInput(m.startTime||a.startTime);
+  $('abEditEnd').value=clockInput(m.endTime||a.endTime);
+  $('abEditRow').style.display='';
+}
+
+function cancelAbsenceEdit(){
+  abEditing={key:'',date:'',username:''};
+  const row=$('abEditRow'); if(row) row.style.display='none';
+}
+
+async function saveAbsenceEdit(){
+  if(!abEditing.key) return;
+  const body={
+    school:$('abSchool')?$('abSchool').value:'',
+    appointmentKey:abEditing.key, date:abEditing.date, username:abEditing.username,
+    startTime:$('abEditStart').value?('T'+$('abEditStart').value):'',
+    endTime:$('abEditEnd').value?('T'+$('abEditEnd').value):'',
+    newUsername:$('abEditStudent').value
+  };
+  try{
+    const r=await fetch('/api/admin/events/absences',{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok) throw new Error((await r.json()).error||('HTTP '+r.status));
+    log('absence updated');
+    cancelAbsenceEdit();
+    loadEventAbsences();
+  }catch(e){ log('edit failed: '+e.message); }
 }
 
 function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }

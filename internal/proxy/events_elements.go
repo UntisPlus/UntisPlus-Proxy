@@ -29,9 +29,11 @@ const syntheticElementBase int64 = 2_000_000_000
 // roomOverrides pins a room name to an id the admin configured (see roommap.go);
 // it wins over the catalogue and is consulted only for rooms.
 //
-// The subject is always attached (defaulted to "Technik") because that is the
-// lesson the app shows; room and teacher are attached only when the event names
-// one. An event is still served with no masterData at all, just without elements.
+// The subject is always attached (defaulted to "Technik") so the app can resolve
+// it, but it does not overwrite the lesson cell: that line carries the event's
+// description (what the appointment needs), set in customEventPeriods. Room and
+// teacher are attached only when the event names one. An event is still served
+// with no masterData at all, just without elements.
 func attachEventElements(periods []map[string]any, md jsonObject, roomOverrides map[string]int64) bool {
 	if len(periods) == 0 {
 		return false
@@ -65,11 +67,6 @@ func attachEventElements(periods []map[string]any, md jsonObject, roomOverrides 
 			}
 		}
 		pd["elements"] = elems
-		// Keep the lesson cell on the resolved subject even for an event stored
-		// before the subject field, or imported without one.
-		if text, ok := pd["text"].(map[string]any); ok {
-			text["lesson"] = subject
-		}
 	}
 	return changed
 }

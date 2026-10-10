@@ -279,6 +279,330 @@ func (p *Proxy) handleStudentEvents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// eventAbsencePayload is one recorded absence on the wire for the admin UI.
+type eventAbsencePayload struct {
+	School         string `json:"school"`
+	AppointmentKey string `json:"appointmentKey"`
+	Date           string `json:"date"`
+	Username       string `json:"username"`
+	DisplayName    string `json:"displayName"`
+	StartTime      string `json:"startTime"`
+	EndTime        string `json:"endTime"`
+	CreatedBy      string `json:"createdBy"`
+	UpdatedAt      string `json:"updatedAt"`
+}
+
+// eventRosterPayload is one assigned student on an appointment, with whether the
+// register marks them absent. A student on the roster with absent=false is the
+// "was there" side of the register, which is otherwise invisible: the absence
+// table only ever held the absent ones.
+type eventRosterPayload struct {
+	Username    string `json:"username"`
+	DisplayName string `json:"displayName"`
+	Absent      bool   `json:"absent"`
+	StartTime   string `json:"startTime,omitempty"`
+	EndTime     string `json:"endTime,omitempty"`
+	UpdatedAt   string `json:"updatedAt,omitempty"`
+	UpdatedBy   string `json:"updatedBy,omitempty"`
+}
+
+// eventAppointmentPayload is one appointment with its whole roster, so the
+// dashboard can show who is present and who is not, and whether the register was
+// submitted, without a second request per student.
+type eventAppointmentPayload struct {
+	AppointmentKey string               `json:"appointmentKey"`
+	Date           string               `json:"date"`
+	StartTime      string               `json:"startTime"`
+	EndTime        string               `json:"endTime"`
+	Title          string               `json:"title"`
+	Subject        string               `json:"subject"`
+	Room           string               `json:"room"`
+	Teacher        string               `json:"teacher"`
+	Checked        bool                 `json:"checked"`
+	Roster         []eventRosterPayload `json:"roster"`
+}
+
+// eventAbsenceLogPayload is one line of the append-only register changelog.
+type eventAbsenceLogPayload struct {
+	ID       int64  `json:"id"`
+	Date     string `json:"date"`
+	Username string `json:"username"`
+	Action   string `json:"action"`
+	Detail   string `json:"detail"`
+	Actor    string `json:"actor"`
+	At       string `json:"at"`
+}
+
+// displayNameFor resolves the readable name for a stored (folded) account,
+// falling back to the key itself when the student has never logged in.
+func (p *Proxy) displayNameFor(school, username string) string {
+	if u, err := p.store.GetUserInSchool(school, username); err == nil && u != nil && strings.TrimSpace(u.DisplayName) != "" {
+		return u.DisplayName
+	}
+	return username
+}
+
+// handleEventAbsences serves the admin read of the techniker absence register: the
+// appointments in the window with their whole roster (present and absent) and
+// whether each register was submitted. Proxy-local, never written to Untis.
+//
+//	GET /api/admin/events/absences?school=&from=YYYY-MM-DD&to=YYYY-MM-DD
+//
+// The window is optional and defaults to everything, so an admin who lands on the
+// section sees the register without first choosing dates.
+func (p *Proxy) handleEventAbsences(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	user := p.sessionUser(r)
+	if user == nil {
+		writeJSONError(w, http.StatusUnauthorized, "not logged in")
+		return
+	}
+	if !p.isAdmin(user.Username) {
+		p.forbidden(w)
+		return
+	}
+	school, from, to := p.absenceWindow(r)
+	events, err := p.store.AllStudentEventsForRange(school, from, to)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+	appointments := make([]eventAppointmentPayload, 0)
+	flat := make([]eventAbsencePayload, 0)
+	index := map[string]int{}
+	for _, ev := range events {
+		key := sharedEventKey(ev)
+		gi, ok := index[key]
+		if !ok {
+			gi = len(appointments)
+			index[key] = gi
+			appointments = append(appointments, eventAppointmentPayload{
+				AppointmentKey: key, Date: ev.Date, StartTime: ev.StartTime, EndTime: ev.EndTime,
+				Title: ev.Title, Subject: ev.Subject, Room: ev.Room, Teacher: ev.Teacher,
+			})
+		}
+		appt := &appointments[gi]
+		display := p.displayNameFor(school, ev.Username)
+		appt.Roster = append(appt.Roster, eventRosterPayload{Username: ev.Username, DisplayName: display})
+	}
+	for i := range appointments {
+		appt := &appointments[i]
+		absences, err := p.store.EventAbsences(school, appt.AppointmentKey)
+		if err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "store error")
+			return
+		}
+		byUser := make(map[string]store.EventAbsence, len(absences))
+		for _, a := range absences {
+			byUser[a.Username] = a
+		}
+		for j := range appt.Roster {
+			member := &appt.Roster[j]
+			a, absent := byUser[member.Username]
+			if !absent {
+				continue
+			}
+			member.Absent = true
+			member.StartTime = a.StartTime
+			member.EndTime = a.EndTime
+			member.UpdatedAt = a.UpdatedAt.UTC().Format(time.RFC3339)
+			member.UpdatedBy = p.displayNameFor(school, a.CreatedBy)
+			flat = append(flat, eventAbsencePayload{
+				School: school, AppointmentKey: appt.AppointmentKey, Date: appt.Date,
+				Username: member.Username, DisplayName: member.DisplayName,
+				StartTime: a.StartTime, EndTime: a.EndTime,
+				CreatedBy: a.CreatedBy, UpdatedAt: a.UpdatedAt.UTC().Format(time.RFC3339),
+			})
+		}
+		if checked, err := p.store.EventAbsenceChecked(school, appt.AppointmentKey); err == nil {
+			appt.Checked = checked
+		}
+	}
+	p.writeJSON(w, map[string]any{
+		"school": school, "from": from, "to": to,
+		"appointments": appointments, "absences": flat,
+	})
+}
+
+// absenceWindow reads the optional school/from/to query, defaulting the school to
+// the configured one and the window to everything.
+func (p *Proxy) absenceWindow(r *http.Request) (school, from, to string) {
+	school = r.URL.Query().Get("school")
+	if school == "" {
+		school = p.opts.School
+	}
+	from = r.URL.Query().Get("from")
+	to = r.URL.Query().Get("to")
+	if !validDate(from) {
+		from = "1970-01-01"
+	}
+	if !validDate(to) {
+		to = "9999-12-31"
+	}
+	return school, from, to
+}
+
+// handleEventAbsenceEdit is the admin's correction of one recorded absence:
+// changing its window and/or moving it to another assigned student. Both are
+// logged, so a correction is visible in the changelog like any other change.
+//
+//	PATCH /api/admin/events/absences
+//	{ "school":…, "appointmentKey":…, "date":…, "username":…,
+//	  "startTime":…, "endTime":…, "newUsername":… }
+func (p *Proxy) handleEventAbsenceEdit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	user := p.sessionUser(r)
+	if user == nil {
+		writeJSONError(w, http.StatusUnauthorized, "not logged in")
+		return
+	}
+	if !p.isAdmin(user.Username) {
+		p.forbidden(w)
+		return
+	}
+	var req struct {
+		School         string `json:"school"`
+		AppointmentKey string `json:"appointmentKey"`
+		Date           string `json:"date"`
+		Username       string `json:"username"`
+		StartTime      string `json:"startTime"`
+		EndTime        string `json:"endTime"`
+		NewUsername    string `json:"newUsername"`
+	}
+	if !decodeJSON(readBody(r), &req) {
+		writeJSONError(w, http.StatusBadRequest, "bad request")
+		return
+	}
+	if req.School == "" {
+		req.School = p.opts.School
+	}
+	if req.AppointmentKey == "" || req.Username == "" || !validDate(req.Date) {
+		writeJSONError(w, http.StatusBadRequest, "appointmentKey, date and username are required")
+		return
+	}
+	// The appointment must still exist on that date, or the edit would resurrect
+	// an absence for an event that is gone.
+	found := false
+	roster := map[string]bool{}
+	for _, ev := range p.upstreamDayEvents(req.School, req.Date) {
+		if sharedEventKey(ev) != req.AppointmentKey {
+			continue
+		}
+		found = true
+		roster[ev.Username] = true
+	}
+	if !found {
+		writeJSONError(w, http.StatusNotFound, "no such appointment on that date")
+		return
+	}
+	absences, err := p.store.EventAbsences(req.School, req.AppointmentKey)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+	var current store.EventAbsence
+	exists := false
+	for _, a := range absences {
+		if a.Username == eventKeyFold(req.Username) {
+			current, exists = a, true
+			break
+		}
+	}
+	if !exists {
+		writeJSONError(w, http.StatusNotFound, "no such absence on that appointment")
+		return
+	}
+	start, end := req.StartTime, req.EndTime
+	if strings.TrimSpace(start) == "" {
+		start = current.StartTime
+	}
+	if strings.TrimSpace(end) == "" {
+		end = current.EndTime
+	}
+	target := current.Username
+	if req.NewUsername != "" && eventKeyFold(req.NewUsername) != current.Username {
+		if !roster[eventKeyFold(req.NewUsername)] {
+			writeJSONError(w, http.StatusBadRequest, "target student is not assigned to this appointment")
+			return
+		}
+		target = eventKeyFold(req.NewUsername)
+	}
+	if target != current.Username {
+		if _, err := p.store.DeleteEventAbsence(req.School, req.AppointmentKey, current.Username); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "store error")
+			return
+		}
+	}
+	if _, err := p.store.SetEventAbsence(req.School, req.AppointmentKey, current.Date, target, start, end, user.Username); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+	detail := clockLabel(start) + "–" + clockLabel(end)
+	if target != current.Username {
+		detail = p.displayNameFor(req.School, current.Username) + " → " + p.displayNameFor(req.School, target) + " (" + detail + ")"
+	}
+	_ = p.store.LogEventAbsenceChange(req.School, req.AppointmentKey, current.Date, target, store.EventAbsenceActionEdited, detail, user.Username)
+	p.writeJSON(w, map[string]any{"success": true, "appointmentKey": req.AppointmentKey})
+}
+
+// handleEventAbsenceLog serves the append-only register changelog. There is no
+// DELETE counterpart by design: the history is not editable from the UI.
+//
+//	GET /api/admin/events/absences/log?school=&from=&to=
+func (p *Proxy) handleEventAbsenceLog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	user := p.sessionUser(r)
+	if user == nil {
+		writeJSONError(w, http.StatusUnauthorized, "not logged in")
+		return
+	}
+	if !p.isAdmin(user.Username) {
+		p.forbidden(w)
+		return
+	}
+	school, from, to := p.absenceWindow(r)
+	rows, err := p.store.EventAbsenceLog(school, from, to)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "store error")
+		return
+	}
+	out := make([]eventAbsenceLogPayload, 0, len(rows))
+	for _, e := range rows {
+		out = append(out, eventAbsenceLogPayload{
+			ID: e.ID, Date: e.Date, Username: p.displayNameFor(school, e.Username),
+			Action: e.Action, Detail: e.Detail, Actor: e.Actor,
+			At: e.CreatedAt.UTC().Format(time.RFC3339),
+		})
+	}
+	p.writeJSON(w, map[string]any{"school": school, "from": from, "to": to, "log": out})
+}
+
+// upstreamDayEvents is the stored events on one date, for resolving an
+// appointment by its key. A store error degrades to nil: the caller then reports
+// the appointment as gone rather than editing blind.
+func (p *Proxy) upstreamDayEvents(school, date string) []store.StudentEvent {
+	events, err := p.store.AllStudentEventsForRange(school, date, date)
+	if err != nil {
+		return nil
+	}
+	return events
+}
+
+// eventKeyFold mirrors the store's event key fold so the handler can compare a
+// typed username against a stored one without importing the rule.
+func eventKeyFold(username string) string {
+	return foldUmlauts(strings.ToLower(strings.TrimSpace(username)))
+}
+
 // eventTargets resolves the create request's target students: the single
 // username, or the usernames list, de-duplicated with order kept so the response
 // reads in the order the admin picked them.

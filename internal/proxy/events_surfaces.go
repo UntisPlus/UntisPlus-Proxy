@@ -197,9 +197,11 @@ func sharedPeriodKey(pd map[string]any) string {
 		strings.TrimSpace(asString(pd["description"])))
 }
 
-// labelSharedPeriod puts the event's own title in the lesson cell and the
-// assigned students plus description in the info line, so a shared view reads as
-// a schedule of who is where rather than a column of identical subjects.
+// labelSharedPeriod fills the substitution line the app renders for a shared
+// event period with every student the appointment is booked for. The lesson line
+// was set by customEventPeriods to the description (what the appointment needs)
+// and the info line is left empty: the title is surfaced as the lesson topic in
+// the detail view, not repeated in the timetable cell.
 func labelSharedPeriod(pd map[string]any, labels []string) {
 	if len(labels) == 0 {
 		return
@@ -210,12 +212,6 @@ func labelSharedPeriod(pd map[string]any, labels []string) {
 	if text == nil {
 		return
 	}
-	if title := strings.TrimSpace(asString(pd["customTitle"])); title != "" {
-		text["lesson"] = title
-	}
-	if desc := strings.TrimSpace(asString(pd["description"])); desc != "" {
-		text["info"] = joined + " · " + desc
-	} else {
-		text["info"] = joined
-	}
+	text["substitution"] = joined
+	text["info"] = ""
 }

@@ -181,8 +181,17 @@ func TestTechnikClassShowsEventTitleAndRealRoomIDs(t *testing.T) {
 		t.Fatalf("no event period in the aggregate: %s", rec.Body.String())
 	}
 	text, _ := pd["text"].(map[string]any)
-	if text["lesson"] != "Einschulung E-Phase" {
-		t.Errorf("lesson = %v, want the event title rather than the subject", text["lesson"])
+	if text["lesson"] != "Arbeitsblatt mitbringen" {
+		t.Errorf("lesson = %v, want the description (what the appointment needs)", text["lesson"])
+	}
+	if text["lesson"] == ev.Subject {
+		t.Error("the subject still fills the lesson cell; it must not")
+	}
+	if text["substitution"] != p.studentLabel("dee") {
+		t.Errorf("substitution = %v, want the assigned student %q", text["substitution"], p.studentLabel("dee"))
+	}
+	if student, _ := pd["student"].(string); student == "" {
+		t.Error("the aggregate period names no assigned student")
 	}
 	roomIDs := map[int64]bool{}
 	for _, el := range jsonArray(pd["elements"]) {

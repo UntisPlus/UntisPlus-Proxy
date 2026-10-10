@@ -139,10 +139,10 @@ func (p *Proxy) serveTechnikClass(w http.ResponseWriter, id json.RawMessage, sch
 	}
 	loc := p.schoolLocation(school)
 	md := p.rewrittenMasterData(school, requester.Username)
-	// The elements are attached before the label is applied so the label can put
-	// the event's own title back in the lesson cell: attachEventElements sets it
-	// to the subject ("Technik" for every event), which would leave a class full
-	// of identical rows.
+	// The elements are attached (with the subject, room and teacher the app
+	// resolves) and the shared periods are collapsed and labeled: each row carries
+	// the event's description on the lesson line and every assigned student on the
+	// substitution line, so a class full of appointments reads at a glance.
 	periods := p.technikClassPeriods(school, start, end, loc, md)
 	for _, pd := range periods {
 		// A home-grown period arrives with an empty `can` list; the app's UI keys

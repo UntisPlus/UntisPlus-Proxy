@@ -342,8 +342,11 @@ Signed in as an admin. Pick a student who has real lessons on the chosen date.
       unchanged. (`masterData.timeStamp` may still rise, because the synthesized
       subject/room/teacher catalogue is a masterData change a caching client has
       to see; that is expected.)
-- [ ] 15.11 the entry is visually distinct from a real lesson (marker) and shows
-      the subject in the lesson cell
+- [ ] 15.11 the entry is visually distinct from a real lesson (marker); its cell
+      shows the event's **description** (what the appointment needs), the
+      assigned student(s) on the substitution line, and the event's **title** on
+      the **Lesson topic** line of the detail view — the subject ("Technik") is
+      not in the cell
 - [ ] 15.12 subject, room and teacher show exactly as typed, with the subject
       defaulting to *Technik* when left empty
 - [ ] 15.12a grant a student the **boosted** flag, add them an event, and open
@@ -408,8 +411,9 @@ independent of admin/boosted/editor/recon and is checked on every request.
       aggregate id returns `-8509` (no right) rather than an empty timetable
 - [ ] 15.34 with the permission **on**, the *Technik* class appears in the class
       list next to the real classes; opening it shows **every** student's events
-      in the window, each row labeled with the assigned student(s) (`text.info`)
-      and the event's title as the lesson cell
+      in the window, each row carrying the event's description on the lesson line
+      and every assigned student on the substitution line (the subject is not in
+      the cell)
 - [ ] 15.35 a second student **without** the permission sees no *Technik* class
       and cannot fetch it
 - [ ] 15.36 a **boosted** user who also holds techniker still gets the aggregate:
@@ -431,7 +435,7 @@ without the permission gets exactly the old response — the events never leak.
 
 - [ ] 15.39 as a **techniker**, open a room that an event names: the event
       appears on the room timetable even when recon never enabled that room, in
-      the school's timezone, with the event title and the assigned student; a
+      the school's timezone, with the description and the assigned student; a
       room no event names stays as it was
 - [ ] 15.40 as a **techniker**, open the organiser's (teacher's) timetable: the
       event appears there too, matched by the resolved teacher id
@@ -445,6 +449,72 @@ without the permission gets exactly the old response — the events never leak.
       assigned person) shows **once** on the Technik class and on its room /
       organiser timetable, with all assigned students listed together, not once
       per person
+
+### Absence register on an event (technikers)
+
+A hand-authored event is not a real Untis lesson, so it has no upstream absence to
+write. For a **techniker** the proxy still offers the app's absence register on the
+event, and records every tick in its own store. Nothing here ever reaches Untis.
+Grant *techniker* to a student account (15.32) before testing.
+
+- [ ] 15.44 as the **techniker**, open an event on the Technik class (or their own
+      timetable if they are an assigned student) → the absence row is present: the
+      period's `can` carries `READ_STUD_ABSENCE` and `WRITE_STUD_ABSENCE`
+- [ ] 15.45 open the register on a **real lesson** → it carries neither capability.
+      The same account, viewing a real period, must not be offered the local
+      register (the absence there would be a real one)
+- [ ] 15.46 a user **without** the techniker permission, opening an event → no
+      `READ/WRITE_STUD_ABSENCE`; the register never appears
+- [ ] 15.47 mark an assigned student **absent** and submit → the tick persists:
+      reopening the event (or reloading) still shows them absent
+- [ ] 15.48 an event staffed by **two students**: mark one absent → only that
+      student is ticked; the other is untouched. (`getPeriodData2017` for the
+      synthetic id lists both, `absences` lists one)
+- [ ] 15.49 **undo** the absence (delete) → it disappears and stays gone after a
+      reload; deleting again is not an error
+- [ ] 15.50 the app remembers the register was **submitted**: reopening the event
+      shows `absenceChecked` true after `submitAbsencesChecked2017`
+- [ ] 15.51 as the **admin**, `/admin` → *Event absences*: pick the school → the
+      appointment appears, one row per absent student, naming the student and who
+      recorded it
+- [ ] 15.52 the *Event absences* date window narrows the list; leaving it empty
+      shows the whole register
+- [ ] 15.53 `/api/admin/events/absences` as a **non-admin** → 401/403; without a
+      session → 401
+- [ ] 15.54 confirm nothing was written to Untis: as the affected student, fetch
+      their real `getStudentAbsences2017` → the event absence is **not** among them
+- [ ] 15.55 a **real** period from the same techniker account (`getPeriodData2017`
+      with a real `ttId`, or `deleteAbsence2017` with a real `absenceId`) is
+      forwarded to Untis unchanged — the proxy answers only ids in its synthetic
+      ranges
+
+#### Absence register dashboard, changelog and correction
+
+The admin page shows, per appointment, who was **absent** and who was
+**present**, whether the register was **submitted**, and an append-only log of
+every change. The log cannot be edited or deleted; the only correction path is
+the admin **edit**, which is itself logged.
+
+- [ ] 15.56 `/admin` → *Event absences*: each appointment lists its assigned
+      students, marking exactly the absent ones (and their window) and the
+      present ones; the *checked* column reads *yes* only after
+      `submitAbsencesChecked2017` (15.50)
+- [ ] 15.57 the *Change log* table lists every mark, undo, edit and submit,
+      **newest first**, naming the student, the action and who did it; the date
+      window (15.52) narrows both tables
+- [ ] 15.58 there is **no** control to edit or delete a log line, and
+      `DELETE /api/admin/events/absences/log` is not served (405) — the history
+      is the point
+- [ ] 15.59 click **edit** next to an absent student → change the window and
+      **save** → the register shows the new window; reload the page and it holds
+- [ ] 15.60 edit an absence and move it to **another assigned student** → the
+      first is now present and the second absent; the app shows the same after a
+      reload (`getPeriodData2017`)
+- [ ] 15.61 each edit adds a new *edited* line to the changelog, with the old
+      window/student in the detail — the earlier lines are untouched
+- [ ] 15.62 `PATCH /api/admin/events/absences` as a **non-admin** → 401/403;
+      without a session → 401; a move to a student **not** assigned to the
+      appointment is rejected and nothing changes
 
 ## 16. Packaging
 - [ ] 16.1 `/status` reports the published tag, and **not** `dev` — a plain

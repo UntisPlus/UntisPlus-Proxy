@@ -794,6 +794,42 @@ func TestEventTimesAreWallClockInTheSchoolZone(t *testing.T) {
 //
 // So both self paths are decorated, keyed by the session user, and this test
 // pins all three cases.
+// TestOwnTimetableListsEveryAssignedStudent pins the substitution line on a
+// student's own timetable: it names everyone booked on the appointment, not just
+// the viewer, so a pupil sees who else is expected at the same event.
+func TestOwnTimetableListsEveryAssignedStudent(t *testing.T) {
+	st := eventStore(t)
+	ev := testEvent()
+	ev.Date = "2026-10-05"
+	seedEvent(t, st, "dee", ev)
+	seedEvent(t, st, "sam", ev)
+
+	fu := &fakeUpstream{}
+	p := newFakeProxyUpstreamWithStore(t, fu, st)
+	fu.setTimetable(t, []map[string]any{realPeriodJSON("2026-10-05")})
+	seedSessionUser(t, st, "dee", 5, 7, 5000)
+
+	rec := internReq(t, p, "getTimetable2017", "dee",
+		internBody("getTimetable2017", ttParam(7, "STUDENT", "2026-10-05", "2026-10-11", "dee")))
+	var custom map[string]any
+	for _, pd := range periodsOfResponse(t, rec) {
+		if isCustomPeriod(pd) {
+			custom = pd
+		}
+	}
+	if custom == nil {
+		t.Fatalf("no custom period: %s", rec.Body.String())
+	}
+	text, _ := custom["text"].(map[string]any)
+	sub := strings.ToLower(asString(text["substitution"]))
+	if !strings.Contains(sub, "dee") || !strings.Contains(sub, "sam") {
+		t.Errorf("substitution = %q, want both assigned students", text["substitution"])
+	}
+	if got := asString(text["lesson"]); got != "Arbeitsblatt mitbringen" {
+		t.Errorf("lesson = %q, want the description", got)
+	}
+}
+
 func TestEventsReachTheAppThroughBothSelfTimetablePaths(t *testing.T) {
 	st := eventStore(t)
 	ev := testEvent()
@@ -975,8 +1011,8 @@ func TestCustomEventPeriodMatchesUpstreamShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("text is %T, want the upstream object shape: %+v", pd["text"], pd)
 	}
-	if text["lesson"] != "Mathe" {
-		t.Errorf("text.lesson = %v, want the event's subject", text["lesson"])
+	if text["lesson"] != "Arbeitsblatt mitbringen" {
+		t.Errorf("text.lesson = %v, want the event's description (what the appointment needs)", text["lesson"])
 	}
 	is, ok := pd["is"].([]any)
 	if !ok || len(is) != 1 || is[0] != "REGULAR" {
@@ -1038,8 +1074,8 @@ func TestDecorateStudentEventsAttachSubjectRoomTeacherElements(t *testing.T) {
 			t.Errorf("%s id = %d, want a synthesized id at or above %d", typ, byType[typ], syntheticElementBase)
 		}
 	}
-	if text, _ := pd["text"].(map[string]any); text["lesson"] != "Mathe" {
-		t.Errorf("text.lesson = %v, want the subject", text["lesson"])
+	if text, _ := pd["text"].(map[string]any); text["lesson"] != "Arbeitsblatt mitbringen" {
+		t.Errorf("text.lesson = %v, want the description (the subject no longer fills the cell)", text["lesson"])
 	}
 	// Each referenced id has to resolve in this same response's masterData.
 	for _, list := range []string{"subjects", "rooms", "teachers"} {

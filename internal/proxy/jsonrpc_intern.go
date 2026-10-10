@@ -86,6 +86,12 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 			// Write methods are gated per editor flag; reading your own
 			// absences is always allowed.
 			username := extractAuthUser(body)
+			// A techniker's absence register on a proxy event is answered here,
+			// before the editor gate, because it writes a local note rather than
+			// an Untis record. A call for a real period falls through unchanged.
+			if p.handleEventAbsenceCall(w, req.ID, school, m, username, body) {
+				return
+			}
 			if username != "" && isWriteMethod(m) && !p.isEditor(username) {
 				p.writeJSONRPCError(w, req.ID, "method not allowed", -32601)
 				return
@@ -133,6 +139,11 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 		m := r.URL.Query().Get("m")
 		if m == "" {
 			m = req.Method
+		}
+		// See the auth-block branch: a techniker's register on a proxy event is
+		// local and answered before the editor gate.
+		if p.handleEventAbsenceCall(w, req.ID, school, m, user.Username, body) {
+			return
 		}
 		// Write methods are gated per editor flag; reading your own
 		// absences is always allowed.
