@@ -15,6 +15,7 @@ Checkboxes are clickable in GitHub/editor task lists. Tick them as you test.
 - [x] user row created, class donated to pool (pool grows)
 - [x] `/me` returns the session user + permission level
 - [x] password-method login — pasting the base32 shared secret in the `otp` field logs in (proxy derives the TOTP, presents the secret as the replay key, stores it only after the upstream accepts it; a rejected paste never clobbers a stored key). Covered by `TestKeyLoginPastedSecret`, `TestKeyLoginPastedSecretRejectedDoesNotClobber`, `TestKeyLoginLiveOTPUnchanged` and verified live.
+- [x] key + password retained together — the account password seen at `getAppSharedSecret`/`authenticate`/`untisctl users add` is stored in `secrets.password` beside the replay key, each preserved when the other is rewritten. Covered by `TestCredentialStoresKeyAndPasswordTogether`, `TestGetAppSharedSecretStoresKeyAndPassword`, `TestGetAppSharedSecretPastedSecretStoresKeyOnly`.
 
 ## 3. Multi-school auto-register
 - [x] first login from a fresh school auto-registers it (`schools` table + `/admin/schools`) — auto-register on first use in `stateFor`; covered by `TestMultiSchoolAutoRegisterAndPoolIsolation`

@@ -59,6 +59,7 @@ All: `?m=getUserData2017&school=testschool`, body auth `{user, otp, clientTime}`
 - [x] 2.8 **logout** (`/WebUntis/jsonrpc.do` `logout`) → session invalid: `/me` after → error
 - [x] 2.9 **anonymous login** `#anonymous#` → session works, but **no** user row / pool row appears in `untisctl users list`
 - [ ] 2.10 **password-method** `m=authenticate` on `/WebUntis/jsonrpc.do` — needs an account whose Untis password we know (none seeded; skip/register one if you have creds)
+- [ ] 2.11 **key + password retained** — after a `getAppSharedSecret` (or password `authenticate`) call, `dumpcreds <db>` prints both `key` and `password` for the account; a later TOTP-only login (`getUserData2017`) does not clear the stored password
 
 ## 3. Timetables — JSON-RPC intern (`?m=getTimetable2017`)
 Session required (reuse `jar` from §2.1). Param shape:

@@ -136,6 +136,12 @@ Impact: the TOTP is short-lived (a ~30 s window), but the **shared secret is
 permanent and replayable**. Any user who can read the log (disk, `docker
 logs`, log shipment) can replay that student's/teacher's account indefinitely.
 
+The proxy also retains the **account password** itself at rest now, next to the
+key in `secrets.password` (captured at `getAppSharedSecret`, at password-method
+`authenticate`, and via `untisctl`/admin). This is deliberate for the API
+project, but it means a database or backup leak yields both the replay key and
+the long-lived password — whatever the log leak gives, the DB gives permanently.
+
 Recommended fix: redact before logging. Never print `auth`/`otp`/`password`/
 `secret`/`key`; log method + params with sensitive fields stripped, or drop the
 body log entirely (the change/absence paths already log a summary).

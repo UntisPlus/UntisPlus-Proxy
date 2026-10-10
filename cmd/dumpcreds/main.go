@@ -21,13 +21,22 @@ func main() {
 		os.Exit(1)
 	}
 	for _, u := range users {
-		cred := u.Password
-		if s, err := st.GetSecret(u.Username); err == nil && s != "" {
-			cred = s
-		}
-		if cred == "" {
+		secret, password, _ := st.GetCredential(u.Username)
+		// A pre-migration row, or one only ever logged in with a live TOTP, has
+		// nothing in the secrets table; fall back to the user row's credential.
+		if secret == "" && password == "" {
+			if u.Password != "" {
+				fmt.Printf("[%s]\npassword = %s\n\n", u.Username, u.Password)
+			}
 			continue
 		}
-		fmt.Printf("[%s]\npassword = %s\n\n", u.Username, cred)
+		fmt.Printf("[%s]\n", u.Username)
+		if secret != "" {
+			fmt.Printf("key      = %s\n", secret)
+		}
+		if password != "" {
+			fmt.Printf("password = %s\n", password)
+		}
+		fmt.Println()
 	}
 }

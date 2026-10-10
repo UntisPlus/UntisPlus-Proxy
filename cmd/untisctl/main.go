@@ -351,6 +351,10 @@ func userAdd(st *store.Store, args []string) {
 		if err := st.UpsertSecret(*user, *secret); err != nil {
 			fatal("add secret: %v", err)
 		}
+	} else {
+		if err := st.SetAccountPassword(*user, *secret); err != nil {
+			fatal("add password: %v", err)
+		}
 	}
 	fmt.Printf("added user %q (method=%s)\n", *user, *method)
 }

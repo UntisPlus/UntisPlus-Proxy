@@ -55,19 +55,29 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.Unmarshal(b, &resp)
 		secret := resp.Result
-		if secret == "" && len(req.Params) > 0 {
+		password := ""
+		if len(req.Params) > 0 {
 			// Some apps send the shared secret itself as the "password" (the
 			// real server rejects that with -8998). If the value is a valid
-			// base32 secret, capture it so we can replay the account.
+			// base32 secret, capture it so we can replay the account. Otherwise
+			// it is the account's real password, which upstream needs to mint
+			// the secret: keep it too, so a TOTP account still has its password
+			// on record for later use.
 			if pw := req.Params[0].Password; isBase32Secret(pw) {
-				secret = pw
+				if secret == "" {
+					secret = pw
+				}
+			} else if strings.TrimSpace(pw) != "" {
+				password = pw
 			}
 		}
-		if secret != "" && len(req.Params) > 0 && req.Params[0].UserName != "" {
-			p.secretsMu.Lock()
-			p.secrets[strings.ToLower(req.Params[0].UserName)] = secret
-			p.secretsMu.Unlock()
-			_ = p.store.UpsertSecret(req.Params[0].UserName, secret)
+		if len(req.Params) > 0 && req.Params[0].UserName != "" {
+			if secret != "" {
+				p.secretsMu.Lock()
+				p.secrets[strings.ToLower(req.Params[0].UserName)] = secret
+				p.secretsMu.Unlock()
+			}
+			_ = p.store.UpsertCredential(req.Params[0].UserName, secret, password)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)

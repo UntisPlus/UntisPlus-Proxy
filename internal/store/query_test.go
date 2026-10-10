@@ -151,6 +151,47 @@ func TestSecretsRoundTripAndCaseInsensitivity(t *testing.T) {
 	}
 }
 
+// TestCredentialStoresKeyAndPasswordTogether checks that the replay key and the
+// account password coexist: writing one never wipes the other, so a TOTP login
+// (no password) cannot drop a password captured earlier and vice versa.
+func TestCredentialStoresKeyAndPasswordTogether(t *testing.T) {
+	st := openTestStore(t)
+	if err := st.SetAccountPassword("owen", "hunter2"); err != nil {
+		t.Fatalf("set password: %v", err)
+	}
+	if err := st.UpsertSecret("owen", "JBSWY3DPEHPK3PXP"); err != nil {
+		t.Fatalf("set secret: %v", err)
+	}
+	key, pw, err := st.GetCredential("owen")
+	if err != nil || key != "JBSWY3DPEHPK3PXP" || pw != "hunter2" {
+		t.Fatalf("GetCredential = (%q, %q, %v), want both values", key, pw, err)
+	}
+	// A later TOTP-only write must not drop the password.
+	if err := st.UpsertSecret("owen", "NEWSECRET"); err != nil {
+		t.Fatalf("re-upsert secret: %v", err)
+	}
+	if key, pw, _ = st.GetCredential("owen"); key != "NEWSECRET" || pw != "hunter2" {
+		t.Errorf("after secret replace = (%q, %q), want (NEWSECRET, hunter2)", key, pw)
+	}
+	// A later password-only write must not drop the key.
+	if err := st.SetAccountPassword("owen", "hunter3"); err != nil {
+		t.Fatalf("re-set password: %v", err)
+	}
+	if key, pw, _ = st.GetCredential("owen"); key != "NEWSECRET" || pw != "hunter3" {
+		t.Errorf("after password replace = (%q, %q), want (NEWSECRET, hunter3)", key, pw)
+	}
+	// An empty write for either field leaves the stored value alone.
+	if err := st.UpsertCredential("owen", "", ""); err != nil {
+		t.Fatalf("empty upsert: %v", err)
+	}
+	if key, pw, _ = st.GetCredential("owen"); key != "NEWSECRET" || pw != "hunter3" {
+		t.Errorf("after empty upsert = (%q, %q), want stored values kept", key, pw)
+	}
+	if got, _ := st.GetAccountPassword("owen"); got != "hunter3" {
+		t.Errorf("GetAccountPassword = %q, want hunter3", got)
+	}
+}
+
 func TestPoolOwnerAndSourceSelection(t *testing.T) {
 	st := openTestStore(t)
 	seed := []struct {

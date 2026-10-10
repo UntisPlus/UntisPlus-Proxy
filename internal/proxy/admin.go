@@ -913,6 +913,14 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 			if req.Password != "" {
 				existing.Password = req.Password
 				existing.Method = req.Method
+				// Keep the credential in the secrets table too: a pasted base32
+				// value for a key account is the replay key, anything else is the
+				// account password.
+				if req.Method == "key" && isBase32Secret(req.Password) {
+					_ = p.store.UpsertSecret(req.Username, req.Password)
+				} else {
+					_ = p.store.SetAccountPassword(req.Username, req.Password)
+				}
 			}
 			if err := p.store.UpsertUser(existing); err != nil {
 				p.writeJSON(w, map[string]any{"error": "store error"})

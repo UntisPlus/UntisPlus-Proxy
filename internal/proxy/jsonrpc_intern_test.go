@@ -21,6 +21,7 @@ type fakeUntis struct {
 	mu        sync.Mutex
 	loginAuth map[string]any // decoded auth block sent to getUserData2017
 	rejectKey string         // if set, logins presenting this replay key fail
+	appSecret string         // result returned by getAppSharedSecret
 }
 
 func (f *fakeUntis) handler() http.Handler {
@@ -43,9 +44,15 @@ func (f *fakeUntis) handler() http.Handler {
 			if f.rejectKey != "" {
 				reject = f.rejectKey
 			}
+			secret := f.appSecret
 			f.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Set-Cookie", "JSESSIONID=fakesid; Path=/")
+			if req.Method == "getAppSharedSecret" {
+				b, _ := json.Marshal(map[string]any{"id": "upstream", "jsonrpc": "2.0", "result": secret})
+				_, _ = w.Write(b)
+				return
+			}
 			if reject != "" {
 				auth := map[string]any{}
 				if len(req.Params) > 0 {
@@ -195,6 +202,56 @@ func TestKeyLoginLiveOTPUnchanged(t *testing.T) {
 	}
 	if got := auth["key"]; got != nil && got != "" {
 		t.Errorf("upstream key = %v, want empty (no stored secret, no paste)", got)
+	}
+}
+
+// TestGetAppSharedSecretStoresKeyAndPassword covers the app setup flow: upstream
+// is handed the account's real password and returns the TOTP replay key. The
+// proxy must keep both — the key so it can replay, the password for later use.
+func TestGetAppSharedSecretStoresKeyAndPassword(t *testing.T) {
+	f := &fakeUntis{appSecret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"}
+	p, st, _ := newFakeProxy(t, f)
+
+	body, _ := json.Marshal(map[string]any{
+		"id": "t", "jsonrpc": "2.0", "method": "getAppSharedSecret",
+		"params": []any{map[string]any{"userName": "newkid", "password": "correct horse battery"}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/WebUntis/jsonrpc_intern.do?m=getAppSharedSecret&school=testschool", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	p.handleJSONRPCIntern(rec, req)
+
+	key, password := "", ""
+	key, password, _ = st.GetCredential("newkid")
+	if key != f.appSecret {
+		t.Errorf("stored key = %q, want %q", key, f.appSecret)
+	}
+	if password != "correct horse battery" {
+		t.Errorf("stored password = %q, want the account password", password)
+	}
+}
+
+// TestGetAppSharedSecretPastedSecretStoresKeyOnly: when the client puts the
+// base32 shared secret in the password field, that value is the replay key, not
+// an account password — it must not be recorded as one.
+func TestGetAppSharedSecretPastedSecretStoresKeyOnly(t *testing.T) {
+	secret := "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+	f := &fakeUntis{rejectKey: secret} // upstream returns no result for this pasted value
+	p, st, _ := newFakeProxy(t, f)
+
+	body, _ := json.Marshal(map[string]any{
+		"id": "t", "jsonrpc": "2.0", "method": "getAppSharedSecret",
+		"params": []any{map[string]any{"userName": "newkid", "password": secret}},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/WebUntis/jsonrpc_intern.do?m=getAppSharedSecret&school=testschool", strings.NewReader(string(body)))
+	rec := httptest.NewRecorder()
+	p.handleJSONRPCIntern(rec, req)
+
+	key, password, _ := st.GetCredential("newkid")
+	if key != secret {
+		t.Errorf("stored key = %q, want the pasted secret %q", key, secret)
+	}
+	if password != "" {
+		t.Errorf("stored password = %q, want empty (the secret is not a password)", password)
 	}
 }
 

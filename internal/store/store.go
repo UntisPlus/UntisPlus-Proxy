@@ -147,6 +147,7 @@ func Open(path string) (*Store, error) {
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS secrets (
 		username TEXT NOT NULL PRIMARY KEY,
 		secret TEXT NOT NULL,
+		password TEXT NOT NULL DEFAULT '',
 		updated_at INTEGER NOT NULL
 	)`)
 	if err != nil {
@@ -498,6 +499,11 @@ func Open(path string) (*Store, error) {
 	if err := addColumnIfMissing(db, "users", "admin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return nil, err
 	}
+	// migration: keep the account password next to the replay key so an account
+	// that logs in by TOTP still has its password on record for later use
+	if err := addColumnIfMissing(db, "secrets", "password", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return nil, err
+	}
 	// migration: target element (class/student/teacher/room/subject) for ntfy
 	// topics and webhooks; class_id stays for legacy class-only rows
 	if err := addColumnIfMissing(db, "ntfy_topics", "element_type", "TEXT NOT NULL DEFAULT ''"); err != nil {
@@ -772,12 +778,36 @@ func migrateElementNames(db *sql.DB) error {
 	return err
 }
 
-func (s *Store) UpsertSecret(username, secret string) error {
+// UpsertCredential records an account's replay material in the secrets table.
+// The base32 shared secret (the TOTP replay key) and the account password live in
+// separate columns, and each is written only when non-empty: a TOTP login that
+// carries no password cannot wipe a stored one, and a password login that carries
+// no secret cannot wipe the stored key. updated_at moves on every call.
+func (s *Store) UpsertCredential(username, secret, password string) error {
 	username = norm(username)
-	_, err := s.db.Exec(`INSERT INTO secrets (username, secret, updated_at) VALUES (?,?,?)
-		ON CONFLICT(username) DO UPDATE SET secret=excluded.secret, updated_at=excluded.updated_at`,
-		username, secret, time.Now().Unix())
+	if secret == "" && password == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`INSERT INTO secrets (username, secret, password, updated_at)
+		VALUES (?,?,?,?)
+		ON CONFLICT(username) DO UPDATE SET
+			secret = CASE WHEN excluded.secret<>'' THEN excluded.secret ELSE secrets.secret END,
+			password = CASE WHEN excluded.password<>'' THEN excluded.password ELSE secrets.password END,
+			updated_at = excluded.updated_at`,
+		username, secret, password, time.Now().Unix())
 	return err
+}
+
+// UpsertSecret stores only the base32 replay key, leaving any recorded password
+// untouched.
+func (s *Store) UpsertSecret(username, secret string) error {
+	return s.UpsertCredential(username, secret, "")
+}
+
+// SetAccountPassword records an account password without touching its replay key.
+// It is how a password seen at login or setup is kept for later use.
+func (s *Store) SetAccountPassword(username, password string) error {
+	return s.UpsertCredential(username, "", password)
 }
 
 func (s *Store) GetSecret(username string) (string, error) {
@@ -787,6 +817,23 @@ func (s *Store) GetSecret(username string) (string, error) {
 		return "", nil
 	}
 	return sec, err
+}
+
+// GetCredential returns the stored replay key and account password for a user.
+// Either may be empty; a missing row is not an error.
+func (s *Store) GetCredential(username string) (secret, password string, err error) {
+	err = s.db.QueryRow(`SELECT secret, password FROM secrets WHERE username=?`,
+		norm(username)).Scan(&secret, &password)
+	if err == sql.ErrNoRows {
+		return "", "", nil
+	}
+	return secret, password, err
+}
+
+// GetAccountPassword returns the stored account password for a user, or "".
+func (s *Store) GetAccountPassword(username string) (string, error) {
+	_, password, err := s.GetCredential(username)
+	return password, err
 }
 
 // globalPermUser is the special perms row username holding the global switch

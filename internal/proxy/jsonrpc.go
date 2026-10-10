@@ -99,6 +99,7 @@ func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request, school stri
 		DisplayName: info.DisplayName,
 	}
 	_ = p.store.UpsertUser(user)
+	_ = p.store.SetAccountPassword(params.User, params.Password)
 	_ = p.store.Touch(params.User)
 	p.stateFor(school)
 	if p.isNewSchool(school) {

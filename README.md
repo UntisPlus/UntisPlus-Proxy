@@ -495,6 +495,15 @@ so the account is replayable afterwards. A rejected/foreign paste never
 overwrites a stored key (it is only persisted after the real server accepts the
 login).
 
+**Retained password:** when an app enrolls an account it sends the account's
+real Untis password to `getAppSharedSecret` (upstream answers with the TOTP
+secret). The proxy keeps that password too, in the `secrets` table beside the
+key (`secrets.password`), so an API client can read it later. It is stored in
+plaintext — WebUntis needs the password itself to replay a login — and only when
+a client actually sends it; an account that only ever uses the TOTP flow has no
+password on record. `untisctl users add --method password` and the admin UI store
+it the same way. `dumpcreds` prints both the key and the password.
+
 ### perms
 
 See [Permissions](#permissions).
