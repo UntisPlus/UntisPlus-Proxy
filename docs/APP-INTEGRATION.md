@@ -341,6 +341,7 @@ timetable is served, and nowhere else.
 | `getTimetable2017`, `CLASS` for any other class, or `TEACHER` / `ROOM` / `SUBJECT` | **never** |
 | `/api/calendar/{student-token}.ics` | yes |
 | `/api/calendar/{class|teacher|room|subject-token}.ics` | **never** |
+| `/api/calendar/{technik-token}.ics` | yes — the merged, student-labelled aggregate (techniker only) |
 | `/week/{student-token}` | yes |
 
 Both self paths are covered, because which one a client uses to ask for its own

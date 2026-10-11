@@ -1785,6 +1785,30 @@ func (s *Store) scanClassToken(row *sql.Row) (*ClassToken, error) {
 	return &t, nil
 }
 
+// ListClassTokensByUser returns the calendar subscription tokens created by one
+// user, newest first. The self-service list must never expose another user's
+// tokens, so it scopes on created_by rather than returning every row.
+func (s *Store) ListClassTokensByUser(createdBy string) ([]*ClassToken, error) {
+	rows, err := s.db.Query(`SELECT token, school, class_id, person_id, element_type, element_id, timezone, days, created_at, last_access, created_by
+		FROM class_tokens WHERE created_by=? ORDER BY created_at DESC`, createdBy)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*ClassToken
+	for rows.Next() {
+		var t ClassToken
+		if err := rows.Scan(&t.Token, &t.School, &t.ClassID, &t.PersonID, &t.ElementType, &t.ElementID, &t.Timezone, &t.Days, &t.CreatedAt, &t.LastAccess, &t.CreatedBy); err != nil {
+			return nil, err
+		}
+		if t.Days <= 0 {
+			t.Days = 30
+		}
+		out = append(out, &t)
+	}
+	return out, rows.Err()
+}
+
 // ListClassTokens returns every calendar subscription token, newest first.
 func (s *Store) ListClassTokens() ([]*ClassToken, error) {
 	rows, err := s.db.Query(`SELECT token, school, class_id, person_id, element_type, element_id, timezone, days, created_at, last_access, created_by

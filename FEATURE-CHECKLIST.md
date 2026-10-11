@@ -50,6 +50,10 @@ Checkboxes are clickable in GitHub/editor task lists. Tick them as you test.
 - [x] `POST /api/calendar/token` class → token
 - [x] `GET /api/calendar/{token}.ics` → valid iCal
 - [x] token for teacher/room/subject (fuzzy lookup — names persisted from masterData)
+- [x] techniker token for the synthetic Technik aggregate class (merged shared events)
+- [x] `GET /api/calendar/options` → subscribable targets, mirroring app visibility
+- [x] `GET /api/calendar/tokens` → only the caller's own tokens
+- [x] self-service `DELETE`/`PATCH /api/calendar/{token}` (owner-checked revoke / days)
 - [x] token revoke (`untisctl calendar revoke`)
 - [x] `/me` shows level
 

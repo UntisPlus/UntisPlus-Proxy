@@ -421,9 +421,13 @@ student, is passed through completely undecorated.
 **Calendar**
 
 ```
-POST /api/calendar/token        # request a calendar subscription token
-GET  /api/calendar/{token}.ics  # the iCal feed (Outlook/Google subscribe)
-GET  /week/{token}              # mobile week page for the same token (no app needed)
+POST   /api/calendar/token         # request a calendar subscription token
+GET    /api/calendar/options       # what you can subscribe to (mirrors the app)
+GET    /api/calendar/tokens        # the tokens you created
+PATCH  /api/calendar/{token}       # change a token's lookahead window (days)
+DELETE /api/calendar/{token}       # revoke one of your tokens
+GET    /api/calendar/{token}.ics   # the iCal feed (Outlook/Google subscribe)
+GET    /week/{token}               # mobile week page for the same token (no app needed)
 ```
 
 **Admin** — `/admin` (UI), `/admin/login`, and the `/admin/*` JSON API
@@ -438,14 +442,23 @@ events).
 
 | Field | Access | Description |
 |---|---|---|
-| `{"classId": 5000}` | pool members | class timetable |
+| `{"classId": 5000}` | pool members (or boosted/staff) | class timetable |
+| `{"classId": 2000000000}` | techniker | the synthetic **Technik** aggregate class (union of everyone's events) |
 | `{"personal": true}` | self | your own personal student timetable |
 | `{"personId": 5006}` | self (must be your own person id) | student timetable — same as `personal`, explicit id form (used by the dashboard student picker) |
-| `{"teacherId": 123}` | recon or boosted | teacher timetable (reconstructed) |
-| `{"roomId": 456}` | recon or boosted | room timetable (reconstructed) |
-| `{"subjectId": 789}` | recon or boosted | subject timetable (reconstructed) |
+| `{"teacherId": 123}` | recon, boosted, or staff | teacher timetable (reconstructed) |
+| `{"roomId": 456}` | recon, boosted, or staff | room timetable (reconstructed) |
+| `{"subjectId": 789}` | recon, boosted, or staff | subject timetable (reconstructed) |
 
-Optional: `{"timezone": "Europe/Berlin"}` (default).
+Optional: `{"timezone": "Europe/Berlin"}` and `{"days": 30}` (lookahead, clamped to 365).
+
+`GET /api/calendar/options` returns exactly what the caller may subscribe to,
+mirroring the masterData visibility the proxy sets at login: everyone gets the
+pooled classes and their personal timetable; a recon user also gets the
+teachers/rooms/subjects the scan enumerated; a boosted or staff account gets
+every element; a techniker also gets the Technik class. `GET /api/calendar/tokens`
+lists only the caller's own subscriptions, and `DELETE`/`PATCH /api/calendar/{token}`
+revoke or re-scope one of them (owner-checked).
 
 It returns a stable URL:
 

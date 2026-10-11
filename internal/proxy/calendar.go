@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -144,10 +145,39 @@ func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// ── Technik aggregate class ──
+	// The synthetic Technik class is not in the pool, so it needs its own
+	// element type. It is only visible (and only subscribable) to a techniker.
+	if req.ClassID == technikClassID {
+		if !p.hasTechniker(u.Username) {
+			p.forbidden(w)
+			return
+		}
+		tok, err := p.store.ClassTokenForElement(school, "TECHNIK", technikClassID)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		if tok == nil {
+			now := time.Now().Unix()
+			tok = &store.ClassToken{
+				Token: newCalendarToken(), School: school,
+				ClassID: technikClassID, ElementType: "TECHNIK", ElementID: technikClassID,
+				Timezone: tz, Days: days, CreatedAt: now, LastAccess: now,
+				CreatedBy: u.Username,
+			}
+			if err := p.store.CreateClassToken(tok); err != nil {
+				p.writeJSON(w, map[string]any{"error": "store error"})
+				return
+			}
+		}
+		p.writeCalendarResponse(w, r, tok)
+		return
+	}
+
 	// ── class ──
 	if req.ClassID > 0 {
-		ok, err := p.store.PoolContains(school, req.ClassID)
-		if err != nil || !ok {
+		if !p.canMintClass(school, u, req.ClassID) {
 			p.forbidden(w)
 			return
 		}
@@ -188,10 +218,10 @@ func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 		elID = req.SubjectID
 	}
 
-	// Access control: must have recon or boosted for teacher/room/subject.
-	hasRecon, _ := p.store.ReconAccess(u.Username, elType)
-	hasBoosted, _ := p.store.BoostedAccess(u.Username)
-	if !hasRecon && !hasBoosted {
+	// Access control mirrors the app's visibility: recon grants the
+	// reconstructed elements, boosted grants everything raw, and a staff
+	// (non-student) account keeps stock WebUntis visibility.
+	if !p.canMintElement(u, elType) {
 		p.forbidden(w)
 		return
 	}
@@ -217,29 +247,32 @@ func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 	p.writeCalendarResponse(w, r, tok)
 }
 
-// writeCalendarResponse writes the standard calendar token JSON response.
-func (p *Proxy) writeCalendarResponse(w http.ResponseWriter, r *http.Request, tok *store.ClassToken) {
+// calendarTokenName resolves the display name of a token's target element.
+func (p *Proxy) calendarTokenName(tok *store.ClassToken) string {
+	if tok.ElementType == "TECHNIK" {
+		return technikClassName
+	}
 	md := p.masterData(tok.School)
-	name := ""
 	switch tok.ElementType {
 	case "CLASS":
-		name = elementName(md, "CLASS", tok.ElementID)
+		return elementName(md, "CLASS", tok.ElementID)
 	case "STUDENT":
-		u, _ := p.store.UserByPersonID(tok.ElementID)
-		if u != nil && u.DisplayName != "" {
-			name = u.DisplayName
+		if u, _ := p.store.UserByPersonID(tok.ElementID); u != nil && u.DisplayName != "" {
+			return u.DisplayName
 		}
-	case "TEACHER":
-		name = elementName(md, "TEACHER", tok.ElementID)
-	case "ROOM":
-		name = elementName(md, "ROOM", tok.ElementID)
-	case "SUBJECT":
-		name = elementName(md, "SUBJECT", tok.ElementID)
+	case "TEACHER", "ROOM", "SUBJECT":
+		return elementName(md, tok.ElementType, tok.ElementID)
 	}
+	return ""
+}
+
+// calendarTokenView renders one token in the shape both the mint response and
+// the self-service list share, so the two can never drift apart.
+func (p *Proxy) calendarTokenView(r *http.Request, tok *store.ClassToken) map[string]any {
 	resp := map[string]any{
 		"type":      strings.ToLower(tok.ElementType),
 		"id":        tok.ElementID,
-		"name":      name,
+		"name":      p.calendarTokenName(tok),
 		"token":     tok.Token,
 		"url":       p.calendarURL(r, tok.Token),
 		"timezone":  tok.Timezone,
@@ -255,7 +288,245 @@ func (p *Proxy) writeCalendarResponse(w http.ResponseWriter, r *http.Request, to
 	if tok.PersonID > 0 {
 		resp["personId"] = tok.PersonID
 	}
-	p.writeJSON(w, resp)
+	return resp
+}
+
+// writeCalendarResponse writes the standard calendar token JSON response.
+func (p *Proxy) writeCalendarResponse(w http.ResponseWriter, r *http.Request, tok *store.ClassToken) {
+	p.writeJSON(w, p.calendarTokenView(r, tok))
+}
+
+// calendarOption is one subscribable timetable target, as listed by the options
+// endpoint and picked by the app's "add calendar" dialog.
+type calendarOption struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+}
+
+// canMintClass reports whether a user may mint a calendar token for a class.
+// The synthetic Technik aggregate needs the techniker permission; staff
+// (non-student) accounts keep stock WebUntis visibility; everyone else needs
+// the class to be in the pool or the boosted flag.
+func (p *Proxy) canMintClass(school string, u *store.User, classID int64) bool {
+	if classID == technikClassID {
+		return p.hasTechniker(u.Username)
+	}
+	if u.PersonType != 5 || p.isBoosted(u.Username) {
+		return true
+	}
+	ok, _ := p.store.PoolContains(school, classID)
+	return ok
+}
+
+// canMintElement reports whether a user may mint a calendar token for a
+// teacher/room/subject: recon, boosted, or a staff (non-student) account.
+func (p *Proxy) canMintElement(u *store.User, elType string) bool {
+	if u.PersonType != 5 || p.isBoosted(u.Username) {
+		return true
+	}
+	can, _ := p.store.ReconAccess(u.Username, elType)
+	return can
+}
+
+// calendarOptions lists the calendar targets the user can see in the app. It
+// mirrors the masterData display flags the proxy writes at login:
+//   - everyone: the pooled classes, plus the personal timetable
+//   - recon:    the teachers/rooms/subjects the recon scan actually enumerated
+//   - boosted:  every class/teacher/room/subject
+//   - techniker: the synthetic Technik class
+//   - staff (non-student) accounts: stock visibility, i.e. every element
+func (p *Proxy) calendarOptions(school string, u *store.User) map[string]any {
+	var teachersMD, roomsMD, subjectsMD, klassenMD map[int64]string
+	if md := p.masterData(school); md != nil {
+		teachersMD, roomsMD, subjectsMD, klassenMD = md.teachers, md.rooms, md.subjects, md.klassen
+	}
+	boosted := p.isBoosted(u.Username)
+	staff := u.PersonType != 5
+	all := boosted || staff
+
+	classSet := map[int64]string{}
+	if pooled, err := p.store.Pool(school); err == nil {
+		for _, c := range pooled {
+			classSet[c.ID] = c.Name
+		}
+	}
+	if all {
+		for id, name := range klassenMD {
+			if _, ok := classSet[id]; !ok || classSet[id] == "" {
+				classSet[id] = name
+			}
+		}
+	}
+
+	teacherSet := map[int64]string{}
+	roomSet := map[int64]string{}
+	subjectSet := map[int64]string{}
+	if all {
+		teacherSet, roomSet, subjectSet = teachersMD, roomsMD, subjectsMD
+	} else if can, _ := p.store.ReconAccess(u.Username, "TEACHER"); can {
+		snap := p.stateFor(school).recon.snapshot()
+		for _, id := range snap["TEACHER"] {
+			if name := teachersMD[id]; name != "" {
+				teacherSet[id] = name
+			}
+		}
+		for _, id := range snap["ROOM"] {
+			if name := roomsMD[id]; name != "" {
+				roomSet[id] = name
+			}
+		}
+		for _, id := range snap["SUBJECT"] {
+			if name := subjectsMD[id]; name != "" {
+				subjectSet[id] = name
+			}
+		}
+	}
+
+	resp := map[string]any{
+		"school":  school,
+		"class":   optionList(classSet),
+		"teacher": optionList(teacherSet),
+		"room":    optionList(roomSet),
+		"subject": optionList(subjectSet),
+	}
+	if u.PersonID > 0 {
+		resp["personal"] = map[string]any{"personId": u.PersonID, "name": u.DisplayName}
+	}
+	if p.hasTechniker(u.Username) {
+		resp["technik"] = calendarOption{ID: technikClassID, Name: technikClassName}
+	}
+	return resp
+}
+
+// optionList flattens a collector map into a name-sorted slice, so the app's
+// pickers render in a stable order.
+func optionList(set map[int64]string) []calendarOption {
+	out := make([]calendarOption, 0, len(set))
+	for id, name := range set {
+		out = append(out, calendarOption{ID: id, Name: name})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		return out[i].ID < out[j].ID
+	})
+	return out
+}
+
+// requestSchool resolves the school a session request targets, matching every
+// other session endpoint: an explicit ?school= wins, then the default.
+func (p *Proxy) requestSchool(r *http.Request) string {
+	if s := r.URL.Query().Get("school"); s != "" {
+		return s
+	}
+	return p.opts.School
+}
+
+// handleCalendarOptions lists the calendar targets the signed-in user can
+// subscribe to, mirroring what they can already see in the app.
+func (p *Proxy) handleCalendarOptions(w http.ResponseWriter, r *http.Request) {
+	u := p.sessionUser(r)
+	if u == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+		return
+	}
+	p.writeJSON(w, p.calendarOptions(p.requestSchool(r), u))
+}
+
+// handleCalendarTokens lists only the tokens the requesting user created, so
+// the self-service page is scoped to its owner.
+func (p *Proxy) handleCalendarTokens(w http.ResponseWriter, r *http.Request) {
+	u := p.sessionUser(r)
+	if u == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+		return
+	}
+	toks, err := p.store.ListClassTokensByUser(u.Username)
+	if err != nil {
+		p.writeJSON(w, map[string]any{"error": "store error"})
+		return
+	}
+	out := make([]map[string]any, 0, len(toks))
+	for _, tok := range toks {
+		out = append(out, p.calendarTokenView(r, tok))
+	}
+	p.writeJSON(w, out)
+}
+
+// calendarOwnedToken loads the token named in the request path and confirms the
+// session user created it. A missing token and a foreign one are indistinguishable
+// to the caller: neither is theirs to touch.
+func (p *Proxy) calendarOwnedToken(r *http.Request, u *store.User) (*store.ClassToken, bool) {
+	token := strings.TrimSuffix(r.PathValue("token"), ".ics")
+	tok, err := p.store.ClassTokenByToken(token)
+	if err != nil || tok == nil {
+		return nil, false
+	}
+	if tok.CreatedBy != u.Username {
+		return nil, false
+	}
+	return tok, true
+}
+
+// handleCalendarDelete revokes one of the caller's own calendar subscriptions.
+func (p *Proxy) handleCalendarDelete(w http.ResponseWriter, r *http.Request) {
+	u := p.sessionUser(r)
+	if u == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+		return
+	}
+	tok, ok := p.calendarOwnedToken(r, u)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
+		return
+	}
+	if _, err := p.store.DeleteClassToken(tok.Token); err != nil {
+		p.writeJSON(w, map[string]any{"error": "store error"})
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleCalendarUpdate changes the lookahead window of one of the caller's own
+// calendar subscriptions. Days are clamped exactly like mint.
+func (p *Proxy) handleCalendarUpdate(w http.ResponseWriter, r *http.Request) {
+	u := p.sessionUser(r)
+	if u == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+		return
+	}
+	tok, ok := p.calendarOwnedToken(r, u)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
+		return
+	}
+	var req struct {
+		Days int `json:"days"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	days := req.Days
+	if days <= 0 {
+		days = 30
+	}
+	if days > 365 {
+		days = 365
+	}
+	if _, err := p.store.UpdateClassTokenDays(tok.Token, days); err != nil {
+		p.writeJSON(w, map[string]any{"error": "store error"})
+		return
+	}
+	tok.Days = days
+	p.writeCalendarResponse(w, r, tok)
 }
 
 // handleCalendarICS serves the .ics subscription feed for a token. It is public
@@ -345,6 +616,13 @@ func (p *Proxy) resolveFeed(tok *store.ClassToken, from, to string) (feedTarget,
 		}
 		out.Periods, err = p.classPeriods(tok.School, classID, from, to)
 		out.Version = p.store.ClassVersion(tok.School, classID)
+	case "TECHNIK":
+		out.Name = technikClassName
+		// The aggregate spans every student's events, exactly like the app's
+		// Technik class surface; the raw (unrewritten) masterData is enough to
+		// resolve the room/teacher names the periods reference.
+		out.Periods = p.technikClassPeriods(tok.School, from, to, p.schoolLocation(tok.School), p.rewrittenMasterData(tok.School, ""))
+		out.Version = p.store.SchoolVersion(tok.School)
 	case "TEACHER", "ROOM", "SUBJECT":
 		out.Name = elementName(md, elType, tok.ElementID)
 		if out.Name == "" {

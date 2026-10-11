@@ -100,6 +100,11 @@ was being published on whatever address a tunnel exposes.
 - [ ] `{"personId":<other student>}` → 403
 - [ ] `{"personal":true}` → own personal token
 - [ ] `{"teacherId":<id>}` / `{"roomId":<id>}` / `{"subjectId":<id>}` → 403 for plain user, 200 for recon/boosted/admin
+- [ ] `{"classId":2000000000}` (Technik) → 200 for a techniker, 403 otherwise
+- [ ] `GET /api/calendar/options` → pooled classes + `personal` for a plain student; `teacher`/`room`/`subject` only for recon/boosted; `technik` only for a techniker
+- [ ] `GET /api/calendar/tokens` → only the caller's own tokens
+- [ ] `DELETE /api/calendar/$TOK` as its creator → 204, then the feed → 404; as another user → 404
+- [ ] `PATCH /api/calendar/$TOK` `{"days":90}` → 200, `days=90`; `{"days":9999}` → clamped to 365
 - [ ] `{"timezone":"Asia/Tokyo"}` honoured: `DTSTART;TZID=Asia/Tokyo` in the feed and shifted wall-clock times
 - [ ] `{"classId":0}` / two targets in one body → 400
 - [ ] `POST /api/calendar/token` without cookie → 401

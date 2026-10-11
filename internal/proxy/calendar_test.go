@@ -23,6 +23,62 @@ import (
 	"untis-proxy/internal/store"
 )
 
+// calSeedMasterData installs a fresh masterData cache for a school so the
+// options/recon tests do not depend on a live upstream fetch.
+func calSeedMasterData(p *Proxy, school string, md *masterDataCache) {
+	st := p.stateFor(school)
+	st.mdMu.Lock()
+	st.md = md
+	st.mdNext = time.Now().Add(time.Hour)
+	st.mdMu.Unlock()
+}
+
+// calOptionIDs extracts the ids of one option list from a decoded response.
+func calOptionIDs(t *testing.T, m map[string]any, key string) map[int64]bool {
+	t.Helper()
+	ids := map[int64]bool{}
+	raw, _ := m[key].([]any)
+	for _, v := range raw {
+		om, _ := v.(map[string]any)
+		if id, ok := om["id"].(float64); ok {
+			ids[int64(id)] = true
+		}
+	}
+	return ids
+}
+
+// calAuthRequest fires a handler directly with a session cookie for user.
+func calAuthRequest(t *testing.T, p *Proxy, user, method, target string, body string, pathVal string) *httptest.ResponseRecorder {
+	t.Helper()
+	var r *http.Request
+	if body == "" {
+		r = httptest.NewRequest(method, target, nil)
+	} else {
+		r = httptest.NewRequest(method, target, strings.NewReader(body))
+	}
+	if pathVal != "" {
+		r.SetPathValue("token", pathVal)
+	}
+	if user != "" {
+		sess := p.sessions.New(user, 0)
+		r.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: sess.ID})
+	}
+	rec := httptest.NewRecorder()
+	switch {
+	case method == http.MethodGet && strings.HasSuffix(target, "/options"):
+		p.handleCalendarOptions(rec, r)
+	case method == http.MethodGet && strings.HasSuffix(target, "/tokens"):
+		p.handleCalendarTokens(rec, r)
+	case method == http.MethodDelete:
+		p.handleCalendarDelete(rec, r)
+	case method == http.MethodPatch:
+		p.handleCalendarUpdate(rec, r)
+	default:
+		t.Fatalf("calAuthRequest: no handler for %s %s", method, target)
+	}
+	return rec
+}
+
 // calRequest fires handleCalendarToken with a session for user.
 func calRequest(t *testing.T, p *Proxy, user string, body string) *httptest.ResponseRecorder {
 	t.Helper()
@@ -107,7 +163,7 @@ func TestCalendar_PersonalToken_ForeignPersonForbidden(t *testing.T) {
 // class that is not in the pool must be rejected.
 func TestCalendar_ClassToken_NotInPoolForbidden(t *testing.T) {
 	p, st := newTestProxy(t)
-	if err := st.UpsertUser(&store.User{Username: "dee", Method: "key", ClassID: 5000}); err != nil {
+	if err := st.UpsertUser(&store.User{Username: "dee", Method: "key", PersonType: 5, ClassID: 5000}); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
 
@@ -137,7 +193,7 @@ func TestCalendar_ClassToken_InPoolAllowed(t *testing.T) {
 // forbidden from creating a teacher calendar token.
 func TestCalendar_TeacherToken_RequiresReconOrBoosted(t *testing.T) {
 	p, st := newTestProxy(t)
-	if err := st.UpsertUser(&store.User{Username: "plain", Method: "key", PersonID: 1, ClassID: 5000}); err != nil {
+	if err := st.UpsertUser(&store.User{Username: "plain", Method: "key", PersonType: 5, PersonID: 1, ClassID: 5000}); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
 
@@ -151,7 +207,7 @@ func TestCalendar_TeacherToken_RequiresReconOrBoosted(t *testing.T) {
 // create a teacher calendar token.
 func TestCalendar_TeacherToken_WithRecon(t *testing.T) {
 	p, st := newTestProxy(t)
-	if err := st.UpsertUser(&store.User{Username: "reconuser", Method: "key", PersonID: 2, ClassID: 5000}); err != nil {
+	if err := st.UpsertUser(&store.User{Username: "reconuser", Method: "key", PersonType: 5, PersonID: 2, ClassID: 5000}); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
 	if err := st.SetReconOverride("reconuser", "", true); err != nil {
@@ -475,5 +531,300 @@ func TestCalendar_ICS_FileDownloadName(t *testing.T) {
 	}
 	if disp := rec.Header().Get("Content-Disposition"); !strings.Contains(disp, "untis-5000.ics") {
 		t.Errorf("content-disposition = %q, want untis-5000.ics", disp)
+	}
+}
+
+// calSampleMD is the masterData cache the options tests resolve names against.
+func calSampleMD() *masterDataCache {
+	return &masterDataCache{
+		klassen:  map[int64]string{5000: "5a", 6000: "6b"},
+		teachers: map[int64]string{7: "Herr A", 70: "Frau B"},
+		rooms:    map[int64]string{8: "R1", 80: "R2"},
+		subjects: map[int64]string{9: "Mathe", 90: "Deutsch"},
+	}
+}
+
+// TestCalendarOptions_BasicStudentSeesPoolAndPersonal: a plain student only
+// gets pooled classes and their own personal timetable.
+func TestCalendarOptions_PlainStudent(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertUser(&store.User{Username: "dee", Method: "key", PersonType: 5, PersonID: 42, ClassID: 5000, DisplayName: "Max", School: "testschool"}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	calSeedMasterData(p, "testschool", calSampleMD())
+
+	rec := calAuthRequest(t, p, "dee", http.MethodGet, "/api/calendar/options", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var m map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &m)
+	classes := calOptionIDs(t, m, "class")
+	if !classes[5000] || classes[6000] {
+		t.Errorf("classes = %v, want only pooled 5000", classes)
+	}
+	if len(calOptionIDs(t, m, "teacher")) != 0 || len(calOptionIDs(t, m, "room")) != 0 || len(calOptionIDs(t, m, "subject")) != 0 {
+		t.Errorf("plain student must see no recon elements: %v", m)
+	}
+	if _, ok := m["personal"]; !ok {
+		t.Errorf("personal missing: %v", m)
+	}
+	if _, ok := m["technik"]; ok {
+		t.Errorf("technik must be absent without techniker: %v", m)
+	}
+}
+
+// TestCalendarOptions_ReconListsEnumeratedElements: a recon user additionally
+// sees only the teachers/rooms/subjects the scan enumerated.
+func TestCalendarOptions_ReconListsEnumeratedElements(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertUser(&store.User{Username: "reconuser", Method: "key", PersonType: 5, PersonID: 42, ClassID: 5000, School: "testschool"}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := st.SetReconOverride("reconuser", "", true); err != nil {
+		t.Fatalf("grant recon: %v", err)
+	}
+	calSeedMasterData(p, "testschool", calSampleMD())
+	// Only teacher 7, room 8 and subject 9 were scanned; 70/8x/9x are not.
+	p.stateFor("testschool").recon.seedFrom(map[string][]int64{
+		"TEACHER": {7}, "ROOM": {8}, "SUBJECT": {9},
+	})
+
+	rec := calAuthRequest(t, p, "reconuser", http.MethodGet, "/api/calendar/options", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var m map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &m)
+	teachers := calOptionIDs(t, m, "teacher")
+	if !teachers[7] || teachers[70] {
+		t.Errorf("teachers = %v, want only enumerated 7", teachers)
+	}
+	if rooms := calOptionIDs(t, m, "room"); !rooms[8] || rooms[80] {
+		t.Errorf("rooms = %v, want only enumerated 8", rooms)
+	}
+	if subjects := calOptionIDs(t, m, "subject"); !subjects[9] {
+		t.Errorf("subjects = %v, want enumerated 9", subjects)
+	}
+	// The certified class is still only the pooled one.
+	if classes := calOptionIDs(t, m, "class"); !classes[5000] || classes[6000] {
+		t.Errorf("classes = %v, want only pooled 5000", classes)
+	}
+}
+
+// TestCalendarOptions_BoostedListsEverything: a boosted user sees every class
+// and element in masterData.
+func TestCalendarOptions_BoostedListsEverything(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertUser(&store.User{Username: "boost", Method: "key", PersonType: 5, PersonID: 42, ClassID: 5000, School: "testschool"}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := st.SetBoostedFlag("boost", true); err != nil {
+		t.Fatalf("grant boosted: %v", err)
+	}
+	calSeedMasterData(p, "testschool", calSampleMD())
+
+	rec := calAuthRequest(t, p, "boost", http.MethodGet, "/api/calendar/options", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var m map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &m)
+	if classes := calOptionIDs(t, m, "class"); !classes[5000] || !classes[6000] {
+		t.Errorf("classes = %v, want all", classes)
+	}
+	if teachers := calOptionIDs(t, m, "teacher"); !teachers[7] || !teachers[70] {
+		t.Errorf("teachers = %v, want all", teachers)
+	}
+	if rooms := calOptionIDs(t, m, "room"); !rooms[8] || !rooms[80] {
+		t.Errorf("rooms = %v, want all", rooms)
+	}
+	if subjects := calOptionIDs(t, m, "subject"); !subjects[9] || !subjects[90] {
+		t.Errorf("subjects = %v, want all", subjects)
+	}
+}
+
+// TestCalendarOptions_TechnikerListsTechnik: a techniker sees the synthetic
+// Technik aggregate in the options.
+func TestCalendarOptions_TechnikerListsTechnik(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertUser(&store.User{Username: "tech", Method: "key", PersonType: 5, PersonID: 42, ClassID: 5000, School: "testschool"}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := st.SetPerm("tech", store.FeatureTechniker, true); err != nil {
+		t.Fatalf("grant techniker: %v", err)
+	}
+	calSeedMasterData(p, "testschool", calSampleMD())
+
+	rec := calAuthRequest(t, p, "tech", http.MethodGet, "/api/calendar/options", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var m map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &m)
+	tk, ok := m["technik"].(map[string]any)
+	if !ok {
+		t.Fatalf("technik missing: %v", m)
+	}
+	if id, _ := tk["id"].(float64); int64(id) != technikClassID {
+		t.Errorf("technik id = %v, want %d", tk["id"], technikClassID)
+	}
+	if tk["name"] != "Technik" {
+		t.Errorf("technik name = %v, want Technik", tk["name"])
+	}
+}
+
+// TestCalendarTokens_OnlyOwnTokens: the list shows only tokens the caller
+// created.
+func TestCalendarTokens_OnlyOwnTokens(t *testing.T) {
+	p, st := newTestProxy(t)
+	for _, u := range []string{"dee", "other"} {
+		if err := st.UpsertUser(&store.User{Username: u, Method: "key", PersonType: 5, PersonID: 1, School: "testschool"}); err != nil {
+			t.Fatalf("seed %s: %v", u, err)
+		}
+	}
+	if err := st.CreateClassToken(&store.ClassToken{School: "testschool", Token: "mine", ElementType: "CLASS", ElementID: 5000, Days: 7, CreatedBy: "dee"}); err != nil {
+		t.Fatalf("seed mine: %v", err)
+	}
+	if err := st.CreateClassToken(&store.ClassToken{School: "testschool", Token: "theirs", ElementType: "CLASS", ElementID: 6000, Days: 7, CreatedBy: "other"}); err != nil {
+		t.Fatalf("seed theirs: %v", err)
+	}
+
+	rec := calAuthRequest(t, p, "dee", http.MethodGet, "/api/calendar/tokens", "", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var list []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("bad JSON: %v", err)
+	}
+	if len(list) != 1 || list[0]["token"] != "mine" {
+		t.Errorf("list = %v, want only the caller's token", list)
+	}
+}
+
+// TestCalendarDelete_OwnerOnly: only the creator can revoke a token.
+func TestCalendarDelete_OwnerOnly(t *testing.T) {
+	p, st := newTestProxy(t)
+	for _, u := range []string{"dee", "other"} {
+		if err := st.UpsertUser(&store.User{Username: u, Method: "key", PersonType: 5, PersonID: 1, School: "testschool"}); err != nil {
+			t.Fatalf("seed %s: %v", u, err)
+		}
+	}
+	if err := st.CreateClassToken(&store.ClassToken{School: "testschool", Token: "mine", ElementType: "CLASS", ElementID: 5000, Days: 7, CreatedBy: "dee"}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if rec := calAuthRequest(t, p, "other", http.MethodDelete, "/api/calendar/mine", "", "mine"); rec.Code != http.StatusNotFound {
+		t.Errorf("foreign delete: code=%d, want 404", rec.Code)
+	}
+	if rec := calAuthRequest(t, p, "dee", http.MethodDelete, "/api/calendar/mine", "", "mine"); rec.Code != http.StatusNoContent {
+		t.Errorf("owner delete: code=%d, want 204", rec.Code)
+	}
+	if tok, _ := st.ClassTokenByToken("mine"); tok != nil {
+		t.Errorf("token still present after delete")
+	}
+}
+
+// TestCalendarUpdate_DaysOwnerOnlyAndClamped: the owner can change the window,
+// clamped to [1,365], and nobody else can.
+func TestCalendarUpdate_DaysOwnerOnlyAndClamped(t *testing.T) {
+	p, st := newTestProxy(t)
+	for _, u := range []string{"dee", "other"} {
+		if err := st.UpsertUser(&store.User{Username: u, Method: "key", PersonType: 5, PersonID: 1, School: "testschool"}); err != nil {
+			t.Fatalf("seed %s: %v", u, err)
+		}
+	}
+	if err := st.CreateClassToken(&store.ClassToken{School: "testschool", Token: "mine", ElementType: "CLASS", ElementID: 5000, Days: 7, CreatedBy: "dee"}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if rec := calAuthRequest(t, p, "other", http.MethodPatch, "/api/calendar/mine", `{"days":90}`, "mine"); rec.Code != http.StatusNotFound {
+		t.Errorf("foreign patch: code=%d, want 404", rec.Code)
+	}
+	rec := calAuthRequest(t, p, "dee", http.MethodPatch, "/api/calendar/mine", `{"days":90}`, "mine")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner patch: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var m map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &m)
+	if m["days"].(float64) != 90 {
+		t.Errorf("days = %v, want 90", m["days"])
+	}
+	if tok, _ := st.ClassTokenByToken("mine"); tok == nil || tok.Days != 90 {
+		t.Errorf("stored days = %v, want 90", tok)
+	}
+
+	rec = calAuthRequest(t, p, "dee", http.MethodPatch, "/api/calendar/mine", `{"days":9999}`, "mine")
+	_ = json.Unmarshal(rec.Body.Bytes(), &m)
+	if m["days"].(float64) != 365 {
+		t.Errorf("clamped days = %v, want 365", m["days"])
+	}
+}
+
+// TestCalendar_TechnikMintAndFeed: a techniker mints the synthetic class and
+// its feed renders as a Technik calendar; a plain student is refused.
+func TestCalendar_TechnikMintAndFeed(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertUser(&store.User{Username: "tech", Method: "key", PersonType: 5, PersonID: 42, ClassID: 5000, School: "testschool"}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := st.SetPerm("tech", store.FeatureTechniker, true); err != nil {
+		t.Fatalf("grant techniker: %v", err)
+	}
+
+	rec := calRequest(t, p, "tech", `{"classId":2000000000}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("technik mint: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if out["type"] != "technik" || out["name"] != "Technik" {
+		t.Fatalf("technik mint shape = %v", out)
+	}
+	token, _ := out["token"].(string)
+	if token == "" {
+		t.Fatalf("no token returned: %v", out)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/calendar/"+token+".ics", nil)
+	req.SetPathValue("token", token+".ics")
+	ics := httptest.NewRecorder()
+	p.handleCalendarICS(ics, req)
+	if ics.Code != http.StatusOK {
+		t.Fatalf("technik feed: code=%d body=%s", ics.Code, ics.Body.String())
+	}
+	if body := ics.Body.String(); !strings.Contains(body, "X-WR-CALNAME:Untis Technik") {
+		t.Errorf("technik feed missing calendar name:\n%s", body)
+	}
+
+	// A plain student may not mint it.
+	if err := st.UpsertUser(&store.User{Username: "plain", Method: "key", PersonType: 5, PersonID: 43, ClassID: 5000, School: "testschool"}); err != nil {
+		t.Fatalf("seed plain: %v", err)
+	}
+	if rec := calRequest(t, p, "plain", `{"classId":2000000000}`); rec.Code != http.StatusForbidden {
+		t.Errorf("plain technik mint: code=%d, want 403", rec.Code)
+	}
+}
+
+// TestCalendarRoutes_Precedence: the literal /options and /tokens routes are not
+// swallowed by the {token} wildcard.
+func TestCalendarRoutes_Precedence(t *testing.T) {
+	p, _ := newTestProxy(t)
+	h := p.Handler()
+	for _, tc := range []struct {
+		target string
+		want   int
+	}{
+		{"/api/calendar/options", http.StatusUnauthorized},
+		{"/api/calendar/tokens", http.StatusUnauthorized},
+		{"/api/calendar/unknown", http.StatusNotFound},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != tc.want {
+			t.Errorf("GET %s: code=%d, want %d", tc.target, rec.Code, tc.want)
+		}
 	}
 }
