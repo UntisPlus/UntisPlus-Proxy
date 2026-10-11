@@ -659,7 +659,7 @@ Examples:
 	}
 
 	// Check for existing token
-	existing, err := st.ClassTokenForElement(*school, elType, elID)
+	existing, err := st.ClassTokenForElement(*school, elType, elID, "")
 	if err != nil {
 		fatal("store: %v", err)
 	}
@@ -755,7 +755,7 @@ func calendarStudent(st *store.Store, args []string) {
 		fatal("user %q has no person ID", picked.Username)
 	}
 
-	existing, err := st.ClassTokenForElement(*school, "STUDENT", picked.PersonID)
+	existing, err := st.ClassTokenForElement(*school, "STUDENT", picked.PersonID, "")
 	if err != nil {
 		fatal("store: %v", err)
 	}

@@ -620,17 +620,31 @@ func TestClassTokenLookupsAndUpdates(t *testing.T) {
 		}
 	}
 
-	if tok, err := st.ClassTokenForClass("testschool", 5000); err != nil || tok == nil || tok.Token != "clstok" {
+	// empty createdBy = the shared per-element token (admin/CLI view)
+	if tok, err := st.ClassTokenForClass("testschool", 5000, ""); err != nil || tok == nil || tok.Token != "clstok" {
 		t.Errorf("ClassTokenForClass(5000) = (%v, %v), want clstok", tok, err)
 	}
-	if tok, err := st.ClassTokenForPerson("testschool", 7); err != nil || tok == nil || tok.Token != "pers" {
+	if tok, err := st.ClassTokenForPerson("testschool", 7, ""); err != nil || tok == nil || tok.Token != "pers" {
 		t.Errorf("ClassTokenForPerson(7) = (%v, %v), want pers", tok, err)
 	}
-	if tok, err := st.ClassTokenForElement("testschool", "TEACHER", 5009); err != nil || tok == nil || tok.Token != "elem" {
+	if tok, err := st.ClassTokenForElement("testschool", "TEACHER", 5009, ""); err != nil || tok == nil || tok.Token != "elem" {
 		t.Errorf("ClassTokenForElement(TEACHER,5009) = (%v, %v), want elem", tok, err)
 	}
+	// a named caller only sees a token they themselves created
+	if tok, err := st.ClassTokenForClass("testschool", 5000, "dee"); err != nil || tok == nil || tok.Token != "clstok" {
+		t.Errorf("ClassTokenForClass(5000,dee) = (%v, %v), want clstok", tok, err)
+	}
+	if tok, err := st.ClassTokenForPerson("testschool", 7, "dee"); err != nil || tok == nil || tok.Token != "pers" {
+		t.Errorf("ClassTokenForPerson(7,dee) = (%v, %v), want pers", tok, err)
+	}
+	if tok, err := st.ClassTokenForElement("testschool", "TEACHER", 5009, "dee"); err != nil || tok == nil || tok.Token != "elem" {
+		t.Errorf("ClassTokenForElement(TEACHER,5009,dee) = (%v, %v), want elem", tok, err)
+	}
+	if tok, err := st.ClassTokenForClass("testschool", 5000, "someoneelse"); err != nil || tok != nil {
+		t.Errorf("ClassTokenForClass owned by another user = (%v, %v), want nil", tok, err)
+	}
 	// tokens of another school must not resolve
-	if tok, err := st.ClassTokenForClass("zweit", 5000); err != nil || tok != nil {
+	if tok, err := st.ClassTokenForClass("zweit", 5000, ""); err != nil || tok != nil {
 		t.Errorf("ClassTokenForClass for a foreign school = (%v, %v), want nil", tok, err)
 	}
 	if none, _ := st.ClassTokenByToken("nope"); none != nil {

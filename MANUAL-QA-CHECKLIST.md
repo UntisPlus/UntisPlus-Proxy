@@ -96,7 +96,8 @@ was being published on whatever address a tunnel exposes.
 - [ ] `GET /me` with `USERCOOKIE` → user info + permission level (`basic`/`recon`/`boosted`/`admin`)
 - [ ] `GET /me` without cookie → 401
 - [ ] `POST /api/calendar/token` `{"classId":$CLASS}` → token + `.ics` url (own class)
-- [ ] Same request again → **same token** (idempotent)
+- [ ] Same request again as the same user → **same token** (idempotent)
+- [ ] Mint an element that `untisctl`/admin already has a token for → the user gets a **different, own** token (the operator's is not reused), and it appears in `GET /api/calendar/tokens`
 - [ ] `{"personId":<other student>}` → 403
 - [ ] `{"personal":true}` → own personal token
 - [ ] `{"teacherId":<id>}` / `{"roomId":<id>}` / `{"subjectId":<id>}` → 403 for plain user, 200 for recon/boosted/admin

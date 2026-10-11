@@ -123,7 +123,7 @@ func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 			p.forbidden(w)
 			return
 		}
-		tok, err := p.store.ClassTokenForPerson(school, pid)
+		tok, err := p.store.ClassTokenForPerson(school, pid, u.Username)
 		if err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
@@ -153,7 +153,7 @@ func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 			p.forbidden(w)
 			return
 		}
-		tok, err := p.store.ClassTokenForElement(school, "TECHNIK", technikClassID)
+		tok, err := p.store.ClassTokenForElement(school, "TECHNIK", technikClassID, u.Username)
 		if err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
@@ -181,7 +181,7 @@ func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 			p.forbidden(w)
 			return
 		}
-		tok, err := p.store.ClassTokenForClass(school, req.ClassID)
+		tok, err := p.store.ClassTokenForClass(school, req.ClassID, u.Username)
 		if err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
@@ -226,7 +226,7 @@ func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tok, err := p.store.ClassTokenForElement(school, elType, elID)
+	tok, err := p.store.ClassTokenForElement(school, elType, elID, u.Username)
 	if err != nil {
 		p.writeJSON(w, map[string]any{"error": "store error"})
 		return

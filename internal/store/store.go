@@ -1747,22 +1747,48 @@ func (s *Store) CreateClassToken(t *ClassToken) error {
 	return err
 }
 
+// classTokenSelect is the shared column list for the per-element dedup lookups.
+const classTokenSelect = `SELECT token, school, class_id, person_id, element_type, element_id, timezone, days, created_at, last_access, created_by
+	FROM class_tokens WHERE `
+
 // ClassTokenForClass returns the existing token for a school+class, if any.
-func (s *Store) ClassTokenForClass(school string, classID int64) (*ClassToken, error) {
-	return s.scanClassToken(s.db.QueryRow(`SELECT token, school, class_id, person_id, element_type, element_id, timezone, days, created_at, last_access, created_by
-		FROM class_tokens WHERE school=? AND class_id=?`, school, classID))
+// createdBy, when non-empty, restricts the match to one owner: the self-service
+// mint is per-user, so an app user never receives (or silently reuses) a token
+// an admin or the CLI created. Admin tooling passes "" to reuse the single
+// shared per-element token.
+func (s *Store) ClassTokenForClass(school string, classID int64, createdBy string) (*ClassToken, error) {
+	q := classTokenSelect + `school=? AND class_id=?`
+	args := []any{school, classID}
+	if createdBy != "" {
+		q += ` AND created_by=?`
+		args = append(args, createdBy)
+	}
+	return s.scanClassToken(s.db.QueryRow(q, args...))
 }
 
 // ClassTokenForPerson returns the existing personal token for a school+person.
-func (s *Store) ClassTokenForPerson(school string, personID int64) (*ClassToken, error) {
-	return s.scanClassToken(s.db.QueryRow(`SELECT token, school, class_id, person_id, element_type, element_id, timezone, days, created_at, last_access, created_by
-		FROM class_tokens WHERE school=? AND person_id=?`, school, personID))
+// createdBy scopes the match to one owner; see ClassTokenForClass.
+func (s *Store) ClassTokenForPerson(school string, personID int64, createdBy string) (*ClassToken, error) {
+	q := classTokenSelect + `school=? AND person_id=?`
+	args := []any{school, personID}
+	if createdBy != "" {
+		q += ` AND created_by=?`
+		args = append(args, createdBy)
+	}
+	return s.scanClassToken(s.db.QueryRow(q, args...))
 }
 
 // ClassTokenForElement returns the existing token for a school+element type+id.
-func (s *Store) ClassTokenForElement(school, elType string, elID int64) (*ClassToken, error) {
-	return s.scanClassToken(s.db.QueryRow(`SELECT token, school, class_id, person_id, element_type, element_id, timezone, days, created_at, last_access, created_by
-		FROM class_tokens WHERE school=? AND element_type=? AND element_id=?`, school, elType, elID))
+// createdBy, when non-empty, restricts the match to one owner (see
+// ClassTokenForClass); "" matches the shared token regardless of owner.
+func (s *Store) ClassTokenForElement(school, elType string, elID int64, createdBy string) (*ClassToken, error) {
+	q := classTokenSelect + `school=? AND element_type=? AND element_id=?`
+	args := []any{school, elType, elID}
+	if createdBy != "" {
+		q += ` AND created_by=?`
+		args = append(args, createdBy)
+	}
+	return s.scanClassToken(s.db.QueryRow(q, args...))
 }
 
 func (s *Store) ClassTokenByToken(token string) (*ClassToken, error) {

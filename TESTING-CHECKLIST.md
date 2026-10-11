@@ -129,7 +129,8 @@ Use a throwaway user (`testtier`) — create, then remove at the end.
 - [ ] 7.4 `GET /api/calendar/{token}.ics` → 200, `text/calendar`, starts `BEGIN:VCALENDAR`
 - [ ] 7.5 `{"timezone":"America/New_York"}` → ICS carries that TZ
 - [ ] 7.6 `{"days":7}` → shorter feed
-- [ ] 7.7 **re-POST same target** → same token (idempotent), not a new one
+- [ ] 7.7 **re-POST same target as same user** → same token (idempotent); a token minted for that element by `untisctl`/admin is **not** reused (user gets their own, owned row)
+- [ ] 7.7b `GET /api/calendar/tokens` shows only the caller's own tokens (a `created_by=untisctl` token is hidden)
 - [ ] 7.8 revoke via admin/untisctl → subsequent ICS GET → 401/404
 - [ ] 7.9 tokens list shows `elementType`/`elementName`/`createdBy`/`createdAt` in `/admin/tokens`
 

@@ -145,6 +145,51 @@ func TestCalendar_PersonalTokenIdempotent(t *testing.T) {
 	}
 }
 
+// TestCalendar_PersonalToken_PerUserDedup: minting must never reuse a token an
+// operator (untisctl) created for the same element. The caller gets their own
+// token — so it appears in their owner-scoped list and can be revoked by them —
+// while the operator's shared token is left untouched.
+func TestCalendar_PersonalToken_PerUserDedup(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertUser(&store.User{Username: "dee", Method: "key", PersonID: 5005}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := st.CreateClassToken(&store.ClassToken{
+		School: "testschool", Token: "opstok", ElementType: "STUDENT", ElementID: 5005,
+		PersonID: 5005, Days: 30, CreatedBy: "untisctl",
+	}); err != nil {
+		t.Fatalf("seed operator token: %v", err)
+	}
+
+	var first, second string
+	for _, call := range []int{1, 2} {
+		rec := calRequest(t, p, "dee", `{"personId":5005}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("call %d: code=%d body=%s", call, rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		if out["createdBy"] != "dee" {
+			t.Errorf("call %d: createdBy=%v, want dee", call, out["createdBy"])
+		}
+		tok, _ := out["token"].(string)
+		if tok == "opstok" {
+			t.Fatalf("call %d reused the operator token", call)
+		}
+		if call == 1 {
+			first = tok
+		} else {
+			second = tok
+		}
+	}
+	if first == "" || first != second {
+		t.Errorf("per-user idempotent: first=%q second=%q", first, second)
+	}
+	if op, _ := st.ClassTokenByToken("opstok"); op == nil || op.CreatedBy != "untisctl" {
+		t.Errorf("operator token was changed: %+v", op)
+	}
+}
+
 // TestCalendar_PersonalToken_ForeignPersonForbidden: a student must not be
 // able to create a token for another student's personId.
 func TestCalendar_PersonalToken_ForeignPersonForbidden(t *testing.T) {

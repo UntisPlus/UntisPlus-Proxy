@@ -346,7 +346,7 @@ func (p *Proxy) adminTokens(w http.ResponseWriter, r *http.Request, parts []stri
 		if days > 365 {
 			days = 365
 		}
-		tok, err := p.store.ClassTokenForElement(school, elType, req.ElementID)
+		tok, err := p.store.ClassTokenForElement(school, elType, req.ElementID, "")
 		if err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return

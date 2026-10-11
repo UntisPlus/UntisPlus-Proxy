@@ -90,11 +90,11 @@ titles name the element, e.g. "Timetable change — room 01-Aula". The Android
 app:
 
 1. On login, fetch the user's topics: `GET /api/ntfy?school=S` (session
-   required) → `{topics:[{id,school,classId,elementType,elementId,topic,baseUrl}]}`.
-   `elementType` is `""` (school-wide), `CLASS`, `STUDENT`, `TEACHER`, `ROOM` or
-   `SUBJECT`; `baseUrl` is the per-topic ntfy server (empty = the global one).
-   School-wide topics and topics for other classes/elements are only listed for
-   editor/boosted/admin.
+   required) → `{topics:[{id,school,elementType,elementId,name,classId,topic,baseUrl,createdBy}]}`.
+   Returns **only the caller's own** topics. `elementType` is `""` (school-wide),
+   `CLASS`, `STUDENT`, `TEACHER`, `ROOM` or `SUBJECT`; `baseUrl` is the per-topic
+   ntfy server (empty = the global one). Discover what the caller may subscribe
+   to via `GET /api/notifications/options`.
 2. Subscribe via ntfy (`https://ntfy.sh/{topic}/json` SSE, or the ntfy Android
    app).
 3. On a new message, reconcile with `/api/timetable/changes`.
