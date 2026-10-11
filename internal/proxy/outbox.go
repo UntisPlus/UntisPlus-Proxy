@@ -35,6 +35,12 @@ const (
 	// outboxBatch bounds one drain pass, so a large backlog is worked through
 	// over several ticks instead of in one long loop.
 	outboxBatch = 50
+	// outboxDeadRetention is how long an exhausted delivery is kept for
+	// inspection before it is pruned. Dead rows are never retried, so without a
+	// sweep the table would grow for the life of the deployment.
+	outboxDeadRetention = 7 * 24 * time.Hour
+	// outboxPruneInterval is how often the dead-row sweep runs.
+	outboxPruneInterval = time.Hour
 )
 
 // outboxBackoff returns the delay before the given attempt number is retried.
@@ -62,16 +68,33 @@ func (p *Proxy) StartOutboxWorker(interval time.Duration, done <-chan struct{}) 
 	if err := p.store.ReleaseOutboxStale(); err != nil {
 		log.Printf("[outbox] release stale: %v", err)
 	}
+	p.pruneDeadOutbox(time.Now())
 	p.drainOutbox()
 	t := time.NewTicker(interval)
 	defer t.Stop()
+	prune := time.NewTicker(outboxPruneInterval)
+	defer prune.Stop()
 	for {
 		select {
 		case <-done:
 			return
 		case <-t.C:
 			p.drainOutbox()
+		case <-prune.C:
+			p.pruneDeadOutbox(time.Now())
 		}
+	}
+}
+
+// pruneDeadOutbox removes exhausted deliveries older than the retention window.
+func (p *Proxy) pruneDeadOutbox(now time.Time) {
+	n, err := p.store.PruneDeadOutbox(now.Add(-outboxDeadRetention))
+	if err != nil {
+		log.Printf("[outbox] prune dead: %v", err)
+		return
+	}
+	if n > 0 {
+		log.Printf("[outbox] pruned %d dead deliveries", n)
 	}
 }
 

@@ -398,8 +398,11 @@ leaves no row behind for a counter derived from the events to come from.
 
 Specific dates only, so no `RRULE` and no recurrence maths. Injected as synthetic
 periods into the student `getTimetable2017` path and the token paths feeding
-`/week/{token}` and `/api/calendar/{token}.ics`. Each carries `isCustom: true` so
-the app and the ICS feed can tell a hand-authored event from a real lesson.
+`/week/{token}` and `/api/calendar/{token}.ics`. Each carries a `customEventId`
+(and a `customRevision`) so the proxy's own renderers and the ICS feed can tell a
+hand-authored event from a real lesson. The official app's `isCustom` marker is
+deliberately **not** sent, so on a shared class view an event is indistinguishable
+from a normal lesson.
 
 Admin UI in the existing dashboard: pick student → date/time/title → add, with a
 delete per row.
@@ -422,7 +425,7 @@ These are the design, not an afterthought:
 ## Docs to update, per phase
 
 - `APP-INTEGRATION.md` — the enriched absence shape, the homework `done` field,
-  the Technik `isCustom` marker, the new write endpoints
+  the Technik `customEventId` marker, the new write endpoints
 - `ADMIN-WEBHOOKS-NTFY.md` — the event manager, and outbox delivery visibility
 - `TESTING-CHECKLIST.md` — coverage per phase
 - `README.md` — the flag/endpoint tables

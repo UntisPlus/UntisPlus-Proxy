@@ -526,6 +526,10 @@ func (p *Proxy) adminWebhooks(w http.ResponseWriter, r *http.Request, parts []st
 			p.writeJSON(w, map[string]any{"error": "url required"})
 			return
 		}
+		if err := validateTargetURL(req.URL, allowPrivateTargets); err != nil {
+			p.writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
 		wh := &store.Webhook{
 			School: req.School, URL: req.URL, Secret: req.Secret,
 			Enabled: true, CreatedBy: "admin",
@@ -705,8 +709,15 @@ func (p *Proxy) adminNtfy(w http.ResponseWriter, r *http.Request, parts []string
 			p.writeJSON(w, map[string]any{"error": "topic required"})
 			return
 		}
+		baseURL := cleanNtfyBase(req.BaseURL)
+		if baseURL != "" {
+			if err := validateTargetURL(baseURL, allowPrivateTargets); err != nil {
+				p.writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+		}
 		n := &store.NtfyTopic{
-			School: req.School, Topic: req.Topic, BaseURL: cleanNtfyBase(req.BaseURL),
+			School: req.School, Topic: req.Topic, BaseURL: baseURL,
 			Enabled: true, CreatedBy: "admin",
 		}
 		if req.ElementType != "" {

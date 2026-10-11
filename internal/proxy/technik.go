@@ -64,18 +64,9 @@ func (p *Proxy) injectTechnikClass(username string, body []byte) []byte {
 	if md == nil {
 		return body
 	}
-	klassen, _ := md["klassen"].([]any)
-	for _, k := range klassen {
-		km, ok := k.(map[string]any)
-		if !ok {
-			continue
-		}
-		if id, ok := jsonID(km["id"]); ok && id == technikClassID {
-			// Already present (e.g. the body was rewritten twice): leave it.
-			return body
-		}
+	if !ensureTechnikClass(md) {
+		return body
 	}
-	md["klassen"] = append(klassen, technikClassStub(klassen))
 	// Adding a class is a masterData change. The app caches masterData by its
 	// timeStamp and ignores a body whose stamp it has already seen, so without
 	// this a client that logged in before the permission was granted keeps a
@@ -86,6 +77,27 @@ func (p *Proxy) injectTechnikClass(username string, body []byte) []byte {
 		return body
 	}
 	return out
+}
+
+// ensureTechnikClass makes sure masterData carries the synthetic Technik class,
+// reporting whether it added it. Every period tagged with technikClassID — the
+// aggregate, and a viewer's own personal events — references this class, so the
+// stub has to be present for the app to resolve the row even when the viewer does
+// not hold the techniker permission. The aggregate timetable itself stays
+// permission-gated in serveTechnikClass; this only supplies a label.
+func ensureTechnikClass(md map[string]any) bool {
+	klassen, _ := md["klassen"].([]any)
+	for _, k := range klassen {
+		km, ok := k.(map[string]any)
+		if !ok {
+			continue
+		}
+		if id, ok := jsonID(km["id"]); ok && id == technikClassID {
+			return false // already present
+		}
+	}
+	md["klassen"] = append(klassen, technikClassStub(klassen))
+	return true
 }
 
 // technikClassStub builds the masterData entry for the aggregate class. The

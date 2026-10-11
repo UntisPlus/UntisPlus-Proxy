@@ -14,7 +14,7 @@ Legend: `[ ]` untested · `[x]` passed · `[!]` failed (write what you saw)
 
 ## 0. Prerequisites
 
-- [ ] `curl -s localhost:8509/status` → `{"mode":"prod","status":"ok",...,"version":"beta-2026-09-28"}`
+- [ ] `curl -s localhost:8509/status` → `{"mode":"prod","status":"ok",...,"version":"<published tag>"}`
 - [ ] Pick a calendar token for the ICS/week tests: `go run ./cmd/untisctl -db data/untis.db calendar list`
 - [ ] Write it into a shell var: `export TOK=<token>` (and `export CLASS=<classId>` for the same row)
 - [ ] Admin session: open `http://localhost:8509/admin/login`, sign in with an admin username + 6-digit TOTP

@@ -1,4 +1,4 @@
-# Tiered Permission Model — Basic / Reconstruction / Boosted / Editor
+# Tiered Permission Model — Basic / Reconstruction / Boosted / Editor / Techniker
 
 Status: implemented and committed. Decline/stale notes removed.
 
@@ -33,6 +33,7 @@ Tiered permission model for the untis-proxy backend:
 | `recon` | Teacher/room/subject reconstruction from pooled classes | yes (switch + per-user override) |
 | `boosted` | Raw teacher-account forwarding (no editing) | no (per-user only) |
 | `editor` | Boosted *plus* the absence + lesson/subject write (editing) methods | no (per-user only) |
+| `techniker` | Synthetic "Technik" aggregate class of every student's events, plus those events on the room/organiser timetable they name and a proxy-local absence register on them | no (per-user only) |
 
 Enforced rule: **Boosted XOR Recon** — the flags are mutually exclusive per user.
 Granting one side auto-revokes the other. `editor` implies `boosted` (editoring
@@ -64,11 +65,21 @@ is boosted-with-editing), so it never triggers the recon exclusion.
   `editor`.
 
 ### Editor (`editor`)
-- Grants the absence + lesson/subject **write (editing) methods**
-  (`set`/`add`/`update`/`delete`/`change`) for the user's own requests.
-- Does **not** grant raw forward-timetable access on its own — pair with
-  `boosted` for the full experience.
+- Implies `boosted` (editing is boosted-with-editing), so it grants the raw
+  forward-timetable access **and** the absence + lesson/subject **write (editing)
+  methods** (`set`/`add`/`update`/`delete`/`change`) for the user's own requests.
+  Holding `editor` alone is enough.
 - Absence reads are already default-allowed for everyone.
+
+### Techniker (`techniker`)
+- Adds one synthetic class, *Technik*, whose timetable is the union of every
+  student's admin-authored events in the requested range.
+- Surfaces an event where it happens too: on the room and organiser (teacher)
+  timetable it names.
+- Offers a proxy-local absence register on those events; nothing is ever written
+  to Untis for them.
+- Independent of `recon`/`boosted`/`editor`; granted per user from the
+  dashboard's *Users* section.
 
 ## Enforcement rules
 
@@ -107,9 +118,9 @@ CLI: `untisctl calendar create|list|revoke` with fuzzy name lookup.
 - `internal/proxy/jsonrpc.go`, `internal/proxy/rest.go` — write gating (editor)
   in passthrough/REST (absence reads default-allowed); boosted raw for weekly
   REST elements (skips STUDENT).
-- `cmd/untisctl/main.go`, `cmd/perm/main.go` — recon|boosted|editor grantable
-  features + auto-revoke (XOR) + perms list display. Calendar create|list|revoke
-  with fuzzy name lookup via `LookupElement`.
+- `cmd/untisctl/main.go`, `cmd/perm/main.go` — recon|boosted|editor|techniker
+  grantable features + auto-revoke (XOR) + perms list display. Calendar
+  create|list|revoke with fuzzy name lookup via `LookupElement`.
 - `internal/proxy/calendar.go` — `handleCalendarToken` (all element types),
   `handleCalendarICS` (branches on element type, configurable timezone).
 - `internal/store/store.go` — `LookupElement` (fuzzy name resolution),

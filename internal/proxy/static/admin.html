@@ -237,7 +237,7 @@ let allUsers=null;
 let schoolList=[];
 let status;
 const $ = function(id){ return document.getElementById(id); };
-function log(msg){ const e=$('log'); e.textContent = (new Date().toISOString().slice(11,19))+' '+msg+'\n'+e.textContent; }
+function log(msg){ const e=$('log'); e.textContent = (new Date().toTimeString().slice(0,8))+' '+msg+'\n'+e.textContent; }
 
 async function api(method, path, body){
   const opts = {method: method, headers: {}};
@@ -477,7 +477,7 @@ async function loadEvents(){
   for(const e of d.events){
     evRows[e.eventId]=e;
     const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+e.date+'</td><td>'+e.startTime+'\u2013'+e.endTime+'</td><td>'+esc(e.title)+'</td>'+
+    tr.innerHTML='<td>'+esc(e.date)+'</td><td>'+esc(e.startTime)+'\u2013'+esc(e.endTime)+'</td><td>'+esc(e.title)+'</td>'+
       '<td>'+esc(e.subject||'')+'</td><td>'+esc(e.room||'')+'</td><td>'+esc(e.teacher||'')+'</td><td>'+e.revision+'</td>'+
       '<td><button class="mini" onclick="editEvent('+e.eventId+')">edit</button> '+
       '<button class="mini danger" onclick="delEvent('+e.eventId+')">del</button></td>';
@@ -599,7 +599,20 @@ async function saveAbsenceEdit(){
   }catch(e){ log('edit failed: '+e.message); }
 }
 
-function esc(s){ const d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
+// esc renders text for a text node or an HTML attribute. Every value that
+// originates from a request, the store or WebUntis goes through this before it
+// reaches innerHTML: a webhook URL or ntfy topic is chosen by whoever created
+// the subscription, so interpolating it raw let any signed-in user run script in
+// the admin's session the moment the dashboard listed it.
+function esc(s){ return String(s==null?'':s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
+
+// jsq renders a value as a double-quoted JavaScript string literal that is safe
+// inside an HTML attribute. JSON.stringify supplies the quoting and backslash
+// escaping; the entity pass keeps a quote or tag from ending the attribute. Use
+// it for the argument of an inline onclick, never string concatenation.
+function jsq(s){ return esc(JSON.stringify(String(s==null?'':s))); }
 
 // The form above doubles as the editor. With no edit in progress addEvent
 // creates the event for every picked student; with one it patches the event and
@@ -759,8 +772,8 @@ function renderRoomMap(){
   if(!names.length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="3" class="dim">no room overrides</td>'; tb.appendChild(tr); return; }
   for(const n of names){
     const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+esc(n)+'</td><td>'+roomMap[n]+'</td>'+
-      '<td><button class="mini danger" onclick="delRoomMap(\''+n.replace(/'/g,"\\'")+'\')">del</button></td>';
+    tr.innerHTML='<td>'+esc(n)+'</td><td>'+esc(roomMap[n])+'</td>'+
+      '<td><button class="mini danger" onclick="delRoomMap('+jsq(n)+')">del</button></td>';
     tb.appendChild(tr);
   }
 }
@@ -787,14 +800,15 @@ async function loadUsers(){
   const tb=$('users').querySelector('tbody'); tb.innerHTML='';
   for(const u of d.users){
     const tr=document.createElement('tr');
+    const un=jsq(u.username);
     tr.innerHTML=
-      '<td>'+u.username+'</td><td>'+u.classId+' '+(u.className||'')+'</td><td>'+u.school+'</td>'+
-      '<td><button class="mini '+(u.admin?'danger':'')+'" onclick="setAdmin(\''+u.username+'\','+(!u.admin)+')">'+(u.admin?'on':'off')+'</button></td>'+
-      '<td><button class="mini '+(u.reconAllowed?'danger':'')+'" onclick="setPerm(\''+u.username+'\',\'recon\','+(!u.reconAllowed)+')">'+(u.reconAllowed?'on':'off')+'</button></td>'+
-      '<td><button class="mini '+(u.boosted?'danger':'')+'" onclick="setPerm(\''+u.username+'\',\'boosted\','+(!u.boosted)+')">'+(u.boosted?'on':'off')+'</button></td>'+
-      '<td><button class="mini '+(u.editor?'danger':'')+'" onclick="setPerm(\''+u.username+'\',\'editor\','+(!u.editor)+')">'+(u.editor?'on':'off')+'</button></td>'+
-      '<td><button class="mini '+(u.techniker?'danger':'')+'" onclick="setPerm(\''+u.username+'\',\'techniker\','+(!u.techniker)+')" title="see the merged Technik class">'+(u.techniker?'on':'off')+'</button></td>'+
-      '<td><button class="mini danger" onclick="delUser(\''+u.username+'\')">del</button></td>';
+      '<td>'+esc(u.username)+'</td><td>'+esc(u.classId)+' '+esc(u.className||'')+'</td><td>'+esc(u.school)+'</td>'+
+      '<td><button class="mini '+(u.admin?'danger':'')+'" onclick="setAdmin('+un+','+(!u.admin)+')">'+(u.admin?'on':'off')+'</button></td>'+
+      '<td><button class="mini '+(u.reconAllowed?'danger':'')+'" onclick="setPerm('+un+',\'recon\','+(!u.reconAllowed)+')">'+(u.reconAllowed?'on':'off')+'</button></td>'+
+      '<td><button class="mini '+(u.boosted?'danger':'')+'" onclick="setPerm('+un+',\'boosted\','+(!u.boosted)+')">'+(u.boosted?'on':'off')+'</button></td>'+
+      '<td><button class="mini '+(u.editor?'danger':'')+'" onclick="setPerm('+un+',\'editor\','+(!u.editor)+')">'+(u.editor?'on':'off')+'</button></td>'+
+      '<td><button class="mini '+(u.techniker?'danger':'')+'" onclick="setPerm('+un+',\'techniker\','+(!u.techniker)+')" title="see the merged Technik class">'+(u.techniker?'on':'off')+'</button></td>'+
+      '<td><button class="mini danger" onclick="delUser('+un+')">del</button></td>';
     tb.appendChild(tr);
   }
 }
@@ -816,20 +830,20 @@ async function loadSchools(){
   schoolList = d.schools || [];
   const tb=$('schools').querySelector('tbody'); tb.innerHTML='';
   for(const s of d.schools){ const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+s.name+'</td><td>'+new Date(s.addedAt*1000||0).toLocaleDateString()+'</td><td>'+new Date(s.lastSeen*1000||0).toLocaleString()+'</td>'; tb.appendChild(tr); }
+    tr.innerHTML='<td>'+esc(s.name)+'</td><td>'+new Date(s.addedAt*1000||0).toLocaleDateString()+'</td><td>'+new Date(s.lastSeen*1000||0).toLocaleString()+'</td>'; tb.appendChild(tr); }
 }
 async function addSchool(){ const n=$('sName').value.trim(); if(!n) return; await api('POST','schools/'+n); $('sName').value=''; log('registered '+n); loadSchools(); renderCards(); }
 
 function elementCell(el){
   if(!el || !el.elementType) return 'all';
   const name=el.name||('#'+el.elementId);
-  return el.elementType.toLowerCase()+' '+name;
+  return esc(el.elementType.toLowerCase()+' '+name);
 }
 async function loadWebhooks(){
   const d=await api('GET','webhooks');
   const tb=$('webhooks').querySelector('tbody'); tb.innerHTML='';
   for(const w of d.webhooks){ const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+w.school+'</td><td>'+elementCell(w)+'</td><td style="word-break:break-all">'+w.url+'</td><td>'+(w.createdBy||'')+'</td>'+
+    tr.innerHTML='<td>'+esc(w.school)+'</td><td>'+elementCell(w)+'</td><td style="word-break:break-all">'+esc(w.url)+'</td><td>'+esc(w.createdBy||'')+'</td>'+
       '<td><button class="mini" onclick="testWh('+w.id+',this)">test</button> <button class="mini danger" onclick="delWh('+w.id+')">del</button></td>'; tb.appendChild(tr); }
 }
 async function testWh(id,btn){
@@ -851,7 +865,7 @@ async function loadNtfy(){
   const d=await api('GET','ntfy');
   const tb=$('ntfy').querySelector('tbody'); tb.innerHTML='';
   for(const n of d.topics){ const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+n.school+'</td><td>'+elementCell(n)+'</td><td style="word-break:break-all">'+n.topic+'</td><td>'+(n.baseUrl||'(default)')+'</td><td>'+(n.createdBy||'')+'</td>'+
+    tr.innerHTML='<td>'+esc(n.school)+'</td><td>'+elementCell(n)+'</td><td style="word-break:break-all">'+esc(n.topic)+'</td><td>'+esc(n.baseUrl||'(default)')+'</td><td>'+esc(n.createdBy||'')+'</td>'+
       '<td><button class="mini" onclick="testNtfy('+n.id+',this)">test</button> <button class="mini danger" onclick="delNtfy('+n.id+')">del</button></td>'; tb.appendChild(tr); }
 }
 async function addNtfy(){
@@ -877,11 +891,12 @@ async function loadTokens(){
   $('tokensSection').style.display='';
   const tb=$('tokens').querySelector('tbody'); tb.innerHTML='';
   for(const t of d.tokens){ const tr=document.createElement('tr');
-    tr.innerHTML='<td style="font-family:monospace;font-size:.72rem">'+t.token+'</td><td>'+(t.elementName||'')+'</td><td>'+t.elementType+'</td><td>'+t.elementId+'</td>'+
-      '<td>'+(t.createdAt?new Date(t.createdAt*1000).toLocaleDateString():'')+'</td><td>'+(t.createdBy||'')+'</td><td>'+t.days+'</td>'+
-      '<td><button class="mini" title="copy .ics url" onclick="copyTokenUrl(\''+t.token+'\')">ics</button> '+
-      '<button class="mini" onclick="editToken(\''+t.token+'\',\''+(t.elementName||t.token).replace(/'/g,"\\'")+'\')">edit</button> '+
-      '<button class="mini danger" onclick="revokeToken(\''+t.token+'\')">revoke</button></td>'; tb.appendChild(tr); }
+    const tk=jsq(t.token);
+    tr.innerHTML='<td style="font-family:monospace;font-size:.72rem">'+esc(t.token)+'</td><td>'+esc(t.elementName||'')+'</td><td>'+esc(t.elementType)+'</td><td>'+esc(t.elementId)+'</td>'+
+      '<td>'+(t.createdAt?esc(new Date(t.createdAt*1000).toLocaleDateString()):'')+'</td><td>'+esc(t.createdBy||'')+'</td><td>'+esc(t.days)+'</td>'+
+      '<td><button class="mini" title="copy .ics url" onclick="copyTokenUrl('+tk+')">ics</button> '+
+      '<button class="mini" onclick="editToken('+tk+','+jsq(t.elementName||t.token)+')">edit</button> '+
+      '<button class="mini danger" onclick="revokeToken('+tk+')">revoke</button></td>'; tb.appendChild(tr); }
 }
 async function revokeToken(tk){ await api('DELETE','tokens/'+tk); log('revoked '+tk); loadTokens(); }
 
@@ -922,11 +937,11 @@ async function loadPool(){
   if(!d.pool.length) log('no pooled classes for '+(sc||'(no school)')+': a class appears once a student of it has logged in');
   const tb=$('pool').querySelector('tbody'); tb.innerHTML='';
   for(const c of d.pool){ const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+c.id+'</td><td>'+c.name+'</td><td>'+c.owner+'</td>'; tb.appendChild(tr); }
+    tr.innerHTML='<td>'+esc(c.id)+'</td><td>'+esc(c.name)+'</td><td>'+esc(c.owner)+'</td>'; tb.appendChild(tr); }
 }
 
 async function refreshAll(){
-  const mark = new Date().toISOString().slice(11,19);
+  const mark = new Date().toTimeString().slice(0,8);
   const hint = $('refreshHint'); if(hint) hint.textContent = 'last refresh '+mark;
   const jobs = {users:loadUsers, webhooks:loadWebhooks,
                 ntfy:loadNtfy, tokens:loadTokens, pool:loadPool, roommap:loadRoomMap};

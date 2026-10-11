@@ -134,15 +134,29 @@ func (c *ttCache) Get(k string) ([]byte, bool) {
 	return e.data, true
 }
 
+// maxTTCacheEntries bounds the in-memory timetable cache. Past it the cache
+// evicts expired entries first, then the oldest live ones, so a working set
+// larger than the cap cannot grow the map without bound.
+const maxTTCacheEntries = 2000
+
 func (c *ttCache) Put(k string, data []byte) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if len(c.m) > 2000 {
+	if len(c.m) >= maxTTCacheEntries {
 		now := time.Now()
 		for kk, e := range c.m {
 			if now.Sub(e.at) > c.ttl {
 				delete(c.m, kk)
 			}
+		}
+		for len(c.m) >= maxTTCacheEntries {
+			oldestKey, oldest := "", time.Time{}
+			for kk, e := range c.m {
+				if oldestKey == "" || e.at.Before(oldest) {
+					oldestKey, oldest = kk, e.at
+				}
+			}
+			delete(c.m, oldestKey)
 		}
 	}
 	c.m[k] = ttEntry{data: data, at: time.Now()}

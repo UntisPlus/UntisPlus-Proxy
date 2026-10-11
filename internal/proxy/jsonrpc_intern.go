@@ -21,7 +21,7 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	log.Printf("[intern] %s?%s body=%s", r.URL.Path, r.URL.RawQuery, string(body))
+	log.Printf("[intern] %s?%s body=%s", r.URL.Path, r.URL.RawQuery, redactBody(body))
 	var req struct {
 		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
@@ -73,9 +73,7 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(req.Params) > 0 && req.Params[0].UserName != "" {
 			if secret != "" {
-				p.secretsMu.Lock()
-				p.secrets[strings.ToLower(req.Params[0].UserName)] = secret
-				p.secretsMu.Unlock()
+				p.setReplayKey(req.Params[0].UserName, secret)
 			}
 			_ = p.store.UpsertCredential(req.Params[0].UserName, secret, password)
 		}
@@ -307,7 +305,7 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	extra := map[string]any{}
 	replayKey := auth.Key
 	if replayKey == "" {
-		replayKey = p.secrets[strings.ToLower(auth.User)]
+		replayKey = p.replayKey(auth.User)
 	}
 	if replayKey == "" {
 		replayKey, _ = p.store.GetSecret(auth.User)
@@ -343,9 +341,7 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	// key (stored secret or pasted base32 secret) is valid, so record it for
 	// future session escalation even if it wasn't captured before.
 	if replayKey != "" {
-		p.secretsMu.Lock()
-		p.secrets[strings.ToLower(auth.User)] = replayKey
-		p.secretsMu.Unlock()
+		p.setReplayKey(auth.User, replayKey)
 		_ = p.store.UpsertSecret(auth.User, replayKey)
 	}
 
@@ -411,7 +407,7 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	go p.untis.Logout(school, cookie)
 
 	s := p.sessions.New(auth.User, info.ClassID)
-	p.setSessionCookies(w, s.ID, school)
+	p.setSessionCookies(w, r, s.ID, school)
 	rewritten := p.markPooledElementsDisplayable(school, realBody, auth.User)
 	// Cache the raw body, not the rewritten one: the flags depend on the
 	// requesting user's permissions and are recomputed on every request.
@@ -591,8 +587,83 @@ type timetableParams struct {
 	StartDate string `json:"startDate"`
 	EndDate   string `json:"endDate"`
 	Auth      struct {
-		User string `json:"user"`
+		User       string          `json:"user"`
+		OTP        json.RawMessage `json:"otp"`
+		ClientTime int64           `json:"clientTime"`
 	} `json:"auth"`
+}
+
+// normalizedOTP reduces a request's auth.otp to its digits. The app sends the
+// code sometimes as a JSON number and sometimes as a quoted string, and a number
+// encoding drops a leading zero, so comparison is done on the digits.
+func normalizedOTP(raw json.RawMessage) string {
+	s := strings.TrimSpace(string(raw))
+	if len(s) >= 2 && s[0] == '"' {
+		if unq, err := strconv.Unquote(s); err == nil {
+			s = unq
+		}
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if r >= '0' && r <= '9' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// otpEquals compares two live codes ignoring a dropped leading zero ("88179"
+// matches "088179"). It never treats two empty strings as a match.
+func otpEquals(presented, expected string) bool {
+	p := strings.TrimLeft(presented, "0")
+	e := strings.TrimLeft(expected, "0")
+	if p == "" && e == "" {
+		return presented != ""
+	}
+	return p == e
+}
+
+// userFromRequestOTP resolves the user named in an auth block, but only when the
+// presented OTP matches that user's stored TOTP secret. A bare username is never
+// enough: without the secret no valid code can be produced.
+func (p *Proxy) userFromRequestOTP(username, otp string, clientTime int64) *store.User {
+	if username == "" || otp == "" {
+		return nil
+	}
+	u, err := p.store.GetUser(username)
+	if err != nil || u == nil {
+		return nil
+	}
+	if !p.verifyUserOTP(u.Username, otp, clientTime) {
+		return nil
+	}
+	return u
+}
+
+// verifyUserOTP checks the code against the user's stored replay key (TOTP
+// secret) over a one-step window around both the client's clock and the server's,
+// so ordinary clock skew does not lock a legitimate app out while a wrong code
+// still fails.
+func (p *Proxy) verifyUserOTP(username, otp string, clientTime int64) bool {
+	secret, _ := p.store.GetSecret(username)
+	if secret == "" {
+		secret = p.replayKey(username)
+	}
+	if secret == "" {
+		return false
+	}
+	centers := []time.Time{time.Now()}
+	if clientTime > 0 {
+		centers = append(centers, time.Unix(clientTime/1000, 0))
+	}
+	for _, c := range centers {
+		for _, d := range []time.Duration{-30 * time.Second, 0, 30 * time.Second} {
+			if otpEquals(otp, untis.TOTPAt(secret, c.Add(d))) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school string, id json.RawMessage, body []byte) {
@@ -605,6 +676,29 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 		return
 	}
 	pr := req.Params[0]
+
+	// The synthetic Technik aggregate class is answered by the proxy itself and
+	// is the one surface that pools several students' events. A caller-supplied
+	// username alone is not proof of identity — that was the C1 bug: anyone could
+	// name a techniker and read the aggregate. The mobile app self-authenticates
+	// every request with an auth block and never resends the session cookie, so
+	// the gate accepts either a real session (admin dashboard, feeds) or an auth
+	// block whose OTP proves possession of the named user's stored TOTP secret.
+	// It must also be caught before the boosted path forwards the request to a
+	// teacher account that has never heard of it. Access is its own permission,
+	// enforced by serveTechnikClass.
+	if pr.Type == "CLASS" && pr.ID == technikClassID {
+		u := p.sessionUser(r)
+		if u == nil {
+			u = p.userFromRequestOTP(pr.Auth.User, normalizedOTP(pr.Auth.OTP), pr.Auth.ClientTime)
+		}
+		if u == nil {
+			p.writeJSONRPCError(w, id, "not logged in", -8520)
+			return
+		}
+		p.serveTechnikClass(w, id, school, u, pr.StartDate, pr.EndDate)
+		return
+	}
 
 	// BetterUntis self-authenticates every request via the auth block, so the
 	// requester identity comes from there when present, else the session cookie.
@@ -621,15 +715,6 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 	requester, err := p.store.GetUser(requesterName)
 	if err != nil || requester == nil {
 		p.writeJSONRPCError(w, id, "not logged in", -8520)
-		return
-	}
-
-	// The synthetic Technik aggregate class is answered by the proxy itself, so
-	// it must be caught before the boosted path forwards the request to a teacher
-	// account that has never heard of it. Access is its own permission, not
-	// boosted/recon/admin.
-	if pr.Type == "CLASS" && pr.ID == technikClassID {
-		p.serveTechnikClass(w, id, school, requester, pr.StartDate, pr.EndDate)
 		return
 	}
 
@@ -1101,4 +1186,56 @@ func (p *Proxy) rewriteAuthForOwner(school string, body []byte, owner *store.Use
 		"clientTime": time.Now().UnixMilli(),
 	}
 	return json.Marshal(req)
+}
+
+// redactBody returns a body safe to write to the log. The proxy's intern
+// endpoint carries live credentials — a TOTP `otp`, a replay `key`, a
+// `password`, a shared `secret` — so every value under one of those keys is
+// replaced before it reaches a log file or journal. Anything that is not valid
+// JSON is not printed at all: a malformed body could still embed a secret in a
+// form this function cannot recognise.
+func redactBody(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var v any
+	if err := json.Unmarshal(body, &v); err != nil {
+		return "<non-json body of " + strconv.Itoa(len(body)) + " bytes>"
+	}
+	redactValue(v)
+	out, err := json.Marshal(v)
+	if err != nil {
+		return "<body of " + strconv.Itoa(len(body)) + " bytes>"
+	}
+	return string(out)
+}
+
+// redactValue walks decoded JSON and blanks the value of any key that names a
+// credential.
+func redactValue(v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			if secretJSONKey(k) {
+				t[k] = "***"
+				continue
+			}
+			redactValue(val)
+		}
+	case []any:
+		for _, e := range t {
+			redactValue(e)
+		}
+	}
+}
+
+// secretJSONKey reports whether a JSON key names a credential. The auth block
+// uses "otp"; the login key field is "key"; app secret capture uses "password"
+// and "secret".
+func secretJSONKey(k string) bool {
+	switch strings.ToLower(k) {
+	case "otp", "key", "password", "secret":
+		return true
+	}
+	return false
 }

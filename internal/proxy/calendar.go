@@ -25,6 +25,25 @@ func newCalendarToken() string {
 	return hex.EncodeToString(b)
 }
 
+// calendarTokenMaxAge bounds how long a calendar subscription token stays
+// valid. The token is a bearer credential with no other guard, so an operator
+// may want it to age out. 0 (the default) preserves the long-lived behaviour a
+// subscribed calendar expects: the token is good until it is revoked.
+var calendarTokenMaxAge time.Duration
+
+// SetCalendarTokenMaxAge sets the maximum age of a calendar subscription token.
+// A non-positive value disables expiry.
+func SetCalendarTokenMaxAge(d time.Duration) { calendarTokenMaxAge = d }
+
+// tokenExpired reports whether a token has outlived the configured max age.
+// With expiry disabled every token is valid.
+func tokenExpired(tok *store.ClassToken) bool {
+	if calendarTokenMaxAge <= 0 || tok == nil {
+		return false
+	}
+	return time.Since(time.Unix(tok.CreatedAt, 0)) > calendarTokenMaxAge
+}
+
 // handleCalendarToken creates (or returns the existing) calendar subscription
 // token. It supports class, personal/student, teacher, room, and subject
 // timetables. It requires a valid session.
@@ -383,7 +402,7 @@ func icsFilename(tok *store.ClassToken) string {
 func (p *Proxy) handleCalendarICS(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimSuffix(r.PathValue("token"), ".ics")
 	tok, err := p.store.ClassTokenByToken(token)
-	if err != nil || tok == nil {
+	if err != nil || tok == nil || tokenExpired(tok) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}

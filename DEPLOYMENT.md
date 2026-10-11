@@ -175,9 +175,9 @@ labels themselves.
 ## Building and pushing the image
 
 ```sh
-docker build -t <your-namespace>/untisplus-proxy:latest -t <your-namespace>/untisplus-proxy:v1.4.1 .
+docker build -t <your-namespace>/untisplus-proxy:latest -t <your-namespace>/untisplus-proxy:<published tag> .
 docker push <your-namespace>/untisplus-proxy:latest
-docker push <your-namespace>/untisplus-proxy:v1.4.1
+docker push <your-namespace>/untisplus-proxy:<published tag>
 ```
 
 Usually done for you by [the release gate](#the-release-gate).
@@ -191,7 +191,7 @@ full test run, an optional backup, then the Docker Hub push and the git push.
 
 ```sh
 ./scripts/release.sh                                          # gate, then push
-VERSION=v1.4.1 ./scripts/release.sh                           # explicit tag
+VERSION=<published tag> ./scripts/release.sh                      # explicit tag
 PUSH=0 ./scripts/release.sh                                   # local gate only
 BACKUP_DB=data/untis.db ./scripts/release.sh                  # back up first
 PUSH=0 BACKUP_DB=data/untis.db ./scripts/release.sh           # local gate + backup

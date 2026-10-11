@@ -1,6 +1,6 @@
 # App Integration — Change Detection / Push / Subscribe
 
-Status: implemented in v1.4.0. This is the contract for the Android app
+Status: implemented. This is the contract for the Android app
 (BetterPlus-Android) and any other client that wants live timetable changes.
 
 Admin and webhook/ntfy surfaces are in
@@ -9,7 +9,7 @@ Admin and webhook/ntfy surfaces are in
 `/status`, `/healthz` and — only with `-metrics-addr` set — `/metrics`; see
 [`../DEPLOYMENT.md`](../DEPLOYMENT.md#health-and-monitoring).
 
-## Login note (v1.4.0)
+## Login note
 
 The proxy login (`getUserData2017` / `keyLogin`) accepts the **base32 shared
 secret itself** in the `otp` field instead of a live 6-digit TOTP — useful when
@@ -358,35 +358,46 @@ including ones added after this proxy was written, is passed through untouched.
 
 ```json
 {
-  "id": -1000000000,
-  "startDateTime": "2026-10-01T14:00+02:00",
-  "endDateTime": "2026-10-01T15:00+02:00",
-  "isCustom": true,
+  "id": -1000000012,
+  "startDateTime": "2026-10-01T14:00Z",
+  "endDateTime": "2026-10-01T15:00Z",
+  "foreColor": "#000000",
+  "backColor": "#FFF3DE",
+  "innerForeColor": "#000000",
+  "innerBackColor": "#000000",
+  "text": {"lesson": "Arbeitsblatt mitbringen", "substitution": "Test Student", "info": "", "attachments": []},
+  "elements": [],
+  "can": ["READ_LESSONTOPIC", "READ_HOMEWORK", "READ_CLASSROLE", "READ_PERIODINFO"],
+  "is": ["REGULAR"],
+  "homeWorks": [],
+  "exam": null,
+  "isOnlinePeriod": false,
+  "blockHash": 12,
   "customEventId": 12,
   "customRevision": 1,
   "customTitle": "Technik",
   "subject": "Mathe",
-  "room": "R12",
   "teacher": "Mr Smith",
+  "room": "R12",
   "description": "Arbeitsblatt mitbringen",
   "date": 20261001,
   "startTime": 840,
-  "endTime": 900,
-  "lessonText": "Technik",
-  "is": {"standard": false, "event": true},
-  "cellState": "CUSTOM",
-  "hasInfo": true,
-  "elements": []
+  "endTime": 900
 }
 ```
 
-Read `isCustom` to tell an event from a real lesson — the app cannot infer it, and
-guessing from `elements` being empty would misread a real lesson with no elements.
+Detect an event by the presence of **`customEventId`**. The proxy deliberately
+does **not** send `isCustom` — that is the marker the official app uses to draw an
+editor-created event differently, and a pooled class view is shared by a whole
+group, so an editor's private event has no place there; the app ignores fields it
+does not know. Do not infer an event from `elements` being empty — a real lesson
+with no elements would be misread.
 
 Two things to know about `id`:
 
-- It is **negative**. Real period ids are small positive numbers, so the two
-  cannot collide and an event cannot overwrite a lesson in a client's map.
+- It is **negative** (`customEventIDSpace − event id`, i.e. `-1_000_000_000 − id`).
+  Real period ids are small positive numbers, so the two cannot collide and an
+  event cannot overwrite a lesson in a client's map.
 - It **does not change when the event is edited**. It identifies the event, and
   the revision is reported separately in `customRevision` — which is also what the
   `.ics` `SEQUENCE` is built from. A client that replaces periods on every fetch
@@ -399,9 +410,11 @@ and `description` directly.
 
 ### Times and the school clock
 
-`startDateTime` carries the school's UTC offset, exactly as upstream's own
-periods do — the event is 14:00 on the school clock, not 14:00 UTC. A client that
-converts using the school timezone gets the right instant.
+`startDateTime`/`endDateTime` carry the **school wall-clock time with a literal
+trailing `Z`** — `2026-10-01T14:00Z` is 14:00 on the school clock, not 14:00 UTC.
+That is exactly how upstream writes its own periods and how the `.ics` feed reads
+it, and the official app expects the `Z` form; a real UTC offset is not sent. A
+client that wants an absolute instant converts using the school's timezone.
 
 ### In the .ics feed
 

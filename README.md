@@ -113,14 +113,15 @@ school.
 
 ## Permissions
 
-Access follows a two-flag tier model on top of a Basic default:
+Access is a set of per-user flags on top of a Basic default:
 
 | Tier | Flag | Scope | What you get |
 |---|---|---|---|
 | **Basic** | *(none)* | everyone by default | Pool of classes + your own personal student timetable + **reading your own absences**. |
 | **Reconstruction** | `recon` | global switch **or** per-user override | Teacher / room / subject timetables **reconstructed 100% from pooled class data**. |
 | **Boosted** | `boosted` | per-user only | Class/teacher/room/subject timetables **raw-forwarded through any saved teacher account** — no reconstruction. Your own personal (STUDENT) timetable is served the same way, giving it teacher-grade visibility (e.g. unlimited future weeks). **No** write / absence-editing powers on its own. If no teacher account is saved, boosted falls back to Basic. |
-| **Editor** | `editor` | per-user only | **Boosted plus editing**: unlocks the absence + lesson/subject **write (editing) methods** (`set`/`add`/`update`/`delete`/`change`/`put`/`remove`/`save`/…) for the user's own requests, **and** runs the class-scoped editor data calls through the boosted teacher account. Holding `editor` alone is enough — it implies `boosted`. |
+| **Editor** | `editor` | per-user only | **Boosted plus editing**: unlocks the absence + lesson/subject **write (editing) methods** for the user's own requests, **and** runs the class-scoped editor data calls through the boosted teacher account. Holding `editor` alone is enough — it implies `boosted`. |
+| **Techniker** | `techniker` | per-user only | Sees one synthetic **Technik** class whose timetable is the union of every student's admin-authored events in the requested range, plus those events where they happen (the room / organiser timetable they name) and a proxy-local absence register on them. Independent of `recon`/`boosted`/`editor`; granted per user from the dashboard's *Users* section. |
 
 **Boosted XOR Recon**: the flags are mutually exclusive per user — granting one
 auto-revokes the other.
@@ -131,6 +132,7 @@ untisctl perms grant --global recon              # enable recon for everyone
 untisctl perms grant --user Jdoe recon         # per-user override
 untisctl perms grant --user Jdoe boosted       # per-user boosted (raw forwarding)
 untisctl perms grant --user Jdoe editor        # + absence/lesson/subject editing
+untisctl perms grant --user Jdoe techniker     # synthetic "Technik" aggregate class
 untisctl perms clear --user Jdoe               # drop overrides -> fall back to global
 untisctl perms reset                             # wipe all -> Basic for everyone
 ```
@@ -138,7 +140,8 @@ untisctl perms reset                             # wipe all -> Basic for everyon
 > Flags come **before** the positional type: `perms grant --user X recon`
 > (Go's `flag` package does not intersperse flags after positionals).
 
-`boosted` and `editor` are **per-user only** (no `--global`).
+`boosted`, `editor` and `techniker` are **per-user only** (no `--global`), because
+each grants access to data pooled from several accounts.
 
 Absence **reads** (`getStudentAbsences2017`) are available to **everyone** by
 default; only the **write/mutation** methods need `editor`. Being an **admin of
@@ -180,8 +183,10 @@ once at startup.
 ## Admin dashboard
 
 Embedded single-page UI at **`/admin`**, gated by an admin session
-(`users.admin`). It grants full DB/`untisctl` capability: users, perms, pool,
-tokens, schools, webhooks, ntfy topics, recon.
+(`users.admin`). It grants full DB/`untisctl` capability: users (including the
+`techniker` toggle), perms, pool, tokens, schools, search, webhooks, ntfy topics,
+recon, **student events**, the **event-absence register** with its changelog,
+the **room map**, and the delivery **outbox**.
 
 `GET /admin/outbox` reports the notification-delivery backlog — counts by state
 plus the most recent destinations that gave up, with their error. `/admin/status`
@@ -321,7 +326,6 @@ are watched, how many are behind. The per-school detail it used to return
 (school name, class count, scan progress, poll counters) was public JSON, and the
 reason strings quote class counts, so both moved to the gated listener along with
 `/metrics`. `/status` names no school and stays as it is.
-```
 
 `/healthz` reports per school the pooled class count, how far the recon scan has
 covered through the target horizon, poll counters, and how long ago the last
@@ -388,11 +392,15 @@ meeting, any dated entry with a time. It is served on that student's
 **no** class, teacher, room or subject feed: those have no viewer, so there is no
 identity to key an event on.
 
-Events reach a client as extra periods in `result.timetable.periods`, marked
-`isCustom: true`, with a negative `id` that folds in the event's revision so an
-edit reads as a new entry. In the `.ics` feed they carry a `custom-`-prefixed UID
-and a `SEQUENCE` that rises on edit. `TRANSP:TRANSPARENT` marks them as not
-occupying the time.
+Events reach a client as extra periods in `result.timetable.periods`, carrying a
+`customEventId` (the stable event id) and a `customRevision`. The `isCustom`
+marker the official app uses is deliberately **not** sent — a class view is shared
+by a whole group, so an editor's private event has no place there — and a client
+tells an event from a real lesson by the presence of `customEventId`. The `id` is
+negative (`customEventIDSpace` − event id) and **does not change when the event is
+edited**; the revision is reported separately in `customRevision`. In the `.ics`
+feed they carry a `custom-`-prefixed UID and a `SEQUENCE` that rises on edit.
+`TRANSP:TRANSPARENT` marks them as not occupying the time.
 
 Deleting an event removes it from every future fetch but **does not retract it
 from calendars that already hold it** — see
@@ -419,7 +427,8 @@ GET  /week/{token}              # mobile week page for the same token (no app ne
 ```
 
 **Admin** — `/admin` (UI), `/admin/login`, and the `/admin/*` JSON API
-(consumers, perms, pool, tokens, schools, webhooks, ntfy, recon, status).
+(users, perms, pool, tokens, schools, webhooks, ntfy, recon, status, outbox,
+events).
 
 ---
 
@@ -679,11 +688,12 @@ those describe how the current code behaves and are kept in step with it.
 | [`docs/ADMIN-WEBHOOKS-NTFY.md`](docs/ADMIN-WEBHOOKS-NTFY.md) | full `/admin/*` API, ntfy, multi-school |
 | [`docs/GOD-API-PLAN.md`](docs/GOD-API-PLAN.md) | the Basic/Reconstruction/Boosted/Editor permission tiers and planned upstream API coverage |
 
-In progress — agreed in discussion, not yet built:
+Design records — shipped, kept because the reasoning behind each decision is
+still load-bearing:
 
 | Doc | Read it for |
 |---|---|
-| [`docs/PLANNED-FEATURES.md`](docs/PLANNED-FEATURES.md) | personal homework done, private absence notes, per-student Technik events, and the notification-delivery outbox |
+| [`docs/PLANNED-FEATURES.md`](docs/PLANNED-FEATURES.md) | the decisions behind personal homework done, private absence notes, per-student Technik events, and the notification-delivery outbox |
 
 Then the checklists. These are **dated records of test passes, not living
 specs** — a `[x]` means it passed on the date it was run against the version named

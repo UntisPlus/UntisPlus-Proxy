@@ -23,7 +23,6 @@ const masterDataSettingPrefix = "masterdata_raw:"
 type Options struct {
 	School string
 	TTL    time.Duration
-	Admin  []string
 	// ReconRefreshDays is how stale a class's recon scan horizon may get before
 	// the next scan re-enumerates it. 0 means defaultReconRefresh.
 	ReconRefreshDays int
@@ -326,6 +325,23 @@ func (p *Proxy) masterData(school string) *masterDataCache {
 	return p.stateFor(school).md
 }
 
+// maxRequestBodyBytes bounds every request body the proxy will read. The
+// JSON-RPC bodies are a few hundred bytes; 1 MiB leaves generous headroom while
+// stopping a slow or oversized upload from pinning a connection and a buffer
+// until the read timeout. Reads over the cap fail, which the handlers already
+// report as a bad request.
+const maxRequestBodyBytes = 1 << 20
+
+// contentSecurityPolicy locks the served HTML down to same-origin resources.
+// The admin dashboard and the week page use inline script and style, so
+// 'unsafe-inline' has to stay for them to run; everything else — remote
+// scripts, objects, framing, base-tag rewriting — is refused. A response that
+// carries this header is a document; the JSON-RPC and SSE bodies ignore it.
+const contentSecurityPolicy = "default-src 'self'; img-src 'self' data:; " +
+	"style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; " +
+	"connect-src 'self'; font-src 'self' data:; base-uri 'none'; " +
+	"form-action 'self'; frame-ancestors 'none'; object-src 'none'"
+
 func (p *Proxy) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/WebUntis/jsonrpc.do", p.handleJSONRPC)
@@ -359,7 +375,20 @@ func (p *Proxy) Handler() http.Handler {
 	mux.HandleFunc("/admin", p.handleAdminDashboard)
 	mux.HandleFunc("/admin/login", p.handleAdminLogin)
 	mux.HandleFunc("/admin/", p.handleAdmin)
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Referrer-Policy", "no-referrer")
+		h.Set("Content-Security-Policy", contentSecurityPolicy)
+		if requestIsHTTPS(r) {
+			h.Set("Strict-Transport-Security", "max-age=31536000")
+		}
+		if r.Body != nil {
+			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // MetricsHandler serves the Prometheus endpoint and nothing else. It is a
@@ -422,18 +451,38 @@ func (p *Proxy) sessionUser(r *http.Request) *store.User {
 	return u
 }
 
-func (p *Proxy) setSessionCookies(w http.ResponseWriter, sid, school string) {
+func (p *Proxy) setSessionCookies(w http.ResponseWriter, r *http.Request, sid, school string) {
 	// The app (native client) doesn't care about SameSite, and the admin
-	// dashboard only ever uses the cookie same-origin. Keep SameSite unset
-	// (browsers treat that as Lax) instead of None: None is rejected by
-	// browsers over HTTPS unless also Secure, which silently dropped the
-	// session when the tunnel serves the site (admin -> 401).
+	// dashboard only ever uses the cookie same-origin, so an explicit Lax keeps
+	// the cookie off cross-site requests without None's requirement that it also
+	// be Secure (which silently dropped the session when the tunnel serves the
+	// site, admin -> 401). Secure is set whenever the request arrived over TLS,
+	// or a proxy reported an https scheme, so the cookie is never exposed on a
+	// plaintext hop. It is left off for a bare-http local run, where a Secure
+	// cookie would not be stored at all.
 	http.SetCookie(w, &http.Cookie{
 		Name: "JSESSIONID", Value: sid, Path: "/",
 		HttpOnly: true,
+		Secure:   requestIsHTTPS(r),
+		SameSite: http.SameSiteLaxMode,
 	})
 	sc := "_" + base64.StdEncoding.EncodeToString([]byte(school))
-	http.SetCookie(w, &http.Cookie{Name: "schoolname", Value: sc, Path: "/", MaxAge: 1209600})
+	http.SetCookie(w, &http.Cookie{Name: "schoolname", Value: sc, Path: "/", MaxAge: 1209600,
+		Secure: requestIsHTTPS(r), SameSite: http.SameSiteLaxMode})
+}
+
+// requestIsHTTPS reports whether the client connection reached the proxy over
+// TLS. X-Forwarded-Proto is honoured only when it says https: a request that
+// arrives over TLS can never talk the proxy out of marking its cookie Secure,
+// so a spoofed header cannot force a downgrade.
+func requestIsHTTPS(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 func (p *Proxy) classNameFor(school, cookie string, classID int64) string {
@@ -455,6 +504,23 @@ func (p *Proxy) classNameFor(school, cookie string, classID int64) string {
 func (p *Proxy) hasPerm(username, feature string) bool {
 	ok, _ := p.store.HasPerm(username, feature)
 	return ok
+}
+
+// replayKey returns the in-memory replay key (shared secret) cached for a user,
+// or "" if none. It takes the secrets lock so a concurrent login/secret capture
+// cannot race the map.
+func (p *Proxy) replayKey(username string) string {
+	p.secretsMu.Lock()
+	defer p.secretsMu.Unlock()
+	return p.secrets[strings.ToLower(username)]
+}
+
+// setReplayKey stores the replay key for a user, taking the same lock as
+// replayKey so the map is never touched unsynchronised.
+func (p *Proxy) setReplayKey(username, secret string) {
+	p.secretsMu.Lock()
+	p.secrets[strings.ToLower(username)] = secret
+	p.secretsMu.Unlock()
 }
 
 // isAdmin reports whether a user holds the admin flag (DB `admin` column).

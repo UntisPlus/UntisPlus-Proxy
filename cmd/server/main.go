@@ -24,6 +24,21 @@ import (
 // disagree with the tag it was published under. Plain `go build` leaves it "dev".
 var buildVersion = "dev"
 
+// newHTTPServer builds the proxy's HTTP servers. ReadHeaderTimeout and ReadTimeout
+// bound how long a client may take to send a request; IdleTimeout reclaims
+// keep-alive connections. WriteTimeout is deliberately absent: the timetable
+// stream at /api/timetable/stream is a long-lived SSE response that any finite
+// write deadline would cut off.
+func newHTTPServer(addr string, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           h,
+		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+}
+
 func main() {
 	// 8509 is the default for both native runs and the Docker image; the
 	// container can still override it with UNTIS_ADDR.
@@ -38,6 +53,8 @@ func main() {
 	version := flag.String("version", buildVersion, "reported build version (baked in at build time; override only for a local build)")
 	poll := flag.Duration("poll-interval", 60*time.Second, "timetable change-detection poll interval")
 	ntfyBase := flag.String("ntfy-base", "https://ntfy.sh", "base URL for ntfy push delivery (self-hosted ntfy server)")
+	allowPrivate := flag.Bool("allow-private-targets", false, "allow webhook/ntfy targets on private, loopback or link-local addresses (off by default as an SSRF guard)")
+	calTokMaxDays := flag.Int("calendar-token-max-days", 0, "maximum age in days of a calendar subscription token (0 = never expires)")
 	publicBase := flag.String("public-base", "", "externally reachable base URL (scheme+host) for click-through links in notifications")
 	admin := flag.String("admin", "", "comma-separated usernames to bootstrap as admins (once)")
 	metricsAddr := flag.String("metrics-addr", "", "bind address for the Prometheus endpoint, e.g. 127.0.0.1:9109; empty disables /metrics entirely, which is the default because the metrics name the school")
@@ -125,6 +142,8 @@ func main() {
 
 	proxy.SetNtfyBase(*ntfyBase)
 	proxy.SetPublicBase(*publicBase)
+	proxy.SetAllowPrivateTargets(*allowPrivate)
+	proxy.SetCalendarTokenMaxAge(time.Duration(*calTokMaxDays) * 24 * time.Hour)
 	pollDone := make(chan struct{})
 	go p.StartPollLoop(*school, *poll, pollDone)
 
@@ -138,7 +157,7 @@ func main() {
 		p.StartOutboxWorker(5*time.Second, outboxDone)
 	}()
 
-	srv := &http.Server{Addr: *addr, Handler: p.Handler()}
+	srv := newHTTPServer(*addr, p.Handler())
 	log.Printf("listening on %s (upstream %s, school %s)", *addr, *server, *school)
 
 	errc := make(chan error, 1)
@@ -148,7 +167,7 @@ func main() {
 	// or a private network without putting it on the address the tunnel exposes.
 	var metricsSrv *http.Server
 	if *metricsAddr != "" {
-		metricsSrv = &http.Server{Addr: *metricsAddr, Handler: p.MetricsHandler()}
+		metricsSrv = newHTTPServer(*metricsAddr, p.MetricsHandler())
 		log.Printf("metrics listening on %s (not exposed on %s)", *metricsAddr, *addr)
 		go func() {
 			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

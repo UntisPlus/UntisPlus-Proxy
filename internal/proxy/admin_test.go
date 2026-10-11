@@ -17,6 +17,12 @@ import (
 
 func newTestProxy(t *testing.T) (*Proxy, *store.Store) {
 	t.Helper()
+	// Delivery tests point at an httptest server on loopback. The SSRF guard is
+	// exercised directly by TestValidateTargetURL*, so private targets are
+	// allowed for the rest of the suite.
+	prevAllowPrivate := allowPrivateTargets
+	allowPrivateTargets = true
+	t.Cleanup(func() { allowPrivateTargets = prevAllowPrivate })
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "test.db"))
 	if err != nil {

@@ -194,6 +194,13 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// LookupElement filters by type and school; the primary key alone only gets
+	// the type prefix, so this index keeps the lookup from scanning every name
+	// of a type.
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS element_names_type_school
+		ON element_names (el_type, school)`); err != nil {
+		return nil, err
+	}
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS schools (
 		school TEXT NOT NULL PRIMARY KEY,
 		added_at INTEGER NOT NULL DEFAULT 0,
@@ -1858,18 +1865,52 @@ func (s *Store) ListElementsWithNames(school string) (map[string]map[int64]strin
 // ---------------------------------------------------------------------------
 
 // SaveMasterNames persists element names from the upstream master data fetch.
-// It updates the name column in element_names for matching IDs, inserting new
-// rows only if they don't already exist.
+// The map is a complete snapshot of one element type for the school, so rows for
+// that (school, type) that the snapshot no longer lists are pruned: a rename or a
+// removal upstream would otherwise leave a stale name in the catalog forever and
+// the scan in LookupElement would keep growing. Rows with an empty school are
+// shared across deployments and are never pruned.
 func (s *Store) SaveMasterNames(school, elType string, names map[int64]string) error {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	up, err := tx.Prepare(`INSERT INTO element_names (school, el_type, el_id, name) VALUES (?,?,?,?)
+		ON CONFLICT(el_type, el_id) DO UPDATE SET name=excluded.name`)
+	if err != nil {
+		return err
+	}
+	defer up.Close()
 	for id, name := range names {
-		// Upsert: insert if missing, then update name
-		_, _ = tx.Exec(`INSERT OR IGNORE INTO element_names (school, el_type, el_id, name) VALUES (?,?,?,?)`, school, elType, id, name)
-		_, _ = tx.Exec(`UPDATE element_names SET name=? WHERE school=? AND el_type=? AND el_id=?`, name, school, elType, id)
+		if _, err := up.Exec(school, elType, id, name); err != nil {
+			return err
+		}
+	}
+	if school != "" {
+		// Mark the snapshot then delete the stragglers. A temp table avoids
+		// building an IN list whose length is bounded only by the catalog size.
+		if _, err := tx.Exec(`CREATE TEMP TABLE IF NOT EXISTS keep_element_names (el_id INTEGER PRIMARY KEY)`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM keep_element_names`); err != nil {
+			return err
+		}
+		ins, err := tx.Prepare(`INSERT OR IGNORE INTO keep_element_names (el_id) VALUES (?)`)
+		if err != nil {
+			return err
+		}
+		defer ins.Close()
+		for id := range names {
+			if _, err := ins.Exec(id); err != nil {
+				return err
+			}
+		}
+		if _, err := tx.Exec(`DELETE FROM element_names
+			WHERE school=? AND el_type=? AND el_id NOT IN (SELECT el_id FROM keep_element_names)`,
+			school, elType); err != nil {
+			return err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		tx.Rollback()
@@ -2413,6 +2454,21 @@ func (s *Store) OutboxStats() (OutboxStats, error) {
 		}
 	}
 	return st, rows.Err()
+}
+
+// PruneDeadOutbox deletes deliveries that were parked as dead before the given
+// cutoff and returns how many rows went away. A dead row is never retried, so
+// without a sweep it would sit in the table for the life of the deployment and
+// the table would only grow. next_attempt_at is the closest thing to a death
+// timestamp: FailOutbox sets it to the moment the last attempt gave up.
+func (s *Store) PruneDeadOutbox(olderThan time.Time) (int64, error) {
+	res, err := s.db.Exec(
+		`DELETE FROM notification_outbox WHERE state='dead' AND next_attempt_at < ?`,
+		olderThan.Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // RecentDeadOutbox returns the most recent exhausted deliveries, newest first,

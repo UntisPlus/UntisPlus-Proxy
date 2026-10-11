@@ -1,7 +1,7 @@
 # Admin Dashboard · Webhooks · ntfy · Multi-School
 
-Status: implemented in v1.4.0. This doc covers the new surfaces only; the tiered
-permission model stays as described in [`GOD-API-PLAN.md`](GOD-API-PLAN.md).
+Status: implemented. This doc covers the admin, webhook, ntfy and multi-school
+surfaces; the tiered permission model is described in [`GOD-API-PLAN.md`](GOD-API-PLAN.md).
 
 For the app-side contract see [`APP-INTEGRATION.md`](APP-INTEGRATION.md); for
 running the thing, [`../DEPLOYMENT.md`](../DEPLOYMENT.md).
@@ -53,6 +53,10 @@ An admin can do everything `untisctl` can, from the dashboard:
 | `/admin/ntfy/{id}` | DELETE | remove |
 | `/admin/ntfy/{id}/test` | POST | publish a test change to one topic (owner/admin) |
 | `/admin/recon[/{school}]` | GET | recon snapshot stats |
+| `/admin/rooms[/{school}]` | GET/POST | event-room-text → Untis room-id map (overrides the school catalogue) |
+| `/admin/outbox` | GET | notification-delivery backlog (`?state=dead` for exhausted deliveries) |
+| `/admin/events/absences[/{school}]` | GET | event-absence register, one row per recorded absence |
+| `/admin/events/absences` | PATCH | correct an event absence (append-only changelog) |
 
 ## Webhooks (change subscriptions)
 
@@ -166,6 +170,8 @@ the poller detects is never silently dropped.
   poll loop.
 - After 8 failed attempts a delivery is marked **dead** and stops retrying. It
   stays in the table on purpose: that is the signal that a human needs to look.
+  Dead rows are pruned after 7 days so the table cannot grow without bound; the
+  recent ones stay visible in `/admin/outbox`.
 - Restarting reclaims deliveries that were in flight when the process stopped,
   and retries them.
 - Deleting a subscription drops its queued backlog rather than retrying a
@@ -251,6 +257,19 @@ after the stored end is caught.
 Every write records `createdBy`, `createdAt`, `updatedAt` and a `revision` that
 increments per edit. The revision is what an `.ics` client sees as `SEQUENCE`.
 
+### Who sees a student's events
+
+By default, only the owning student. A user holding the **`techniker`** permission
+also sees:
+
+- a synthetic *Technik* class whose timetable is the union of every student's
+  events in the requested range,
+- an event on the room and organiser (teacher) timetable it names,
+- a proxy-local absence register on the event (nothing is written to Untis).
+
+The permission is independent of admin/`editor`/`boosted`/`recon` and is granted
+per user from the dashboard's *Users* section.
+
 ## Multi-school
 
 A single proxy process can serve many WebUntis schools:
@@ -279,5 +298,8 @@ section; its data remains keyed by school name and becomes orphaned.
   `StartPollLoop` (multi-school), changes/stream API.
 - `internal/proxy/events_admin.go` — `/api/admin/events` CRUD + the private
   change signal.
+- `internal/proxy/roommap.go` — event-room-text → Untis room-id overrides.
+- `internal/proxy/event_absences.go` — the event-absence register + changelog.
+- `internal/proxy/events_import.go` — the Technik CSV/JSON import fan-out.
 - `internal/store/store.go` — `users.admin`, `schools`, `webhooks`, `ntfy_topics`,
   `student_events`, `student_event_versions` tables + school-scoped queries.

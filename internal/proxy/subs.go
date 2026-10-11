@@ -94,8 +94,8 @@ func (p *Proxy) handleSubsWebhooks(w http.ResponseWriter, r *http.Request) {
 			p.writeJSON(w, map[string]any{"error": "bad request"})
 			return
 		}
-		if req.URL == "" {
-			p.writeJSON(w, map[string]any{"error": "url required"})
+		if err := validateTargetURL(req.URL, allowPrivateTargets); err != nil {
+			p.writeJSON(w, map[string]any{"error": err.Error()})
 			return
 		}
 		if !p.canSubscribeClass(school, u, req.ClassID, canAll) {
@@ -275,13 +275,20 @@ func (p *Proxy) handleSubsNtfy(w http.ResponseWriter, r *http.Request) {
 			p.writeJSON(w, map[string]any{"error": "topic required"})
 			return
 		}
+		baseURL := cleanNtfyBase(req.BaseURL)
+		if baseURL != "" {
+			if err := validateTargetURL(baseURL, allowPrivateTargets); err != nil {
+				p.writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+		}
 		if !p.canSubscribeClass(school, u, req.ClassID, canAll) {
 			p.forbidden(w)
 			return
 		}
 		id, err := p.store.AddNtfyTopic(&store.NtfyTopic{
 			School: school, ClassID: req.ClassID, Topic: req.Topic,
-			BaseURL: cleanNtfyBase(req.BaseURL), Enabled: true, CreatedBy: u.Username,
+			BaseURL: baseURL, Enabled: true, CreatedBy: u.Username,
 		})
 		if err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})

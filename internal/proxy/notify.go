@@ -505,7 +505,7 @@ func (p *Proxy) postWebhookOnce(h *store.Webhook, body []byte, summary string) e
 		mac.Write(body)
 		req.Header.Set("X-Untis-Signature", "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := outboundHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return err
@@ -537,7 +537,7 @@ func ntfyPost(t *store.NtfyTopic, msg map[string]any) (int, error) {
 		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := outboundHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err
@@ -611,7 +611,7 @@ func (p *Proxy) testWebhook(h *store.Webhook) (int, error) {
 	if sig != "" {
 		req.Header.Set("X-Untis-Signature", sig)
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := outboundHTTPClient()
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, err

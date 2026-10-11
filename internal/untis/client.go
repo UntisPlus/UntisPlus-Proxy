@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -77,6 +78,13 @@ var totpNow = time.Now
 
 // TOTP computes a RFC6238 time-based one-time password from a base32 secret.
 func TOTP(secret string) string {
+	return TOTPAt(secret, totpNow())
+}
+
+// TOTPAt is TOTP for a specific instant. A per-request check must evaluate the
+// code at the client's clock, not the server's, so the aggregate gate passes the
+// auth block's clientTime here rather than the wall clock.
+func TOTPAt(secret string, t time.Time) string {
 	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(secret))
 	if err != nil {
 		key, err = base32.StdEncoding.DecodeString(strings.ToUpper(secret))
@@ -84,7 +92,7 @@ func TOTP(secret string) string {
 			return "000000"
 		}
 	}
-	counter := uint64(totpNow().Unix() / 30)
+	counter := uint64(t.Unix() / 30)
 	var msg [8]byte
 	binary.BigEndian.PutUint64(msg[:], counter)
 	mac := hmac.New(sha1.New, key)
@@ -253,7 +261,7 @@ func (c *Client) get(url string, hdr http.Header) ([]byte, int, error) {
 
 // JSONRPC forwards a raw JSON-RPC request to the real server and returns the raw body.
 func (c *Client) JSONRPC(school, cookie string, body []byte) ([]byte, error) {
-	b, code, _, err := c.post(c.base(school)+"/WebUntis/jsonrpc.do?school="+school, cookieHeader(cookie), body)
+	b, code, _, err := c.post(c.base(school)+"/WebUntis/jsonrpc.do?school="+url.QueryEscape(school), cookieHeader(cookie), body)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +278,7 @@ func (c *Client) PasswordLogin(school, username, password, client string) (strin
 		"id": "upstream", "jsonrpc": "2.0", "method": "authenticate",
 		"params": map[string]any{"user": username, "password": password, "client": client},
 	})
-	b, _, _, err := c.post(c.base(school)+"/WebUntis/jsonrpc.do?school="+school, nil, body)
+	b, _, _, err := c.post(c.base(school)+"/WebUntis/jsonrpc.do?school="+url.QueryEscape(school), nil, body)
 	if err != nil {
 		return "", nil, err
 	}
@@ -303,8 +311,8 @@ func (c *Client) KeyLogin(school, username, otp string, clientTime int64, extraA
 		"id": "upstream", "jsonrpc": "2.0", "method": "getUserData2017",
 		"params": []any{map[string]any{"auth": auth}},
 	})
-	url := c.base(school) + "/WebUntis/jsonrpc_intern.do?m=getUserData2017&school=" + school + "&v=i2.2"
-	b, _, hdr, err := c.post(url, nil, body)
+	endpoint := c.base(school) + "/WebUntis/jsonrpc_intern.do?m=getUserData2017&school=" + url.QueryEscape(school) + "&v=i2.2"
+	b, _, hdr, err := c.post(endpoint, nil, body)
 	if err != nil {
 		return "", nil, err
 	}
@@ -335,7 +343,7 @@ func (c *Client) KeyLogin(school, username, otp string, clientTime int64, extraA
 // subsequent Session() does not reuse an invalidated cookie.
 func (c *Client) Logout(school, cookie string) {
 	body := []byte(`{"id":"upstream","jsonrpc":"2.0","method":"logout","params":{}}`)
-	_, _, _, _ = c.post(c.base(school)+"/WebUntis/jsonrpc.do?school="+school, cookieHeader(cookie), body)
+	_, _, _, _ = c.post(c.base(school)+"/WebUntis/jsonrpc.do?school="+url.QueryEscape(school), cookieHeader(cookie), body)
 	c.mu.Lock()
 	for k, cs := range c.sessions {
 		if cs.cookie == cookie {
@@ -518,7 +526,7 @@ func (c *Client) RESTGetToken(school, token, path, rawQuery string) ([]byte, int
 
 // RawIntern forwards a raw body to jsonrpc_intern.do.
 func (c *Client) RawIntern(school, cookie, method string, body []byte) ([]byte, int, http.Header, error) {
-	u := c.base(school) + "/WebUntis/jsonrpc_intern.do?m=" + method + "&school=" + school + "&v=i2.2"
+	u := c.base(school) + "/WebUntis/jsonrpc_intern.do?m=" + url.QueryEscape(method) + "&school=" + url.QueryEscape(school) + "&v=i2.2"
 	return c.post(u, cookieHeader(cookie), body)
 }
 

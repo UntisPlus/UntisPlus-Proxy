@@ -108,7 +108,7 @@ func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request, school stri
 	go p.untis.Logout(school, cookie)
 
 	s := p.sessions.New(params.User, info.ClassID)
-	p.setSessionCookies(w, s.ID, school)
+	p.setSessionCookies(w, r, s.ID, school)
 	p.writeJSON(w, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      idVal(id),

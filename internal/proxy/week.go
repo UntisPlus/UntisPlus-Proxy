@@ -62,7 +62,7 @@ type weekView struct {
 func (p *Proxy) handleWeekPage(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimSuffix(r.PathValue("token"), ".html")
 	tok, err := p.store.ClassTokenByToken(token)
-	if err != nil || tok == nil {
+	if err != nil || tok == nil || tokenExpired(tok) {
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte("unknown calendar token\n"))
 		return

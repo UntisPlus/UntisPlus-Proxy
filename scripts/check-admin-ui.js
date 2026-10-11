@@ -152,6 +152,26 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
     'the room map did not post the import text -> room id: '+JSON.stringify(roomPosted));
   must($('rmSrcIn').value==='', 'the source field was not cleared after add');
 
+  // Escaping: a webhook URL is chosen by whoever created the subscription, so it
+  // must reach the admin page as text, never as HTML. Interpolating it raw let a
+  // signed-in student run script in the admin's session when the dashboard
+  // listed the webhook. The same applies to usernames in the users table.
+  fetch = async function(url){
+    if(url.indexOf('/admin/webhooks')>=0) return {ok:true,status:200,json:async()=>({webhooks:[
+      {id:1,school:'schuldorf',elementType:'CLASS',elementId:1,name:'10a',
+       url:'"><img src=x onerror=alert(1)>',createdBy:'<b>evil</b>'}]})};
+    return {ok:true,status:200,json:async()=>({})};
+  };
+  await loadWebhooks();
+  const cell = _sel('__q').children[0]._html;
+  must(cell.indexOf('<img')<0, 'a webhook URL reached the page as raw HTML: '+cell);
+  must(cell.indexOf('&lt;img')>=0, 'the webhook URL was not escaped: '+cell);
+  must(cell.indexOf('<b>evil</b>')<0, 'createdBy reached the page as raw HTML: '+cell);
+  must(jsq("a'b" + String.fromCharCode(34) + "</td>").indexOf('<')<0
+    && jsq("a'b" + String.fromCharCode(34)).indexOf("'")<0
+    && jsq("a'b" + String.fromCharCode(34)).indexOf(String.fromCharCode(34))<0,
+    'jsq does not neutralise quotes or tags for an inline handler');
+
   console.log('check-admin-ui: all admin UI checks passed');
 })().catch(function(e){ console.error('FAIL: ' + (e && e.stack || e)); process.exit(1); });
 `;

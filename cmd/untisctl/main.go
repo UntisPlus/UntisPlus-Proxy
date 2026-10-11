@@ -47,7 +47,7 @@ Usage:
 Commands:
   perms list [--user U]              show global switches and per-user overrides
   perms grant|revoke [--user U|--global] TYPE
-                                     grant/revoke recon|boosted|editor (per-user only)
+                                     grant/revoke recon|boosted|editor|techniker (per-user only)
   perms clear --user U               drop a user's overrides (fall back to global)
   perms reset                        wipe all permissions (class-pool-only default)
 
@@ -147,12 +147,17 @@ var reconTypes = map[string]string{
 	"boosted":        store.FeatureBoosted,
 	"boost":          store.FeatureBoosted,
 	"editor":         store.FeatureEditor,
+	"techniker":      store.FeatureTechniker,
+	"technik":        store.FeatureTechniker,
 }
 
-// boostedFeatures are per-user-only permissions; they cannot be applied globally.
-var boostedFeatures = map[string]bool{
-	store.FeatureBoosted: true,
-	store.FeatureEditor:  true,
+// perUserOnly are permissions that cannot be applied globally: they grant access
+// to data pooled from several accounts, so a global switch would hand it to
+// every user at once.
+var perUserOnly = map[string]bool{
+	store.FeatureBoosted:   true,
+	store.FeatureEditor:    true,
+	store.FeatureTechniker: true,
 }
 
 func cmdPerms(st *store.Store, args []string) {
@@ -230,7 +235,7 @@ func permSet(st *store.Store, action string, args []string) {
 	}
 	typ, ok := reconTypes[strings.ToLower(rest[0])]
 	if !ok {
-		fatal("unknown type %q (use recon|boosted)", rest[0])
+		fatal("unknown type %q (use recon|boosted|editor|techniker)", rest[0])
 	}
 	if *user != "" && *global {
 		fatal("pick --user (per-user) or --global (all users), not both")
@@ -238,14 +243,14 @@ func permSet(st *store.Store, action string, args []string) {
 	if *user == "" && !*global {
 		fatal("require --user U or --global")
 	}
-	if *global && boostedFeatures[typ] {
-		fatal("boosting features (%s) are per-user only; use --user", typ)
+	if *global && perUserOnly[typ] {
+		fatal("%s is per-user only; use --user", typ)
 	}
 	allowed := action == "grant"
 	var err error
 	if *global {
 		err = st.SetReconType(typ, allowed)
-	} else if boostedFeatures[typ] {
+	} else if perUserOnly[typ] {
 		err = st.SetPerm(*user, typ, allowed)
 	} else {
 		err = st.SetReconOverride(*user, typ, allowed)

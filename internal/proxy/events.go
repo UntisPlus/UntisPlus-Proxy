@@ -325,13 +325,15 @@ func (p *Proxy) appendEventPeriods(raw []byte, school, username string, periods 
 			merged = append(merged, ev)
 		}
 		tt["periods"] = merged
-		if md, ok := result["masterData"].(jsonObject); ok {
+		md, hasMD := result["masterData"].(jsonObject)
+		changed := false
+		if hasMD {
 			// The app places a period by the elements it references and drops one
 			// that references nothing, so the event is given a subject, room and
 			// teacher element. Any element whose name is not in the school's
 			// catalogue is synthesized into masterData, so the app has a name to
 			// resolve and the event is visible.
-			changed := attachEventElements(periods, md, p.roomOverrides(school))
+			changed = attachEventElements(periods, md, p.roomOverrides(school))
 			// A client that hides a holiday week hides the event with it. The break is
 			// declared in masterData, which the client reads to decide the day is not a
 			// school day, so the event dates are cut out of that list: this is the one
@@ -339,17 +341,23 @@ func (p *Proxy) appendEventPeriods(raw []byte, school, username string, periods 
 			if stripHolidayDates(md, periodDates(periods)) {
 				changed = true
 			}
-			// The client caches master data by its timestamp. Changing it (a stripped
-			// holiday, a synthesized element) without moving the timestamp would leave
-			// a client that already holds this version serving the old list, so the
-			// version is advanced. It is derived from upstream's own value, so repeated
-			// requests stay in step.
-			if changed {
-				bumpMasterTimestamp(md)
-			}
 		}
 		if classID != 0 {
 			tagClassElement(periods, classID)
+			// A period tagged with the synthetic Technik class references a class
+			// the viewer's masterData may not carry. Add the label-only stub so the
+			// app can resolve the row; the aggregate data stays gated elsewhere.
+			if classID == technikClassID && hasMD && ensureTechnikClass(md) {
+				changed = true
+			}
+		}
+		// The client caches master data by its timestamp. Changing it (a stripped
+		// holiday, a synthesized element, the Technik label) without moving the
+		// timestamp would leave a client that already holds this version serving
+		// the old list, so the version is advanced. It is derived from upstream's
+		// own value, so repeated requests stay in step.
+		if hasMD && changed {
+			bumpMasterTimestamp(md)
 		}
 	})
 }
