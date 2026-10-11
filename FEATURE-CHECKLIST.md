@@ -66,7 +66,9 @@ Checkboxes are clickable in GitHub/editor task lists. Tick them as you test.
 - [x] per-topic ntfy server override (`baseUrl`, users pick their own ntfy server)
 - [x] webhook + ntfy **test button** (`POST /api/webhooks/{id}/test`, `/api/ntfy/{id}/test`, and `/admin/...` equivalents; owner/admin-gated)
 - [x] calendar tokens track who created them (`createdBy`) and what element/class (`elementName`, `createdAt` in `/admin/tokens`)
-- [x] self-service `/api/webhooks` + `/api/ntfy` gating (own class vs privileged)
+- [x] self-service `/api/webhooks` + `/api/ntfy` accept the calendar element vocabulary (class/personal/teacher/room/subject/school-wide) with the same visibility gating
+- [x] `GET /api/notifications/options` → what the caller may watch (calendar catalog minus Technik)
+- [x] `GET /api/webhooks` + `GET /api/ntfy` return only the caller's own rows
 
 ## 9. REST API
 - [x] `/WebUntis/api/public/timetable/weekly/data` for class

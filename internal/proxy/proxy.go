@@ -359,6 +359,7 @@ func (p *Proxy) Handler() http.Handler {
 	mux.HandleFunc("GET /week/{token}", p.handleWeekPage)
 	mux.HandleFunc("GET /api/timetable/changes", p.handleTimetableChanges)
 	mux.HandleFunc("GET /api/timetable/stream", p.handleTimetableStream)
+	mux.HandleFunc("GET /api/notifications/options", p.handleNotificationOptions)
 	mux.HandleFunc("/api/webhooks", p.handleSubsWebhooks)
 	mux.HandleFunc("/api/webhooks/", p.handleSubsWebhooks)
 	mux.HandleFunc("/api/ntfy", p.handleSubsNtfy)

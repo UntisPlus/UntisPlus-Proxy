@@ -31,6 +31,138 @@ func subsRequest(t *testing.T, p *Proxy, user string, method, path, body string)
 	return rec
 }
 
+// notifOptionsRequest drives GET /api/notifications/options with a session.
+func notifOptionsRequest(t *testing.T, p *Proxy, user string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/notifications/options", nil)
+	s := p.sessions.New(user, 0)
+	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: s.ID})
+	rec := httptest.NewRecorder()
+	p.handleNotificationOptions(rec, req)
+	return rec
+}
+
+// TestNotificationOptions_Visibility: the notification catalog mirrors the
+// calendar one, but never offers Technik — the change poller cannot deliver it.
+func TestNotificationOptions_Visibility(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertUser(&store.User{Username: "dee", Method: "key", PersonType: 5, PersonID: 42, ClassID: 5000, DisplayName: "Max", School: "testschool"}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	if err := st.SetPerm("dee", store.FeatureTechniker, true); err != nil {
+		t.Fatalf("grant techniker: %v", err)
+	}
+	calSeedMasterData(p, "testschool", calSampleMD())
+
+	rec := notifOptionsRequest(t, p, "dee")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var m map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &m)
+	if classes := calOptionIDs(t, m, "class"); !classes[5000] {
+		t.Errorf("classes = %v, want pooled 5000", classes)
+	}
+	if _, ok := m["personal"]; !ok {
+		t.Errorf("personal missing: %v", m)
+	}
+	if _, ok := m["technik"]; ok {
+		t.Errorf("technik must be absent from notification options: %v", m)
+	}
+}
+
+// TestNotificationOptions_Unauthorized: no session, no catalog.
+func TestNotificationOptions_Unauthorized(t *testing.T) {
+	p, _ := newTestProxy(t)
+	req := httptest.NewRequest(http.MethodGet, "/api/notifications/options", nil)
+	rec := httptest.NewRecorder()
+	p.handleNotificationOptions(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("code=%d, want 401", rec.Code)
+	}
+}
+
+// TestSubsElementTargets: webhooks and ntfy accept the same element vocabulary
+// as the calendar mint, gated by the same visibility rules.
+func TestSubsElementTargets(t *testing.T) {
+	p, st := newTestProxy(t)
+	_ = st.UpsertUser(&store.User{Username: "recon", Method: "key", PersonType: 5, PersonID: 42, ClassID: 5000, School: "testschool"})
+	_ = st.UpsertUser(&store.User{Username: "plain", Method: "key", PersonType: 5, PersonID: 43, ClassID: 5000, School: "testschool"})
+	if err := st.SetReconOverride("recon", "", true); err != nil {
+		t.Fatalf("grant recon: %v", err)
+	}
+	calSeedMasterData(p, "testschool", calSampleMD())
+
+	// A recon user may target a teacher; a plain student may not.
+	if rec := subsRequest(t, p, "recon", http.MethodPost, "/api/ntfy", `{"teacherId":7,"topic":"t7"}`); rec.Code != http.StatusOK {
+		t.Fatalf("recon teacher ntfy = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	if rec := subsRequest(t, p, "plain", http.MethodPost, "/api/ntfy", `{"teacherId":7,"topic":"nope"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("plain teacher ntfy = %d, want 403", rec.Code)
+	}
+	// A personal target resolves to the caller's own STUDENT element.
+	if rec := subsRequest(t, p, "plain", http.MethodPost, "/api/webhooks", `{"personal":true,"url":"https://e/h"}`); rec.Code != http.StatusOK {
+		t.Fatalf("personal webhook = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	// A foreign personId is refused.
+	if rec := subsRequest(t, p, "plain", http.MethodPost, "/api/webhooks", `{"personId":9999,"url":"https://e/h2"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("foreign personal webhook = %d, want 403", rec.Code)
+	}
+	// More than one target is a bad request (forbidden here, no row written).
+	if rec := subsRequest(t, p, "recon", http.MethodPost, "/api/ntfy", `{"teacherId":7,"classId":5000,"topic":"x"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("multi-target ntfy = %d, want 403", rec.Code)
+	}
+}
+
+// TestSubsTechnikTargetRejected: the synthetic Technik class is not a polled
+// class, so a notification target for it must be refused even for a techniker.
+func TestSubsTechnikTargetRejected(t *testing.T) {
+	p, st := newTestProxy(t)
+	_ = st.UpsertUser(&store.User{Username: "tech", Method: "key", PersonType: 5, PersonID: 42, ClassID: 5000, School: "testschool"})
+	if err := st.SetPerm("tech", store.FeatureTechniker, true); err != nil {
+		t.Fatalf("grant techniker: %v", err)
+	}
+	body := `{"classId":` + strconv.FormatInt(technikClassID, 10) + `,"topic":"tech"}`
+	if rec := subsRequest(t, p, "tech", http.MethodPost, "/api/ntfy", body); rec.Code != http.StatusForbidden {
+		t.Fatalf("technik ntfy target = %d, want 403", rec.Code)
+	}
+}
+
+// TestSubsListOwnerScoped: the list endpoints show only the caller's own rows,
+// with the target element resolved.
+func TestSubsListOwnerScoped(t *testing.T) {
+	p, st := newTestProxy(t)
+	for _, u := range []string{"dave", "eve"} {
+		_ = st.UpsertUser(&store.User{Username: u, Method: "key", PersonType: 5, PersonID: 42, ClassID: 5000, School: "testschool"})
+	}
+	for _, seed := range []struct{ who, url string }{{"dave", "https://e/dave"}, {"eve", "https://e/eve"}} {
+		if _, err := st.AddWebhook(&store.Webhook{School: "testschool", ElementType: "CLASS", ElementID: 5000, ClassID: 5000, URL: seed.url, Enabled: true, CreatedBy: seed.who}); err != nil {
+			t.Fatalf("seed webhook: %v", err)
+		}
+	}
+	calSeedMasterData(p, "testschool", calSampleMD())
+
+	rec := subsRequest(t, p, "dave", http.MethodGet, "/api/webhooks", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list code = %d", rec.Code)
+	}
+	var list struct {
+		Webhooks []map[string]any `json:"webhooks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if len(list.Webhooks) != 1 || list.Webhooks[0]["url"] != "https://e/dave" {
+		t.Fatalf("dave list = %s, want only his own", rec.Body.String())
+	}
+	if list.Webhooks[0]["elementType"] != "CLASS" {
+		t.Errorf("elementType = %v, want CLASS", list.Webhooks[0]["elementType"])
+	}
+	if list.Webhooks[0]["createdBy"] != "dave" {
+		t.Errorf("createdBy = %v, want dave", list.Webhooks[0]["createdBy"])
+	}
+}
+
 func TestSubsOwnClassWebhookOnly(t *testing.T) {
 	p, st := newTestProxy(t)
 	// carla is a student of class 5000; no privileged flags.

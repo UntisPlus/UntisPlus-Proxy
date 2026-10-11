@@ -126,10 +126,16 @@ Self-service (any logged-in session) at `/api/webhooks`:
 
 | Method | Purpose | Access |
 |---|---|---|
-| GET | list hooks you may see | your own class always; all with `editor`/`boosted`/admin |
+| `GET /api/notifications/options` | list the targets you may watch | same catalog as `GET /api/calendar/options`, minus Technik |
+| GET | list **your own** hooks | always (own rows only) |
 | POST `{classId, url, secret}` | create | your own class always; any pooled class + school-wide (`classId 0`) with `editor`/`boosted`/admin |
+| POST `{teacherId, url, secret}` / `{roomId,…}` / `{subjectId,…}` / `{personal:true,…}` | create | teacher/room/subject need recon or `boosted`/staff; `personal` is your own person only |
 | POST `/api/webhooks/{id}/test` | fire a test delivery | the hook's creator, or `editor`/`boosted`/admin |
 | DELETE `/api/webhooks/{id}` | remove | your own hooks; any with `editor`/`boosted`/admin |
+
+The target keys are the calendar mint's (`classId` / `personal` / `personId` /
+`teacherId` / `roomId` / `subjectId`); at most one may be set, and none means
+school-wide (privileged only).
 
 ## Push notifications via ntfy
 
@@ -145,10 +151,10 @@ their summary header; element-scoped topics prepend the element name to the
 title. The full JSON change payload is available in the message.
 
 `POST /admin/ntfy` (or dashboard "ntfy topics" section) manages topics.
-Self-service `POST /api/ntfy/{id}/test` fires a test publish (creator or
-privileged). The `GET /api/ntfy` listing is **element-aware**: a plain user sees
-topics for their own class and (if set) their own student element; school-wide
-and teacher/room/subject topics are only listed for `editor`/`boosted`/admin.
+Self-service `POST /api/ntfy` takes the same target keys as `/api/webhooks`
+(`teacherId`/`roomId`/`subjectId`/`personal`, gated by recon/boosted/staff), and
+`GET /api/ntfy` lists only the caller's own topics. Discovery is via
+`GET /api/notifications/options`.
 
 ### Topic naming recommendation
 

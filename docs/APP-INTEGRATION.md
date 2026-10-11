@@ -485,10 +485,15 @@ announced there would reach every classmate.
 
 `/api/webhooks` and `/api/ntfy` (session required):
 
-- `GET` — list your visible subscriptions (own class; everything with
-  editor/boosted/admin).
-- `POST` — create one for your class, or (privileged) for any pooled class,
-  **student, teacher, room or subject**, or school-wide.
+- `GET /api/notifications/options` — the element catalog you may subscribe to,
+  same shape as `GET /api/calendar/options` (class/teacher/room/subject plus
+  `personal`; Technik omitted — the poller cannot deliver it).
+- `GET` — list **your own** subscriptions, each with `elementType`/`elementId`/
+  `name`.
+- `POST` — create one using the calendar mint's target keys (`classId`,
+  `personal`/`personId`, `teacherId`, `roomId`, `subjectId`; at most one; none =
+  school-wide for editor/boosted/admin). Teacher/room/subject need recon,
+  `boosted`, or a staff account.
 - `DELETE /api/webhooks/{id}` | `/api/ntfy/{id}` — remove your own (privileged
   users can remove any).
 

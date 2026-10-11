@@ -171,6 +171,9 @@ the fast way to inspect the digest.
       retries visible in the log, no panic
 - [ ] `DELETE /admin/webhooks/<id>` → gone from the list
 - [ ] `POST /api/webhooks` self-service with `USERCOOKIE` for own class → 200; for another class → 403
+- [ ] `POST /api/webhooks` `{"teacherId":<id>,…}` → 200 for recon/boosted/staff, 403 for a plain student; `{"personal":true,…}` → 200
+- [ ] `GET /api/notifications/options` → same catalog as `/api/calendar/options` minus `technik`
+- [ ] `POST /api/ntfy` (or webhooks) `{"classId":2000000000,…}` → 403 even for a techniker
 - [ ] `DELETE /api/webhooks/<other user's id>` → 403
 
 ## 9. ntfy
@@ -180,7 +183,7 @@ the fast way to inspect the digest.
 - [ ] Real change → push with a parent-readable body (the full multi-line digest) and a title naming the element
 - [ ] Element-scoped topic fires only for its element; school-wide fires for everything
 - [ ] Wrong `baseUrl` → error reported, no crash, other topics still work
-- [ ] `GET /api/ntfy` as a plain user lists own-class topics only; as admin lists all
+- [ ] `GET /api/ntfy` lists only the caller's own topics (with `elementType`/`elementId`/`name`)
 - [ ] `DELETE /admin/ntfy/<id>` → gone
 - [ ] Subscribe with the ntfy Android app and confirm a change reaches the phone
 

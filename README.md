@@ -202,8 +202,11 @@ carries the same counts as an `outbox` object. The public `/healthz` and
   `title` / `tags` / `click` fields a real change does, so a green test means the
   notification will actually *render* — not just that the socket is open.
 
-Users can self-service **their own** class subscriptions at `/api/webhooks` and
-`/api/ntfy`; other classes or elements require editor/boosted/admin.
+Users can self-service subscriptions at `/api/webhooks` and `/api/ntfy`. The
+target vocabulary is the calendar mint's — own class, personal, teacher, room,
+subject (the element families gated by recon/boosted/staff), or school-wide for
+editor/boosted/admin — and `GET /api/notifications/options` lists exactly what
+the caller may watch. Both list endpoints return only the caller's own rows.
 
 Full reference: [`docs/ADMIN-WEBHOOKS-NTFY.md`](docs/ADMIN-WEBHOOKS-NTFY.md).
 
@@ -343,8 +346,9 @@ school on the login request.
 ```
 GET  /api/timetable/changes?since=<version>[&sinceEvents=<eventVersion>]
 GET  /api/timetable/stream
-GET  /api/webhooks        /api/webhooks/{id}     # self-service
-GET  /api/ntfy            /api/ntfy/{id}         # self-service
+GET  /api/notifications/options                  # what you may watch (mirrors the app)
+GET  /api/webhooks        /api/webhooks/{id}     # self-service, own rows only
+GET  /api/ntfy            /api/ntfy/{id}         # self-service, own rows only
 ```
 
 **Homework completion** (session-authenticated; the viewer comes from the session

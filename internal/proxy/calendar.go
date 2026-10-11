@@ -296,9 +296,10 @@ func (p *Proxy) writeCalendarResponse(w http.ResponseWriter, r *http.Request, to
 	p.writeJSON(w, p.calendarTokenView(r, tok))
 }
 
-// calendarOption is one subscribable timetable target, as listed by the options
-// endpoint and picked by the app's "add calendar" dialog.
-type calendarOption struct {
+// subscriptionOption is one subscribable timetable target, as listed by the
+// options endpoint and picked by the app's "add calendar" dialog. The same
+// catalog backs both the calendar and the notification subscriptions.
+type subscriptionOption struct {
 	ID   int64  `json:"id"`
 	Name string `json:"name"`
 }
@@ -328,14 +329,18 @@ func (p *Proxy) canMintElement(u *store.User, elType string) bool {
 	return can
 }
 
-// calendarOptions lists the calendar targets the user can see in the app. It
-// mirrors the masterData display flags the proxy writes at login:
+// subscriptionOptions lists the timetable targets the user can see in the app.
+// It mirrors the masterData display flags the proxy writes at login:
 //   - everyone: the pooled classes, plus the personal timetable
 //   - recon:    the teachers/rooms/subjects the recon scan actually enumerated
 //   - boosted:  every class/teacher/room/subject
 //   - techniker: the synthetic Technik class
 //   - staff (non-student) accounts: stock visibility, i.e. every element
-func (p *Proxy) calendarOptions(school string, u *store.User) map[string]any {
+//
+// includeTechnik controls the synthetic Technik entry: the calendar feed can
+// serve it, the notification poller cannot (it is not a polled class), so only
+// the calendar asks for it.
+func (p *Proxy) subscriptionOptions(school string, u *store.User, includeTechnik bool) map[string]any {
 	var teachersMD, roomsMD, subjectsMD, klassenMD map[int64]string
 	if md := p.masterData(school); md != nil {
 		teachersMD, roomsMD, subjectsMD, klassenMD = md.teachers, md.rooms, md.subjects, md.klassen
@@ -392,18 +397,18 @@ func (p *Proxy) calendarOptions(school string, u *store.User) map[string]any {
 	if u.PersonID > 0 {
 		resp["personal"] = map[string]any{"personId": u.PersonID, "name": u.DisplayName}
 	}
-	if p.hasTechniker(u.Username) {
-		resp["technik"] = calendarOption{ID: technikClassID, Name: technikClassName}
+	if includeTechnik && p.hasTechniker(u.Username) {
+		resp["technik"] = subscriptionOption{ID: technikClassID, Name: technikClassName}
 	}
 	return resp
 }
 
 // optionList flattens a collector map into a name-sorted slice, so the app's
 // pickers render in a stable order.
-func optionList(set map[int64]string) []calendarOption {
-	out := make([]calendarOption, 0, len(set))
+func optionList(set map[int64]string) []subscriptionOption {
+	out := make([]subscriptionOption, 0, len(set))
 	for id, name := range set {
-		out = append(out, calendarOption{ID: id, Name: name})
+		out = append(out, subscriptionOption{ID: id, Name: name})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
@@ -432,7 +437,20 @@ func (p *Proxy) handleCalendarOptions(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 		return
 	}
-	p.writeJSON(w, p.calendarOptions(p.requestSchool(r), u))
+	p.writeJSON(w, p.subscriptionOptions(p.requestSchool(r), u, true))
+}
+
+// handleNotificationOptions lists the timetable targets the signed-in user may
+// watch with a webhook or ntfy subscription. It is the same catalog as the
+// calendar options, minus the Technik aggregate the poller cannot deliver.
+func (p *Proxy) handleNotificationOptions(w http.ResponseWriter, r *http.Request) {
+	u := p.sessionUser(r)
+	if u == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+		return
+	}
+	p.writeJSON(w, p.subscriptionOptions(p.requestSchool(r), u, false))
 }
 
 // handleCalendarTokens lists only the tokens the requesting user created, so

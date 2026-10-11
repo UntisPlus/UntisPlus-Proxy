@@ -11,12 +11,71 @@ import (
 
 // Self-service subscription API.
 //
-// Webhooks and ntfy topics come in two shapes: school-wide (classId 0) and
-// per-class. Users with a session may manage subscriptions that touch classes
-// they are entitled to: their own class always, any pooled class when they hold
-// the editor, boosted or admin flag, and school-wide ones likewise (classId 0
-// is only mutatable by editor/boosted/admin). Everything admin can do is also
-// in /admin/webhooks and /admin/ntfy.
+// Webhooks and ntfy topics target one element: a class (their own, any pooled
+// one when privileged), a personal/student timetable, a teacher, a room, a
+// subject, or the school as a whole. The target vocabulary and the visibility
+// rules are exactly the calendar mint's, so what a user may subscribe to here
+// is what they can already see in the app. Discovery is via
+// GET /api/notifications/options. GET lists only the caller's own
+// subscriptions. Everything admin can do is also in /admin/webhooks and
+// /admin/ntfy.
+
+// notifTargetReq is the element a notification subscription points at, using
+// the same keys as the calendar mint. At most one target may be set; none means
+// the school-wide target (privileged users only).
+type notifTargetReq struct {
+	ClassID   int64 `json:"classId"`
+	PersonID  int64 `json:"personId"`
+	Personal  bool  `json:"personal"`
+	TeacherID int64 `json:"teacherId"`
+	RoomID    int64 `json:"roomId"`
+	SubjectID int64 `json:"subjectId"`
+}
+
+// resolveNotifTarget maps a notification request onto the (elementType,
+// elementID) pair the change poller matches on, applying the same visibility
+// rules as the calendar mint. classID is the legacy class column, set only for
+// a class target so old readers keep working. ok is false when the request
+// names more than one target or the caller may not watch the one named.
+func (p *Proxy) resolveNotifTarget(school string, u *store.User, canAll bool, req notifTargetReq) (et string, eid, classID int64, ok bool) {
+	set := 0
+	for _, on := range []bool{req.ClassID > 0, req.Personal || req.PersonID > 0,
+		req.TeacherID > 0, req.RoomID > 0, req.SubjectID > 0} {
+		if on {
+			set++
+		}
+	}
+	if set > 1 {
+		return "", 0, 0, false
+	}
+	switch {
+	case req.Personal || req.PersonID > 0:
+		pid := req.PersonID
+		if pid == 0 {
+			pid = u.PersonID
+		}
+		if pid <= 0 || pid != u.PersonID {
+			return "", 0, 0, false
+		}
+		return "STUDENT", pid, 0, true
+	case req.ClassID > 0:
+		// The synthetic Technik aggregate is not a polled class, so a
+		// notification for it could never fire; reject it rather than store a
+		// subscription that never delivers.
+		if req.ClassID == technikClassID || !p.canSubscribeClass(school, u, req.ClassID, canAll) {
+			return "", 0, 0, false
+		}
+		return "CLASS", req.ClassID, req.ClassID, true
+	case req.TeacherID > 0:
+		return "TEACHER", req.TeacherID, 0, p.canMintElement(u, "TEACHER")
+	case req.RoomID > 0:
+		return "ROOM", req.RoomID, 0, p.canMintElement(u, "ROOM")
+	case req.SubjectID > 0:
+		return "SUBJECT", req.SubjectID, 0, p.canMintElement(u, "SUBJECT")
+	default:
+		return "", 0, 0, canAll
+	}
+}
 
 func (p *Proxy) handleSubsWebhooks(w http.ResponseWriter, r *http.Request) {
 	u := p.sessionUser(r)
@@ -39,11 +98,14 @@ func (p *Proxy) handleSubsWebhooks(w http.ResponseWriter, r *http.Request) {
 		}
 		out := make([]map[string]any, 0)
 		for _, h := range hooks {
-			if !canAll && h.ClassID != u.ClassID {
+			if h.CreatedBy != u.Username {
 				continue
 			}
+			et, eid := h.Target()
 			out = append(out, map[string]any{
-				"id": h.ID, "school": h.School, "classId": h.ClassID, "url": h.URL,
+				"id": h.ID, "school": h.School, "elementType": et, "elementId": eid,
+				"name":    p.elementTargetName(h.School, et, eid),
+				"classId": h.ClassID, "url": h.URL, "createdBy": h.CreatedBy,
 			})
 		}
 		p.writeJSON(w, map[string]any{"webhooks": out})
@@ -86,9 +148,9 @@ func (p *Proxy) handleSubsWebhooks(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var req struct {
-			ClassID int64  `json:"classId"`
-			URL     string `json:"url"`
-			Secret  string `json:"secret"`
+			notifTargetReq
+			URL    string `json:"url"`
+			Secret string `json:"secret"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			p.writeJSON(w, map[string]any{"error": "bad request"})
@@ -98,13 +160,14 @@ func (p *Proxy) handleSubsWebhooks(w http.ResponseWriter, r *http.Request) {
 			p.writeJSON(w, map[string]any{"error": err.Error()})
 			return
 		}
-		if !p.canSubscribeClass(school, u, req.ClassID, canAll) {
+		et, eid, classID, ok := p.resolveNotifTarget(school, u, canAll, req.notifTargetReq)
+		if !ok {
 			p.forbidden(w)
 			return
 		}
 		id, err := p.store.AddWebhook(&store.Webhook{
-			School: school, ClassID: req.ClassID, URL: req.URL,
-			Secret: req.Secret, Enabled: true, CreatedBy: u.Username,
+			School: school, ElementType: et, ElementID: eid, ClassID: classID,
+			URL: req.URL, Secret: req.Secret, Enabled: true, CreatedBy: u.Username,
 		})
 		if err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})
@@ -169,24 +232,15 @@ func (p *Proxy) handleSubsNtfy(w http.ResponseWriter, r *http.Request) {
 		}
 		out := make([]map[string]any, 0)
 		for _, t := range topics {
-			et, eid := t.Target()
-			if !canAll {
-				switch et {
-				case "CLASS":
-					if eid != u.ClassID {
-						continue
-					}
-				case "STUDENT":
-					if eid != u.PersonID {
-						continue
-					}
-				default:
-					continue // school-wide and teacher/room/subject topics are staff-relevant
-				}
+			if t.CreatedBy != u.Username {
+				continue
 			}
+			et, eid := t.Target()
 			out = append(out, map[string]any{
 				"id": t.ID, "school": t.School, "elementType": et, "elementId": eid,
+				"name":    p.elementTargetName(t.School, et, eid),
 				"classId": t.ClassID, "topic": t.Topic, "baseUrl": t.BaseURL,
+				"createdBy": t.CreatedBy,
 			})
 		}
 		p.writeJSON(w, map[string]any{"topics": out})
@@ -263,7 +317,7 @@ func (p *Proxy) handleSubsNtfy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var req struct {
-			ClassID int64  `json:"classId"`
+			notifTargetReq
 			Topic   string `json:"topic"`
 			BaseURL string `json:"baseUrl"`
 		}
@@ -282,13 +336,14 @@ func (p *Proxy) handleSubsNtfy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		if !p.canSubscribeClass(school, u, req.ClassID, canAll) {
+		et, eid, classID, ok := p.resolveNotifTarget(school, u, canAll, req.notifTargetReq)
+		if !ok {
 			p.forbidden(w)
 			return
 		}
 		id, err := p.store.AddNtfyTopic(&store.NtfyTopic{
-			School: school, ClassID: req.ClassID, Topic: req.Topic,
-			BaseURL: baseURL, Enabled: true, CreatedBy: u.Username,
+			School: school, ElementType: et, ElementID: eid, ClassID: classID,
+			Topic: req.Topic, BaseURL: baseURL, Enabled: true, CreatedBy: u.Username,
 		})
 		if err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})

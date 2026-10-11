@@ -144,7 +144,8 @@ Use a throwaway user (`testtier`) — create, then remove at the end.
 - [ ] 9.2 add **element-targeted** hook `{"elementType":"ROOM","elementId":169,…}` → listed with name "01-Aula"; same for `STUDENT`/`TEACHER`/`SUBJECT`
 - [ ] 9.3 `POST /api/webhooks/{id}/test` → delivery arrives with `X-Untis-Signature: sha256=…` + `X-Untis-Summary`
 - [ ] 9.4 `POST /admin/ntfy` `{"topic":"untis","elementType":"STUDENT","elementId":5005}` → listed w/ element name; `/api/ntfy/{id}/test` publishes to the topic
-- [ ] 9.5 **self-service** `GET /api/ntfy` as plain student → only own class/student topics; school-wide/room topics hidden
+- [ ] 9.5 **self-service** `GET /api/notifications/options` → the calendar catalog minus `technik`; `GET /api/ntfy` → only the caller's own rows
+- [ ] 9.5b **self-service** `POST /api/webhooks` `{"teacherId":<id>,"url":…}` → 200 for recon/boosted/staff, 403 for a plain student; `{"classId":2000000000}` → 403
 - [ ] 9.6 **legacy** `classId`-only rows still work (dashboard shows them as class targets)
 - [ ] 9.7 delete hook/topic → gone from list, test 404s
 - [ ] 9.8 **durable delivery**: with a webhook pointed at an unreachable URL, let
