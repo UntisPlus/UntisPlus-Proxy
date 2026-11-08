@@ -364,3 +364,83 @@ func TestSubsNtfyTestRouteAndBaseUrl(t *testing.T) {
 		t.Fatalf("unexpected topics: %s", rec.Body.String())
 	}
 }
+
+func TestSubsWebhookIdempotent(t *testing.T) {
+	p, st := newTestProxy(t)
+	_ = st.UpsertUser(&store.User{Username: "dee", Method: "key", PersonType: 5, ClassID: 5000})
+	calSeedMasterData(p, "testschool", calSampleMD())
+
+	var first, second float64
+	for i := 0; i < 2; i++ {
+		rec := subsRequest(t, p, "dee", http.MethodPost, "/api/webhooks", `{"classId":5000,"url":"https://h/x"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("call %d code=%d body=%s", i, rec.Code, rec.Body.String())
+		}
+		var m map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &m)
+		id, _ := m["id"].(float64)
+		if i == 0 {
+			first = id
+		} else {
+			second = id
+		}
+	}
+	if first == 0 || first != second {
+		t.Errorf("idempotent: first=%f second=%f", first, second)
+	}
+
+	// Rotating the secret is a config change for the same destination; it must
+	// not leave the old hook delivering with the old signature as well.
+	rec := subsRequest(t, p, "dee", http.MethodPost, "/api/webhooks", `{"classId":5000,"url":"https://h/x","secret":"rotated"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotate code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var m map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &m)
+	if id, _ := m["id"].(float64); id != first {
+		t.Errorf("rotated secret got id %v, want %v", id, first)
+	}
+
+	hooks, err := st.ListWebhooks("testschool")
+	if err != nil {
+		t.Fatalf("list webhooks: %v", err)
+	}
+	if len(hooks) != 1 {
+		t.Errorf("webhooks = %d, want one row after two identical posts and a rotation", len(hooks))
+	} else if hooks[0].Secret != "rotated" {
+		t.Errorf("secret = %q, want the rotated value", hooks[0].Secret)
+	}
+}
+
+func TestSubsNtfyIdempotent(t *testing.T) {
+	p, st := newTestProxy(t)
+	_ = st.UpsertUser(&store.User{Username: "dee", Method: "key", PersonType: 5, ClassID: 5000})
+	calSeedMasterData(p, "testschool", calSampleMD())
+
+	var first, second float64
+	for i := 0; i < 2; i++ {
+		rec := subsRequest(t, p, "dee", http.MethodPost, "/api/ntfy", `{"classId":5000,"topic":"t1"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("call %d code=%d body=%s", i, rec.Code, rec.Body.String())
+		}
+		var m map[string]any
+		_ = json.Unmarshal(rec.Body.Bytes(), &m)
+		id, _ := m["id"].(float64)
+		if i == 0 {
+			first = id
+		} else {
+			second = id
+		}
+	}
+	if first == 0 || first != second {
+		t.Errorf("idempotent: first=%f second=%f", first, second)
+	}
+
+	topics, err := st.ListNtfyTopics("testschool")
+	if err != nil {
+		t.Fatalf("list ntfy topics: %v", err)
+	}
+	if len(topics) != 1 {
+		t.Errorf("topics = %d, want one row after two identical posts", len(topics))
+	}
+}

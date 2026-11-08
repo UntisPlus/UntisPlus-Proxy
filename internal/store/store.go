@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -256,6 +257,7 @@ func Open(path string) (*Store, error) {
 		school TEXT NOT NULL,
 		class_id INTEGER NOT NULL,
 		version INTEGER NOT NULL DEFAULT 0,
+		observed_end TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (school, class_id)
 	)`)
 	if err != nil {
@@ -530,6 +532,14 @@ func Open(path string) (*Store, error) {
 	if err := addColumnIfMissing(db, "timetable_changes", "teacher", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return nil, err
 	}
+	// migration: remember the last date the polling window reached. The change
+	// detector fetches [today-1, today+4], so at every midnight one new day
+	// enters the window. Without this marker those lessons look exactly like
+	// lessons that were just added upstream, and every subscriber gets a burst
+	// of "new lesson" pushes once a day.
+	if err := addColumnIfMissing(db, "timetable_versions", "observed_end", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return nil, err
+	}
 	// backfill: set element_type/element_id on existing tokens
 	if _, err := db.Exec(`UPDATE class_tokens SET element_type='CLASS', element_id=class_id WHERE class_id>0 AND element_type=''`); err != nil {
 		return nil, err
@@ -544,6 +554,42 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(`UPDATE webhooks SET element_type='CLASS', element_id=class_id WHERE class_id>0 AND element_type=''`); err != nil {
 		return nil, err
 	}
+	// Migration: a subscription is identified by who owns it, what it watches and
+	// where it delivers — not by when it was created, and not by its secret. The
+	// secret is mutable configuration: rotating it used to leave a second row
+	// delivering to the same URL with a different signature. Two identical rows
+	// only ever caused duplicate deliveries and two dashboard entries nobody
+	// could tell apart, so collapse them before the identity index makes that
+	// impossible to create again. The newest row survives so a rotated secret
+	// wins over the old one. Outbox rows for the dropped duplicates are pruned
+	// too: a queued delivery pointing at a row that no longer exists would
+	// otherwise be replayed for a destination the user removed.
+	if _, err := db.Exec(`DELETE FROM webhooks WHERE id NOT IN (
+		SELECT MAX(id) FROM webhooks
+		GROUP BY school, created_by, element_type, element_id, url)`); err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec(`DELETE FROM ntfy_topics WHERE id NOT IN (
+		SELECT MIN(id) FROM ntfy_topics
+		GROUP BY school, created_by, element_type, element_id, topic, base_url)`); err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec(`DELETE FROM notification_outbox
+		WHERE (dest='webhook' AND dest_id NOT IN (SELECT id FROM webhooks))
+		   OR (dest='ntfy' AND dest_id NOT IN (SELECT id FROM ntfy_topics))`); err != nil {
+		return nil, err
+	}
+	// The unique indexes are what make AddWebhook/AddNtfyTopic idempotent under a
+	// concurrent double-tap, not just sequential retries: SELECT-then-INSERT lets
+	// two requests both find nothing and both insert.
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS webhooks_identity
+		ON webhooks (school, created_by, element_type, element_id, url)`); err != nil {
+		return nil, err
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS ntfy_topics_identity
+		ON ntfy_topics (school, created_by, element_type, element_id, topic, base_url)`); err != nil {
+		return nil, err
+	}
 	st := &Store{db: db}
 	if err := st.normalizeUsernames(); err != nil {
 		return nil, err
@@ -556,7 +602,7 @@ func Open(path string) (*Store, error) {
 // recently active variant wins for profile data; secrets and permission flags
 // are merged across all variants.
 func (s *Store) normalizeUsernames() error {
-	rows, err := s.db.Query(`SELECT id,username,password,method,person_id,person_type,class_id,class_name,email,display_name,created_at,last_seen
+	rows, err := s.db.Query(`SELECT id,username,password,method,person_id,person_type,class_id,class_name,email,display_name,created_at,last_seen,school,admin
 		FROM users ORDER BY last_seen DESC, id DESC`)
 	if err != nil {
 		return err
@@ -566,11 +612,13 @@ func (s *Store) normalizeUsernames() error {
 	for rows.Next() {
 		var u User
 		var ca, ls int64
+		var admin int
 		if err := rows.Scan(&u.ID, &u.Username, &u.Password, &u.Method, &u.PersonID, &u.PersonType,
-			&u.ClassID, &u.ClassName, &u.Email, &u.DisplayName, &ca, &ls); err != nil {
+			&u.ClassID, &u.ClassName, &u.Email, &u.DisplayName, &ca, &ls, &u.School, &admin); err != nil {
 			rows.Close()
 			return err
 		}
+		u.Admin = admin != 0
 		u.CreatedAt, u.LastSeen = time.Unix(ca, 0), time.Unix(ls, 0)
 		key := norm(u.Username)
 		if _, ok := groups[key]; !ok {
@@ -607,6 +655,26 @@ func (s *Store) normalizeUsernames() error {
 		}
 		// The first member is the most recently active (ORDER BY last_seen).
 		best := g[0]
+
+		// school and admin are not part of the profile data upstream reports,
+		// so a merge must not drop the school association or demote an admin.
+		// (Before this, re-inserting the merged row without these columns wiped
+		// both, which looked like an account losing its registration/admin on
+		// the next login that triggered a case merge.)
+		if best.School == "" {
+			for _, m := range g {
+				if m.School != "" {
+					best.School = m.School
+					break
+				}
+			}
+		}
+		for _, m := range g {
+			if m.Admin {
+				best.Admin = true
+				break
+			}
+		}
 
 		// Merge secrets (newest non-empty wins) and perms (OR; boosted beats
 		// recon in the impossible conflict case) across every variant.
@@ -650,11 +718,15 @@ func (s *Store) normalizeUsernames() error {
 
 		// Reinsert one canonical lowercase account with the best profile data.
 		best.Username = key
+		admin := 0
+		if best.Admin {
+			admin = 1
+		}
 		if _, err := tx.Exec(`INSERT INTO users
-			(username, password, method, person_id, person_type, class_id, class_name, email, display_name, created_at, last_seen)
-			VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+			(username, password, method, person_id, person_type, class_id, class_name, email, display_name, school, admin, created_at, last_seen)
+			VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			best.Username, best.Password, best.Method, best.PersonID, best.PersonType,
-			best.ClassID, best.ClassName, best.Email, best.DisplayName,
+			best.ClassID, best.ClassName, best.Email, best.DisplayName, best.School, admin,
 			best.CreatedAt.Unix(), best.LastSeen.Unix()); err != nil {
 			tx.Rollback()
 			return err
@@ -1020,18 +1092,23 @@ func (s *Store) IsAdmin(username string) (bool, error) {
 }
 
 // SetAdmin sets the admin flag for a user, creating the row if it does not
-// exist yet.
+// exist yet. Existing rows are updated directly: UpsertUser deliberately never
+// removes the admin flag, so demotion cannot go through the general upsert.
 func (s *Store) SetAdmin(username string, admin bool) error {
 	username = norm(username)
-	u, err := s.GetUser(username)
+	u, err := s.GetUserAnyCase(username)
 	if err != nil {
 		return err
 	}
 	if u == nil {
-		u = &User{Username: username}
+		return s.UpsertUser(&User{Username: username, Admin: admin})
 	}
-	u.Admin = admin
-	return s.UpsertUser(u)
+	v := 0
+	if admin {
+		v = 1
+	}
+	_, err = s.db.Exec(`UPDATE users SET admin=? WHERE username=?`, v, u.Username)
+	return err
 }
 
 // AdminBootstrapSeeded reports whether the -admin bootstrap list has already
@@ -1160,20 +1237,60 @@ func (w *Webhook) Target() (et string, eid int64) {
 	return "", 0
 }
 
-// AddWebhook registers a webhook subscription.
+// WebhookByIdentity returns the webhook with the exact identity, optionally
+// scoped to the owner. The secret is deliberately not part of the identity:
+// re-posting the same destination with a new secret rotates it in place.
+func (s *Store) WebhookByIdentity(school, createdBy string, et string, eid int64, url string) (*Webhook, error) {
+	q := `SELECT id, school, element_type, element_id, class_id, url, secret, enabled, created_by, created_at
+		FROM webhooks
+		WHERE school=? AND element_type=? AND element_id=? AND url=?`
+	args := []any{school, et, eid, url}
+	if createdBy != "" {
+		q += ` AND created_by=?`
+		args = append(args, createdBy)
+	}
+	q += ` LIMIT 1`
+	row := s.db.QueryRow(q, args...)
+	var w Webhook
+	var en, ca int64
+	if err := row.Scan(&w.ID, &w.School, &w.ElementType, &w.ElementID, &w.ClassID, &w.URL, &w.Secret, &en, &w.CreatedBy, &ca); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	w.Enabled, w.CreatedAt = en != 0, time.Unix(ca, 0)
+	return &w, nil
+}
+
+// AddWebhook registers a webhook subscription and returns its id. Re-posting
+// the same destination (same owner, target and URL) returns the existing row
+// and rotates its secret/enabled state instead of creating a second one, so a
+// retried or double-tapped save cannot produce duplicate deliveries. The secret
+// is configuration for that destination, not part of its identity.
 func (s *Store) AddWebhook(w *Webhook) (int64, error) {
 	en := 0
 	if w.Enabled {
 		en = 1
 	}
 	et, eid := w.Target()
-	res, err := s.db.Exec(`INSERT INTO webhooks (school, element_type, element_id, class_id, url, secret, enabled, created_by, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`,
+	_, err := s.db.Exec(`INSERT INTO webhooks (school, element_type, element_id, class_id, url, secret, enabled, created_by, created_at)
+		VALUES (?,?,?,?,?,?,?,?,?)
+		ON CONFLICT (school, created_by, element_type, element_id, url)
+		DO UPDATE SET secret=excluded.secret, enabled=excluded.enabled, class_id=excluded.class_id`,
 		w.School, et, eid, w.ClassID, w.URL, w.Secret, en, w.CreatedBy, time.Now().Unix())
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	return s.webhookIDByIdentity(w.School, et, eid, w.URL, w.CreatedBy)
+}
+
+func (s *Store) webhookIDByIdentity(school, et string, eid int64, url, createdBy string) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM webhooks
+		WHERE school=? AND created_by=? AND element_type=? AND element_id=? AND url=?
+		LIMIT 1`, school, createdBy, et, eid, url).Scan(&id)
+	return id, err
 }
 
 // ListWebhooks returns webhook subscriptions for a school (or all when school is "").
@@ -1238,7 +1355,35 @@ func (n *NtfyTopic) Target() (et string, eid int64) {
 	return "", 0
 }
 
-// AddNtfyTopic registers an ntfy topic subscription.
+// NtfyTopicByDetails returns the ntfy topic with the exact identity, optionally
+// scoped to the owner.
+func (s *Store) NtfyTopicByDetails(school, createdBy string, et string, eid int64, topic, baseURL string) (*NtfyTopic, error) {
+	q := `SELECT id, school, element_type, element_id, class_id, topic, base_url, enabled, created_by, created_at
+		FROM ntfy_topics
+		WHERE school=? AND element_type=? AND element_id=? AND topic=? AND base_url=?`
+	args := []any{school, et, eid, topic, baseURL}
+	if createdBy != "" {
+		q += ` AND created_by=?`
+		args = append(args, createdBy)
+	}
+	q += ` LIMIT 1`
+	row := s.db.QueryRow(q, args...)
+	var n NtfyTopic
+	var en, ca int64
+	if err := row.Scan(&n.ID, &n.School, &n.ElementType, &n.ElementID, &n.ClassID, &n.Topic, &n.BaseURL, &en, &n.CreatedBy, &ca); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	n.Enabled, n.CreatedAt = en != 0, time.Unix(ca, 0)
+	return &n, nil
+}
+
+// AddNtfyTopic registers an ntfy topic subscription and returns its id.
+// Re-adding the exact same subscription (same owner, target, topic and server)
+// returns the existing row, so a retried or double-tapped save cannot produce
+// duplicate notifications.
 func (s *Store) AddNtfyTopic(n *NtfyTopic) (int64, error) {
 	en := 0
 	if n.Enabled {
@@ -1246,12 +1391,24 @@ func (s *Store) AddNtfyTopic(n *NtfyTopic) (int64, error) {
 	}
 	et, eid := n.Target()
 	res, err := s.db.Exec(`INSERT INTO ntfy_topics (school, element_type, element_id, class_id, topic, base_url, enabled, created_by, created_at)
-		VALUES (?,?,?,?,?,?,?,?,?)`,
+		VALUES (?,?,?,?,?,?,?,?,?)
+		ON CONFLICT (school, created_by, element_type, element_id, topic, base_url) DO NOTHING`,
 		n.School, et, eid, n.ClassID, n.Topic, n.BaseURL, en, n.CreatedBy, time.Now().Unix())
 	if err != nil {
 		return 0, err
 	}
+	if nrows, err := res.RowsAffected(); err == nil && nrows == 0 {
+		return s.ntfyTopicIDByIdentity(n.School, et, eid, n.Topic, n.BaseURL, n.CreatedBy)
+	}
 	return res.LastInsertId()
+}
+
+func (s *Store) ntfyTopicIDByIdentity(school, et string, eid int64, topic, baseURL, createdBy string) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM ntfy_topics
+		WHERE school=? AND created_by=? AND element_type=? AND element_id=? AND topic=? AND base_url=?
+		LIMIT 1`, school, createdBy, et, eid, topic, baseURL).Scan(&id)
+	return id, err
 }
 
 // ListNtfyTopics returns ntfy topic subscriptions for a school (or all when school is "").
@@ -1469,8 +1626,12 @@ func (s *Store) UpsertUser(u *User) error {
 			class_name=excluded.class_name,
 			email=excluded.email,
 			display_name=excluded.display_name,
-			school=excluded.school,
-			admin=excluded.admin,
+			-- School and admin are not part of the upstream profile. A login
+			-- (or upsert) that does not know them must not erase them: an empty
+			-- school keeps the recorded one, and an admin is only ever added by
+			-- an upsert, never silently removed. Demotion goes through SetAdmin.
+			school=CASE WHEN excluded.school='' THEN users.school ELSE excluded.school END,
+			admin=MAX(users.admin, excluded.admin),
 			last_seen=excluded.last_seen`,
 		u.Username, u.Password, u.Method, u.PersonID, u.PersonType,
 		u.ClassID, u.ClassName, u.Email, u.DisplayName,
@@ -1493,6 +1654,17 @@ func (s *Store) Touch(username string) error {
 func (s *Store) GetUser(username string) (*User, error) {
 	return s.scanUser(s.db.QueryRow(
 		`SELECT `+userCols+` FROM users WHERE username=?`,
+		norm(username)))
+}
+
+// GetUserAnyCase resolves a username regardless of the casing stored in the
+// database. A login (or admin action) under a different case must find the
+// existing profile before the write-time merge canonicalizes it; the exact
+// GetUser lookup would otherwise miss the row and lose its admin flag/school.
+func (s *Store) GetUserAnyCase(username string) (*User, error) {
+	return s.scanUser(s.db.QueryRow(
+		`SELECT `+userCols+` FROM users WHERE username=? COLLATE NOCASE
+		 ORDER BY last_seen DESC, id DESC LIMIT 1`,
 		norm(username)))
 }
 
@@ -2165,6 +2337,15 @@ func (s *Store) ClassVersion(school string, classID int64) int64 {
 	return v
 }
 
+// ObservedWindowEnd returns the last date the class's polling window reached
+// (YYYY-MM-DD), or "" when no windowed poll has been recorded.
+func (s *Store) ObservedWindowEnd(school string, classID int64) string {
+	var v string
+	_ = s.db.QueryRow(`SELECT observed_end FROM timetable_versions WHERE school=? AND class_id=?`,
+		school, classID).Scan(&v)
+	return v
+}
+
 // SchoolVersion returns the highest class version in a school: a monotone
 // counter that only advances when a polled class timetable actually changed
 // (see ReplaceClassSnapshot). Used as a coarse change counter for feeds that
@@ -2225,6 +2406,20 @@ type Enqueuer func(changed []PeriodRow, put func(dest string, destID int64, payl
 // transaction holds and deadlock. Anything needed while enqueueing — such as
 // the list of webhooks and ntfy topics — has to be read beforehand.
 func (s *Store) ApplyClassSnapshot(school string, classID int64, next []PeriodRow, newVer int64, dropRemovedBefore string, enqueue Enqueuer) (int, error) {
+	return s.applyClassSnapshot(school, classID, next, newVer, dropRemovedBefore, "", enqueue)
+}
+
+// ApplyClassSnapshotWindow is ApplyClassSnapshot with the last date the fetched
+// window reaches (YYYY-MM-DD). A lesson on a date past the previous window has
+// never been observed before, so it is stored as a baseline snapshot row instead
+// of an ADDED change: the window sliding forward must not announce a whole new
+// day of lessons to every subscriber at midnight. An empty observedEnd keeps the
+// legacy behaviour, where every previously unseen period is ADDED.
+func (s *Store) ApplyClassSnapshotWindow(school string, classID int64, next []PeriodRow, newVer int64, dropRemovedBefore, observedEnd string, enqueue Enqueuer) (int, error) {
+	return s.applyClassSnapshot(school, classID, next, newVer, dropRemovedBefore, observedEnd, enqueue)
+}
+
+func (s *Store) applyClassSnapshot(school string, classID int64, next []PeriodRow, newVer int64, dropRemovedBefore, observedEnd string, enqueue Enqueuer) (int, error) {
 	old, err := s.LoadClassSnapshot(school, classID)
 	if err != nil {
 		return 0, err
@@ -2240,12 +2435,26 @@ func (s *Store) ApplyClassSnapshot(school string, classID int64, next []PeriodRo
 		return 0, err
 	}
 	defer tx.Rollback()
+	// The version row holds both the current version and the window marker.
+	// Read them on the transaction's own connection: the caller computed newVer
+	// from a separate read, and baseline rows must carry a version that is not
+	// newer than the version actually stored.
+	var prevVer int64
+	var prevObservedEnd string
+	_ = tx.QueryRow(`SELECT version, observed_end FROM timetable_versions WHERE school=? AND class_id=?`,
+		school, classID).Scan(&prevVer, &prevObservedEnd)
 	if _, err := tx.Exec(`DELETE FROM timetable_changes WHERE school=? AND class_id=?`, school, classID); err != nil {
 		return 0, err
 	}
 	for _, r := range next {
 		prev, existed := oldByID[r.PeriodID]
 		cur := r
+		// A period on a date the window has only just reached was never in the
+		// snapshot because it was outside the fetch horizon, not because it was
+		// added upstream. It is baseline data: storing it keeps the next diff
+		// correct, but it must not count as a change or queue a delivery.
+		horizon := !existed && observedEnd != "" && prevObservedEnd != "" &&
+			len(r.Start) >= 10 && r.Start[:10] > prevObservedEnd
 		// A period that is back after a cancellation is a reinstatement, and
 		// kind is deliberately not part of the comparison below. Without this
 		// a lesson that was cancelled and then restored with byte-identical
@@ -2253,7 +2462,10 @@ func (s *Store) ApplyClassSnapshot(school string, classID int64, next []PeriodRo
 		// is never announced — the lesson silently reappears on the timetable
 		// and nobody is told.
 		reinstated := existed && prev.Kind == "REMOVED"
-		if existed && !reinstated && prev.Start == r.Start && prev.End == r.End &&
+		if horizon {
+			cur.Kind = "UNCHANGED"
+			cur.ModVer = prevVer
+		} else if existed && !reinstated && prev.Start == r.Start && prev.End == r.End &&
 			prev.Subject == r.Subject && prev.Room == r.Room && prev.Teacher == r.Teacher && prev.Description == r.Description {
 			cur.Kind = "UNCHANGED"
 			cur.ModVer = prev.ModVer
@@ -2276,8 +2488,11 @@ func (s *Store) ApplyClassSnapshot(school string, classID int64, next []PeriodRo
 		}
 		oldByID[r.PeriodID] = cur
 		if cur.Kind == "UNCHANGED" {
-			// keep existing row; preserve old values
-			cur.Start, cur.End, cur.Subject, cur.Room, cur.Teacher, cur.Description = prev.Start, prev.End, prev.Subject, prev.Room, prev.Teacher, prev.Description
+			// Keep the previous row's values for an unchanged period. A horizon
+			// discovery has no previous row, so it keeps the fetched values.
+			if !horizon {
+				cur.Start, cur.End, cur.Subject, cur.Room, cur.Teacher, cur.Description = prev.Start, prev.End, prev.Subject, prev.Room, prev.Teacher, prev.Description
+			}
 			rows, err := tx.Exec(`INSERT INTO timetable_changes (school,class_id,period_id,kind,start,end,subject,room,teacher,description,mod_ver)
 				VALUES (?,?,?,?,?,?,?,?,?,?,?)`, school, classID, r.PeriodID, cur.Kind, cur.Start, cur.End, cur.Subject, cur.Room, cur.Teacher, cur.Description, cur.ModVer)
 			if err != nil {
@@ -2332,8 +2547,14 @@ func (s *Store) ApplyClassSnapshot(school string, classID int64, next []PeriodRo
 		changedRows = append(changedRows, r)
 	}
 	if changed > 0 {
-		if _, err := tx.Exec(`INSERT INTO timetable_versions (school,class_id,version) VALUES (?,?,?)
-			ON CONFLICT(school,class_id) DO UPDATE SET version=excluded.version`, school, classID, newVer); err != nil {
+		if _, err := tx.Exec(`INSERT INTO timetable_versions (school,class_id,version,observed_end) VALUES (?,?,?,?)
+			ON CONFLICT(school,class_id) DO UPDATE SET version=excluded.version,
+				observed_end=CASE
+					WHEN excluded.observed_end='' THEN timetable_versions.observed_end
+					WHEN timetable_versions.observed_end='' OR excluded.observed_end > timetable_versions.observed_end
+						THEN excluded.observed_end
+					ELSE timetable_versions.observed_end END`,
+			school, classID, newVer, observedEnd); err != nil {
 			return 0, err
 		}
 		if enqueue != nil {
@@ -2346,6 +2567,17 @@ func (s *Store) ApplyClassSnapshot(school string, classID int64, next []PeriodRo
 				// with nothing to send it, and the next poll would see no change.
 				return 0, err
 			}
+		}
+	} else if observedEnd != "" && observedEnd > prevObservedEnd {
+		// Nothing to announce, but the window moved forward: remember its new
+		// edge so the next poll treats that date as already observed. Keep the
+		// current version, because there is no change for a client to fetch.
+		// This is strictly forward-only; a backwards clock must not un-observe
+		// days that were already seen.
+		if _, err := tx.Exec(`INSERT INTO timetable_versions (school,class_id,version,observed_end) VALUES (?,?,?,?)
+			ON CONFLICT(school,class_id) DO UPDATE SET observed_end=excluded.observed_end`,
+			school, classID, prevVer, observedEnd); err != nil {
+			return 0, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
@@ -3031,9 +3263,13 @@ func (s *Store) ClassPeriodsOnDate(school string, classID int64, date string) ([
 // PendingChanges returns the periods modified after the given version, plus the
 // current class version.
 func (s *Store) PendingChanges(school string, classID int64, since int64) ([]PeriodRow, int64, error) {
+	// since=0 means "the full snapshot", not "rows newer than version zero":
+	// baseline rows discovered at the edge of the poll window keep the previous
+	// version, which can legitimately be 0 for a class whose first observation
+	// was empty. The initial stream/change payload must still contain them.
 	rows, err := s.db.Query(`SELECT period_id, kind, start, end, subject, room, teacher, description, mod_ver
-		FROM timetable_changes WHERE school=? AND class_id=? AND mod_ver>?
-		ORDER BY period_id`, school, classID, since)
+		FROM timetable_changes WHERE school=? AND class_id=? AND (?=0 OR mod_ver>?)
+		ORDER BY period_id`, school, classID, since, since)
 	if err != nil {
 		return nil, s.ClassVersion(school, classID), err
 	}

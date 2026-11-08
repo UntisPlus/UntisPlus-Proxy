@@ -18,6 +18,12 @@ code, validates it upstream and remembers the secret for replay; a rejected
 paste never overwrites a stored key. Six-digit codes keep working exactly as
 before.
 
+A login never erases identity that upstream failed to report: a degraded
+`PersonInfo` response keeps the stored person/class, and the admin flag (which
+upstream never reports) is preserved. Creating a new account through the admin
+API persists the supplied password/method, and a case-only username variant is
+merged without dropping the school association or admin flag.
+
 ## Two event sources
 
 | Source | Type | Latency | Purpose |
@@ -30,6 +36,12 @@ All three are driven by the same change detection: the proxy polls each pooled
 class every `-poll-interval`, diffs against the previous snapshot and bumps the
 version.
 
+The fetch window is `[today-1, today+4]` and slides forward at midnight. The
+proxy records the last date each class's window covered, so lessons that merely
+become visible with the new day are stored as baseline data instead of being
+reported as changes. Notifications therefore describe real upstream edits, not
+the daily horizon advance.
+
 ## SSE stream
 
 Requires a logged-in **session** (`JSESSIONID` cookie).
@@ -38,18 +50,36 @@ Requires a logged-in **session** (`JSESSIONID` cookie).
 GET /api/timetable/stream?school=testschool
 ```
 
-The stream always serves the **session user's own class** (`classId` is taken
-from the session); the `school` query only picks the school and defaults to the
-`schoolname` cookie's school. Fire-and-forget heartbeats every 30s
-(`: heartbeat`). Events:
+With no target parameter the stream serves the **session user's own timetable**:
+their class changes plus their private student-events counter. That is the
+contract the Android app already uses, so existing clients need no change. A
+session-only account with no person id falls back to its class rather than
+failing. `school` only picks the school and defaults to the `schoolname` cookie's
+school.
+
+Explicit targets use the same keys as subscriptions: `classId`, `personal=true`
+or `personId`, `teacherId`, `roomId`, `subjectId`, or `schoolWide=true`
+(editor/boosted/admin). Element targets receive the changes whose rows name that
+element, once per element per change; a lesson that moves rooms notifies both the
+old and the new room. School-wide is explicit on purpose and must not be combined
+with an element target.
+
+Fire-and-forget heartbeats every 30s (`: heartbeat`). Events:
 
 ```
 event: snapshot
-data: {"event":"snapshot","school":"testschool","classId":5000,"current":4,"changes":[...]}
+data: {"event":"snapshot","school":"testschool","elementType":"CLASS","elementId":5000,"classId":5000,"current":4,"changes":[...]}
 
 event: change
-data: {"event":"change","school":"testschool","classId":5000,"version":5,"changes":[...]}
+data: {"event":"change","school":"testschool","classId":5000,"elementType":"CLASS","elementId":5000,"version":5,"changes":[...]}
+
+event: student-events
+data: {"event":"student-events","school":"testschool","elementType":"STUDENT","elementId":5005,"eventVersion":4,"reason":"updated"}
 ```
+
+`elementType`/`elementId` name the subscription target (`""`/`0` for
+school-wide). The `student-events` frame is emitted on **every** stream target
+because that signal is private to the session user.
 
 `socket.io`-style fallback is not needed — plain `EventSource` works. The
 `school` is optional and defaults to the school on the session's `schoolname`
@@ -497,12 +527,20 @@ announced there would reach every classmate.
 - `DELETE /api/webhooks/{id}` | `/api/ntfy/{id}` — remove your own (privileged
   users can remove any).
 
+Creating the same subscription again is idempotent (same owner, target and URL —
+or target, topic and server for ntfy): the POST returns the existing `id` instead
+of queueing a duplicate delivery. Re-posting a webhook with a new secret rotates
+that secret in place. A different URL/server or target is a different
+subscription.
+
 This lets the app offer in-app "notify me about changes" without admin
 credentials — for example a student subscribing to a room's changes, or a
 teacher to their own lessons.
 
 ## Webhook receivers
 
-The webhook payload equals the SSE `change` data; receivers verify integrity via
-`X-Untis-Signature: sha256=<HMAC-SHA256(raw body, secret)>` when a secret is
-configured. See `docs/ADMIN-WEBHOOKS-NTFY.md`.
+The webhook payload carries the same `event` / `school` / `classId` / `version` /
+`digest` / `changes` core as the SSE `change` data (it is destination-scoped, so
+it omits the subscription's `elementType`/`elementId`). Receivers verify
+integrity via `X-Untis-Signature: sha256=<HMAC-SHA256(raw body, secret)>` when a
+secret is configured. See `docs/ADMIN-WEBHOOKS-NTFY.md`.

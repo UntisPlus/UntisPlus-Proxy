@@ -45,7 +45,45 @@ func (p *Proxy) handleJSONRPC(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// preserveUserIdentity carries over what upstream cannot report or failed to
+// resolve on this login. PersonInfo is best-effort: a hiccup must not wipe a
+// working account's person/class (which would drop the class out of the pool and
+// leave the user unable to load a timetable) or its admin flag (which upstream
+// never reports). Called before every UpsertUser on a login path.
+func (p *Proxy) preserveUserIdentity(user *store.User) {
+	existing, err := p.store.GetUser(user.Username)
+	if err != nil || existing == nil {
+		// A login under a different casing still refers to the same account;
+		// the write-time merge will canonicalize it, but only after this read.
+		existing, err = p.store.GetUserAnyCase(user.Username)
+	}
+	if err != nil || existing == nil {
+		return
+	}
+	if user.PersonID == 0 {
+		user.PersonID = existing.PersonID
+	}
+	if user.PersonType == 0 {
+		user.PersonType = existing.PersonType
+	}
+	if user.ClassID == 0 {
+		user.ClassID = existing.ClassID
+		user.ClassName = existing.ClassName
+	}
+	if user.Email == "" {
+		user.Email = existing.Email
+	}
+	if user.DisplayName == "" {
+		user.DisplayName = existing.DisplayName
+	}
+	user.Admin = existing.Admin
+	user.CreatedAt = existing.CreatedAt
+}
+
 func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request, school string, id json.RawMessage, paramsRaw json.RawMessage) {
+	// Capture this before anything below calls stateFor (classNameFor does), or
+	// the school is already registered and the answer is always false.
+	isNewSchool := p.isNewSchool(school)
 	var params struct {
 		User     string `json:"user"`
 		Password string `json:"password"`
@@ -98,25 +136,29 @@ func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request, school stri
 		Email:       info.Email,
 		DisplayName: info.DisplayName,
 	}
+	p.preserveUserIdentity(user)
 	_ = p.store.UpsertUser(user)
 	_ = p.store.SetAccountPassword(params.User, params.Password)
 	_ = p.store.Touch(params.User)
 	p.stateFor(school)
-	if p.isNewSchool(school) {
+	if isNewSchool {
 		p.ensureReconScan(school)
 	}
 	go p.untis.Logout(school, cookie)
 
-	s := p.sessions.New(params.User, info.ClassID)
+	// Answer with the preserved identity too. Reporting zeros here after a
+	// degraded PersonInfo would leave the app without a class even though the
+	// stored account still has one.
+	s := p.sessions.New(params.User, user.ClassID)
 	p.setSessionCookies(w, r, s.ID, school)
 	p.writeJSON(w, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      idVal(id),
 		"result": map[string]any{
 			"sessionId":  s.ID,
-			"personType": info.PersonType,
-			"personId":   info.PersonID,
-			"klasseId":   info.ClassID,
+			"personType": user.PersonType,
+			"personId":   user.PersonID,
+			"klasseId":   user.ClassID,
 		},
 	})
 }

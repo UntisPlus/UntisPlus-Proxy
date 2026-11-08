@@ -376,6 +376,172 @@ func TestHandleTimetableStreamSnapshotThenChange(t *testing.T) {
 	}
 }
 
+// TestAffectedElementsUsesChangedRows: only the elements named by the changed
+// rows may fire, not every element in the class; the old side of a change is
+// included (a lesson leaving R204 must wake R204 subscribers); and repeated
+// references collapse to one key.
+func TestAffectedElementsUsesChangedRows(t *testing.T) {
+	md := &masterDataCache{
+		teachers: map[int64]string{5009: "A. Hartley", 5010: "B. Other"},
+		rooms:    map[int64]string{169: "R204", 170: "R112"},
+		subjects: map[int64]string{7: "MATH"},
+	}
+	prev := []store.PeriodRow{
+		{PeriodID: 10, Teacher: "A. Hartley", Room: "R204", Subject: "MATH"},
+		{PeriodID: 11, Teacher: "B. Other", Room: "R204", Subject: "MATH"},
+	}
+	periods := []map[string]any{
+		reconPeriod(10, "2026-09-28", "08:00", "08:45", 5009, 170, 7), // room moved
+		reconPeriod(11, "2026-09-28", "09:00", "09:45", 5010, 169, 7), // untouched
+	}
+	queued := []store.PeriodRow{
+		{PeriodID: 10, Kind: "CHANGED", Teacher: "A. Hartley", Room: "R112", Subject: "MATH"},
+		{PeriodID: 10, Kind: "CHANGED", Teacher: "A. Hartley", Room: "R112", Subject: "MATH"},
+	}
+	got := affectedElements(md, queued, prev, periods)
+	want := map[elementKey]bool{
+		{"TEACHER", 5009}: true,
+		{"ROOM", 170}:     true, // the new room
+		{"ROOM", 169}:     true, // the room the lesson left
+		{"SUBJECT", 7}:    true,
+	}
+	for k := range want {
+		if _, ok := got[k]; !ok {
+			t.Errorf("missing affected element %+v (got %v)", k, got)
+		}
+	}
+	if _, ok := got[elementKey{"TEACHER", 5010}]; ok {
+		t.Error("teacher of an untouched period must not be notified")
+	}
+	if _, ok := got[elementKey{"ROOM", 999}]; ok {
+		t.Error("unrelated room must not be notified")
+	}
+
+	// An ADDED row has no previous side; a REMOVED row has only the previous one.
+	added := affectedElements(md, []store.PeriodRow{{PeriodID: 12, Kind: "ADDED"}},
+		nil, []map[string]any{reconPeriod(12, "2026-09-28", "10:00", "10:45", 5010, 170, 7)})
+	if _, ok := added[elementKey{"TEACHER", 5010}]; !ok {
+		t.Errorf("ADDED row did not yield its elements: %v", added)
+	}
+	removed := affectedElements(md, []store.PeriodRow{{PeriodID: 10, Kind: "REMOVED"}},
+		prev, nil)
+	if _, ok := removed[elementKey{"ROOM", 169}]; !ok {
+		t.Errorf("REMOVED row lost its previous room: %v", removed)
+	}
+}
+
+// TestHandleTimetableStreamElementTarget: a teacher stream receives exactly one
+// change for a class whose two changed periods both name that teacher. Before
+// the fan-out was deduplicated the same teacher was queued once per period.
+func TestHandleTimetableStreamElementTarget(t *testing.T) {
+	f := &fakeUpstream{}
+	f.setTimetable(t, []map[string]any{
+		reconPeriod(10, "2026-09-28", "08:00", "08:45", 5009, 169, 7),
+		reconPeriod(11, "2026-09-28", "09:00", "09:45", 5009, 169, 7),
+	})
+	p, st := newFakeProxyUpstream(t, f)
+	seedClassOwner(t, st, "owen", 7, 5000)
+	if err := st.UpsertUser(&store.User{Username: "staf", Method: "key", School: "testschool",
+		PersonType: 2, PersonID: 9, ClassID: 5000}); err != nil {
+		t.Fatalf("seed staff: %v", err)
+	}
+	calSeedMasterData(p, "testschool", &masterDataCache{
+		teachers: map[int64]string{5009: "A. Hartley", 5010: "B. Other"},
+		rooms:    map[int64]string{169: "R204", 170: "R112"},
+		subjects: map[int64]string{7: "MATH"},
+	})
+	if !p.checkClass("testschool", 5000) {
+		t.Fatal("first poll should store the initial snapshot")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/timetable/stream?school=testschool&teacherId=5009", nil).WithContext(ctx)
+	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: p.sessions.New("staf", 0).ID})
+	rec := newLockedWriter()
+	go p.handleTimetableStream(rec, req)
+	if got := waitForBytes(t, rec, []byte("event: snapshot")); !bytes.Contains(got, []byte(`"elementType":"TEACHER"`)) {
+		t.Fatalf("snapshot does not name the teacher target: %s", got)
+	}
+
+	f.setTimetable(t, []map[string]any{
+		reconPeriod(10, "2026-09-28", "08:00", "08:45", 5009, 170, 7),
+		reconPeriod(11, "2026-09-28", "09:00", "09:45", 5009, 170, 7),
+	})
+	if !p.checkClass("testschool", 5000) {
+		t.Fatal("second poll should detect the room change")
+	}
+	got := waitForBytes(t, rec, []byte("event: change"))
+	if n := bytes.Count(got, []byte("event: change")); n != 1 {
+		t.Errorf("change events = %d, want 1 (deduplicated per element): %s", n, got)
+	}
+}
+
+// TestHandleTimetableStreamLegacyNoPerson: a session-only account with no
+// person id still gets its class stream, and any stream carries that user's own
+// student-events counter. The stream used to 403 in this case once targeting was
+// added, and the class branch lost the event frame.
+func TestHandleTimetableStreamLegacyNoPerson(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertUser(&store.User{Username: "solo", Method: "key", School: "testschool",
+		PersonType: 5, PersonID: 0, ClassID: 5000}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/api/timetable/stream?school=testschool", nil).WithContext(ctx)
+	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: p.sessions.New("solo", 0).ID})
+	rec := newLockedWriter()
+	go p.handleTimetableStream(rec, req)
+	if got := waitForBytes(t, rec, []byte("event: snapshot")); !bytes.Contains(got, []byte(`"elementType":"CLASS"`)) {
+		t.Fatalf("snapshot = %s, want the class fallback", got)
+	}
+	p.hub.publish("testschool", 5000, notifyMsg{School: "testschool", ClassID: 5000, Version: 2})
+	if got := waitForBytes(t, rec, []byte("event: change")); !bytes.Contains(got, []byte("event: change")) {
+		t.Fatalf("class change not delivered: %s", got)
+	}
+	p.hub.publishUser("testschool", "solo", studentEventMsg{School: "testschool", Username: "solo", EventVersion: 3, Reason: "created"})
+	if got := waitForBytes(t, rec, []byte("event: student-events")); !bytes.Contains(got, []byte(`"eventVersion":3`)) {
+		t.Fatalf("student-events not delivered: %s", got)
+	}
+}
+
+// TestHandleTimetableStreamSchoolWide: school-wide is privileged and must be
+// requested explicitly; the parameterless form is the personal default, not a
+// silent escalation.
+func TestHandleTimetableStreamSchoolWide(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertUser(&store.User{Username: "dee", Method: "key", School: "testschool",
+		PersonType: 5, PersonID: 7, ClassID: 5000}); err != nil {
+		t.Fatalf("seed student: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/timetable/stream?school=testschool&schoolWide=true", nil)
+	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: p.sessions.New("dee", 0).ID})
+	rec := httptest.NewRecorder()
+	p.handleTimetableStream(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("basic school-wide status = %d, want 403", rec.Code)
+	}
+
+	if err := st.UpsertUser(&store.User{Username: "mira", Method: "key", School: "testschool",
+		PersonType: 2, PersonID: 8, ClassID: 5000, Admin: true}); err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // let the handler emit its snapshot and return
+	req = httptest.NewRequest(http.MethodGet, "/api/timetable/stream?school=testschool&schoolWide=true", nil).WithContext(ctx)
+	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: p.sessions.New("mira", 0).ID})
+	rec = httptest.NewRecorder()
+	p.handleTimetableStream(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin school-wide status = %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"elementType":""`) {
+		t.Errorf("admin snapshot does not name the school-wide target: %s", rec.Body.String())
+	}
+}
+
 // TestUpstreamOutageDoesNotWipeSnapshot: a school-server error must never be
 // read as "this class has no periods". Treating it as an empty timetable marks
 // every cached period REMOVED, bumps the version and fires a change storm at

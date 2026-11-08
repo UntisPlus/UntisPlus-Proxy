@@ -196,6 +196,28 @@ func TestAdminUsersCRUD(t *testing.T) {
 	}
 }
 
+// TestAdminCreateUserKeepsPassword pins the new-account half of the admin
+// endpoint: creating a username that does not exist yet must persist the
+// supplied password/method, not silently create a credential-less row.
+func TestAdminCreateUserKeepsPassword(t *testing.T) {
+	p, st := newTestProxy(t)
+	rec := adminRequest(t, p, "bob", http.MethodPost, "/admin/users",
+		`{"username":"newbie","password":"sekret","method":"password","admin":false}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create user code = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	u, err := st.GetUser("newbie")
+	if err != nil || u == nil {
+		t.Fatalf("newbie not created: %v", err)
+	}
+	if u.Password != "sekret" || u.Method != "password" {
+		t.Errorf("stored credential = %q/%q, want sekret/password", u.Password, u.Method)
+	}
+	if got, _ := st.GetAccountPassword("newbie"); got != "sekret" {
+		t.Errorf("account password = %q, want sekret", got)
+	}
+}
+
 func TestAdminSchools(t *testing.T) {
 	p, _ := newTestProxy(t)
 	rec := adminRequest(t, p, "bob", http.MethodPost, "/admin/schools/otherschool", "")

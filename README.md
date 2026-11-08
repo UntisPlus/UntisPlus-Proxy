@@ -222,18 +222,49 @@ GET /api/timetable/stream                    # SSE live stream
 The server polls each pooled class every `-poll-interval`, diffs it against the
 last stored snapshot, bumps the class version, and persists the change rows.
 
-Both endpoints require a session and are scoped to the caller's own class unless
-they hold the access to see another (`classId=` otherwise). Payload:
+The poll window is `[today-1, today+4]` and therefore slides forward at
+midnight. The proxy remembers how far each class's window has reached and stores
+lessons that appear only because a new day entered the window as baseline data,
+not as changes. Without that, every subscriber got a burst of "new lesson"
+notifications at midnight (01:00/02:00 local when the container runs in UTC). A
+lesson whose date was already inside the observed window is still reported
+normally, so real upstream edits are never hidden.
+
+Both endpoints require a session. With no target parameter the stream keeps the
+legacy app contract: the caller's own timetable (their class changes plus the
+private student-events counter), falling back to their class for a session-only
+account. An explicit target narrows it:
+
+| Query parameter | Stream target |
+|---|---|
+| *(none)* | personal, or the caller's class when there is no person id |
+| `classId=5000` | that class |
+| `personal=true` or `personId=N` | the caller's own timetable |
+| `teacherId=N` / `roomId=N` / `subjectId=N` | changes whose rows name that element |
+| `schoolWide=true` | every class in the school (editor/boosted/admin) |
+
+Element streams fire only for elements **mentioned by the changed rows**, not for
+every element in the class, and each element is notified once per change no
+matter how many periods reference it. A changed or removed lesson also wakes the
+element it is leaving, so a room move notifies both the old and the new room.
+`schoolWide` is explicit on purpose: a parameterless request must never silently
+escalate from one class to a whole school.
+
+Payload:
 
 ```json
 {"event":"change","school":"testschool","classId":5000,"version":7,
+ "elementType":"CLASS","elementId":5000,
  "summary":"1 added, 1 removed",
  "digest":{"summary":"…","message":"…"},
  "changes":[…]}
 ```
 
-The stream emits `event: snapshot` on connect, then `event: change` per detected
-change — this is what the Android app subscribes to.
+`elementType`/`elementId` name the subscription target (empty/0 for
+school-wide). The stream emits `event: snapshot` on connect, then `event: change`
+per detected change, and `event: student-events` for the caller's own Technik
+counter — on every target, since that signal is private to the session user.
+This is what the Android app subscribes to.
 
 **The digest** is the human-readable rendering of the same diff
 (`Thu 01.10. 09:50–10:35 · Physik · room 12-14 → 01-Aula · TchrA · Substitution:
@@ -261,6 +292,13 @@ dropped, and it survives a restart. A failing destination retries with backoff
 (30s doubling to a 15m cap, 8 attempts) and is then marked dead — visible via
 `GET /admin/outbox` — while other destinations for the same change are unaffected.
 See [docs/ADMIN-WEBHOOKS-NTFY.md](docs/ADMIN-WEBHOOKS-NTFY.md#delivery-reliability).
+
+Creating a subscription is **idempotent for its destination** (owner, target and
+URL; for ntfy, owner, target, topic and server). POSTing the same destination
+twice returns the existing row instead of creating a second one, so a retried
+request cannot double-deliver, and re-posting a webhook with a new secret rotates
+that secret in place. A different URL/server or target is a different
+subscription.
 
 ---
 
@@ -291,11 +329,11 @@ with its own `baseUrl` for a self-hosted ntfy. Overrides are stored with trailin
 slashes trimmed, so the dashboard cannot list two rows that are the same
 subscription.
 
-> **Two matching subscriptions to the same topic produce two notifications.**
-> Rows are matched per element and there is no de-duplication pass, so a
-> class-wide change that matches both a `CLASS` row and a `STUDENT` row pointing
-> at the same server and topic delivers twice, with the same title. Keep one row
-> per (element, server, topic) you actually want.
+> **Two different matching subscriptions produce two notifications.** Identical
+> rows for the same destination are collapsed (see above), but rows for different
+> targets are not: a class-wide change that matches both a `CLASS` row and a
+> `STUDENT` row pointing at the same server and topic delivers twice, with the
+> same title. Keep one row per (element, server, topic) you actually want.
 
 ---
 

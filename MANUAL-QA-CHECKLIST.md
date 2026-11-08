@@ -155,6 +155,9 @@ the fast way to inspect the digest.
 - [ ] `summary` is pure ASCII (no `·`, `ä`, `→`); `… and N more` footer on big reshuffles
 - [ ] `GET /api/timetable/stream?school=testschool` (SSE) → connects, `event: change` arrives on a real change, heartbeat present, clean disconnect on `Ctrl-C`
 - [ ] Stream with a non-matching class cookie does not leak other classes' changes
+- [ ] `?schoolWide=true` as a plain student → 403; as editor/admin → snapshot with `"elementType":""`, then changes from any class
+- [ ] `?teacherId=<id>` → one change frame for a teacher with several changed periods; a room move fires both old and new room; an unrelated room gets nothing
+- [ ] stream with no target as a session-only account (no person id) → their class stream, not 403; `event: student-events` still arrives
 
 ## 8. Webhooks
 
@@ -173,6 +176,7 @@ the fast way to inspect the digest.
 - [ ] `DELETE /admin/webhooks/<id>` → gone from the list
 - [ ] `POST /api/webhooks` self-service with `USERCOOKIE` for own class → 200; for another class → 403
 - [ ] `POST /api/webhooks` `{"teacherId":<id>,…}` → 200 for recon/boosted/staff, 403 for a plain student; `{"personal":true,…}` → 200
+- [ ] POST the **same** webhook twice → same `id`, one row; a changed secret updates that row's `secret`, not a second row. ntfy likewise; a different server → a new row
 - [ ] `GET /api/notifications/options` → same catalog as `/api/calendar/options` minus `technik`
 - [ ] `POST /api/ntfy` (or webhooks) `{"classId":2000000000,…}` → 403 even for a techniker
 - [ ] `DELETE /api/webhooks/<other user's id>` → 403

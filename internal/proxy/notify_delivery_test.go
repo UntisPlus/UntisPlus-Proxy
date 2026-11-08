@@ -567,6 +567,30 @@ func TestCheckClassWithoutOwnerSkips(t *testing.T) {
 	}
 }
 
+// TestCheckClassRecordsObservedWindowEnd is the wiring half of the daily-horizon
+// fix: the poller must pass the end of its [today-1, today+4] window to the
+// snapshot so the next poll can tell a newly visible day from a real change.
+func TestCheckClassRecordsObservedWindowEnd(t *testing.T) {
+	f := &fakeUpstream{}
+	future := time.Now().AddDate(0, 0, 4)
+	f.setTimetable(t, []map[string]any{{
+		"id":            10,
+		"startDateTime": future.Format("2006-01-02") + "T08:00",
+		"endDateTime":   future.Format("2006-01-02") + "T08:45",
+		"elements":      []any{},
+	}})
+	p, st := newFakeProxyUpstream(t, f)
+	seedClassOwner(t, st, "owen", 100, 5000)
+
+	if !p.checkClass("testschool", 5000) {
+		t.Fatal("first poll should store the initial snapshot")
+	}
+	want := time.Now().AddDate(0, 0, 4).Format("2006-01-02")
+	if got := st.ObservedWindowEnd("testschool", 5000); got != want {
+		t.Errorf("ObservedWindowEnd = %q, want the fetch-window end %q", got, want)
+	}
+}
+
 func TestSetNtfyBaseOverridesDefaultServer(t *testing.T) {
 	old := ntfyBase
 	defer SetNtfyBase(old)

@@ -408,6 +408,121 @@ func TestElementTargetRoundTripAndBackfill(t *testing.T) {
 	}
 }
 
+func TestAddSubscriptionsIsIdempotent(t *testing.T) {
+	st := openTestStore(t)
+
+	first, err := st.AddWebhook(&Webhook{School: "testschool", ElementType: "TEACHER", ElementID: 5009,
+		URL: "https://hooks.example/abc", Secret: "s3cret", Enabled: true, CreatedBy: "bob"})
+	if err != nil {
+		t.Fatalf("add webhook: %v", err)
+	}
+	second, err := st.AddWebhook(&Webhook{School: "testschool", ElementType: "TEACHER", ElementID: 5009,
+		URL: "https://hooks.example/abc", Secret: "s3cret", Enabled: true, CreatedBy: "bob"})
+	if err != nil {
+		t.Fatalf("re-add webhook: %v", err)
+	}
+	if first != second {
+		t.Errorf("webhook ids differ: %d vs %d, want the existing row", first, second)
+	}
+	// Rotating the secret must update the existing destination, not add a second
+	// hook that double-delivers to the same receiver.
+	third, err := st.AddWebhook(&Webhook{School: "testschool", ElementType: "TEACHER", ElementID: 5009,
+		URL: "https://hooks.example/abc", Secret: "rotated", Enabled: true, CreatedBy: "bob"})
+	if err != nil {
+		t.Fatalf("rotate webhook secret: %v", err)
+	}
+	if third != first {
+		t.Errorf("rotated secret created id %d, want the existing %d", third, first)
+	}
+	hooks, err := st.ListWebhooks("testschool")
+	if err != nil {
+		t.Fatalf("list webhooks: %v", err)
+	}
+	if len(hooks) != 1 {
+		t.Fatalf("webhooks = %d, want 1", len(hooks))
+	}
+	if hooks[0].Secret != "rotated" {
+		t.Errorf("secret = %q, want the rotated value", hooks[0].Secret)
+	}
+
+	one, err := st.AddNtfyTopic(&NtfyTopic{School: "testschool", ElementType: "ROOM", ElementID: 169,
+		Topic: "room-169", BaseURL: "https://ntfy.example", Enabled: true, CreatedBy: "bob"})
+	if err != nil {
+		t.Fatalf("add topic: %v", err)
+	}
+	two, err := st.AddNtfyTopic(&NtfyTopic{School: "testschool", ElementType: "ROOM", ElementID: 169,
+		Topic: "room-169", BaseURL: "https://ntfy.example", Enabled: true, CreatedBy: "bob"})
+	if err != nil {
+		t.Fatalf("re-add topic: %v", err)
+	}
+	if one != two {
+		t.Errorf("topic ids differ: %d vs %d, want the existing row", one, two)
+	}
+	if topics, _ := st.ListNtfyTopics("testschool"); len(topics) != 1 {
+		t.Errorf("topics = %d, want 1", len(topics))
+	}
+}
+
+// TestOpenCollapsesDuplicateSubscriptions pins the migration: an older database
+// can already contain several rows for the same destination, even with
+// different secrets, so the identity index cannot simply be created. The newest
+// row survives (a rotated secret wins), the duplicates and their queued
+// deliveries are dropped, and reopening is idempotent.
+func TestOpenCollapsesDuplicateSubscriptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := st.db.Exec(`DROP INDEX webhooks_identity`); err != nil {
+		t.Fatalf("drop index: %v", err)
+	}
+	for i, secret := range []string{"old", "rotated"} {
+		if _, err := st.db.Exec(`INSERT INTO webhooks (school, element_type, element_id, class_id, url, secret, enabled, created_by, created_at)
+			VALUES ('testschool','TEACHER',5009,0,'https://hooks.example/abc',?,1,'bob',?)`, secret, i+1); err != nil {
+			t.Fatalf("seed duplicate: %v", err)
+		}
+	}
+	// The queued delivery belongs to the duplicate that is about to disappear.
+	if _, err := st.db.Exec(`INSERT INTO notification_outbox (school, class_id, version, dest, dest_id, payload, state)
+		VALUES ('testschool',5000,1,'webhook',1,'{}','pending')`); err != nil {
+		t.Fatalf("seed outbox: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	defer st.Close()
+	hooks, err := st.ListWebhooks("testschool")
+	if err != nil {
+		t.Fatalf("list after migration: %v", err)
+	}
+	if len(hooks) != 1 {
+		t.Errorf("webhooks after migration = %d, want 1", len(hooks))
+	} else if hooks[0].Secret != "rotated" {
+		t.Errorf("surviving secret = %q, want the newest value", hooks[0].Secret)
+	}
+	var outbox int
+	if err := st.db.QueryRow(`SELECT COUNT(*) FROM notification_outbox`).Scan(&outbox); err != nil {
+		t.Fatalf("count outbox: %v", err)
+	}
+	if outbox != 0 {
+		t.Errorf("outbox rows for dropped duplicates = %d, want 0", outbox)
+	}
+	// Re-adding the surviving identity still returns one row.
+	if _, err := st.AddWebhook(&Webhook{School: "testschool", ElementType: "TEACHER", ElementID: 5009,
+		URL: "https://hooks.example/abc", Secret: "s3cret", Enabled: true, CreatedBy: "bob"}); err != nil {
+		t.Fatalf("add after migration: %v", err)
+	}
+	if hooks, _ := st.ListWebhooks("testschool"); len(hooks) != 1 {
+		t.Errorf("webhooks after re-add = %d, want 1", len(hooks))
+	}
+}
+
 func TestSnapshotTeacherColumn(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {

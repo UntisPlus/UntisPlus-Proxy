@@ -139,6 +139,9 @@ Use a throwaway user (`testtier`) — create, then remove at the end.
 - [ ] 8.2 `?since=<current version>` → `304 Not Modified`
 - [ ] 8.3 `GET /api/timetable/stream` → `event: snapshot` then `: heartbeat` every 30s
 - [ ] 8.4 (needs a real edit in Untis) `event: change` fires within a poll interval and `/changes?since=N` reconciles
+- [ ] 8.5 **legacy default** `GET /api/timetable/stream?school=<s>` as a session user with no person id → 200 and their class changes, not 403; `event: student-events` also arrives on this and on every explicit target
+- [ ] 8.6 `?teacherId=<id>` (recon/boosted/staff) → one `event: change` per change even when several periods name that teacher; a room move fires both the old and the new room; an untouched teacher/room in the same class gets nothing
+- [ ] 8.7 `?schoolWide=true` → 403 for a plain student, 200 snapshot for editor/boosted/admin; combining it with `classId`/`teacherId`/… is rejected
 
 ## 9. Webhooks & ntfy (admin + self-service)
 - [ ] 9.1 `POST /admin/webhooks` `{"classId":5000,"url":"https://e/h","secret":"s"}` → id; listed in dashboard with class name
@@ -164,6 +167,10 @@ Use a throwaway user (`testtier`) — create, then remove at the end.
       retrying forever
 - [ ] 9.12 `/healthz` and public `/status` still expose **no** per-school or
       per-destination detail
+- [ ] 9.13 **idempotent create**: POST the same webhook (owner + target + URL)
+      twice → the same `id` both times and one row in `GET /api/webhooks`; a
+      changed secret rotates the existing row's secret, not a second row. Same for
+      ntfy (owner + target + topic + server); a different server is a new row
 
 ## 10. Admin dashboard (browser: `<public-host>/admin`)
 - [ ] 10.1 anon → 401; bschneider (non-admin) session → 403

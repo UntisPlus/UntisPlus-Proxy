@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"untis-proxy/internal/store"
 )
 
 func publicJSONRPCReq(t *testing.T, p *Proxy, body string) *httptest.ResponseRecorder {
@@ -96,6 +98,58 @@ func TestAuthenticateHappyPath(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(sets, "|"), "JSESSIONID") {
 		t.Errorf("no JSESSIONID Set-Cookie: %v", sets)
+	}
+}
+
+// TestAuthenticatePreservesIdentityOnDegradedPersonInfo pins the fix for a
+// login that authenticates upstream but comes back without person data (a
+// PersonInfo hiccup). The stored account's person/class and admin flag must
+// survive, and the login response must report the preserved identity instead of
+// zeros: a new/old account suddenly reporting klasseId 0 cannot load a
+// timetable and looks like a broken registration.
+func TestAuthenticatePreservesIdentityOnDegradedPersonInfo(t *testing.T) {
+	f := &fakeUpstream{
+		authenticateBody: `{"jsonrpc":"2.0","id":"upstream","result":{"sessionId":"authsid"}}`,
+	}
+	p, st := newFakeProxyUpstream(t, f)
+	if err := st.UpsertUser(&store.User{
+		Username: "owen", School: "testschool", Method: "key",
+		PersonID: 7007, PersonType: 5, ClassID: 5000, ClassName: "10a",
+		Admin: true, Password: "oldsecret",
+	}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+
+	rec := publicJSONRPCReq(t, p, `{"jsonrpc":"2.0","id":"a","method":"authenticate","params":{"user":"owen","password":"pw"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Result struct {
+			PersonType int64 `json:"personType"`
+			PersonID   int64 `json:"personId"`
+			KlasseID   int64 `json:"klasseId"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if out.Result.PersonType != 5 || out.Result.PersonID != 7007 || out.Result.KlasseID != 5000 {
+		t.Errorf("login result = %+v, want preserved 5/7007/5000", out.Result)
+	}
+
+	u, err := st.GetUser("owen")
+	if err != nil || u == nil {
+		t.Fatalf("user owen missing: %v", err)
+	}
+	if u.PersonID != 7007 || u.PersonType != 5 || u.ClassID != 5000 || u.ClassName != "10a" {
+		t.Errorf("stored identity = %+v, want preserved person/class", u)
+	}
+	if !u.Admin {
+		t.Error("password login demoted the existing admin")
+	}
+	if u.Password != "pw" || u.Method != "password" {
+		t.Errorf("credential update = %q/%q, want pw/password", u.Password, u.Method)
 	}
 }
 

@@ -59,8 +59,10 @@ Checkboxes are clickable in GitHub/editor task lists. Tick them as you test.
 
 ## 8. Change detection & push
 - [x] `/api/timetable/changes?since=N` returns diff (version bump + CHANGED rows; poll verified end-to-end)
-- [x] SSE `/api/timetable/stream` emits snapshot + `event: change` (heartbeat every 30s)
+- [x] SSE `/api/timetable/stream` emits snapshot + `event: change` (heartbeat every 30s); accepts element targets + explicit `schoolWide=true`, defaults to the legacy personal/class stream, and carries `student-events` on every target
+- [x] per-element SSE fan-out fires once per affected element (old and new for a move), not once per period; removed lessons wake the element they left
 - [x] webhook delivery (school-wide + per-class), HMAC-SHA256 `X-Untis-Signature` header
+- [x] webhook + ntfy creation is idempotent by destination (owner, target, URL or topic/server), enforced by a unique index, so retries cannot double-deliver; a webhook secret is rotated in place
 - [x] webhook + ntfy topics can target **any element** (class/student/teacher/room/subject) via the same searchable picker as calendar tokens; deliveries match a changed class by element (`elementMatch`: class id, student's class, or teacher/room/subject name in the changed rows; teacher names captured in the change snapshot)
 - [x] ntfy topic publish on change (`-ntfy-base` for self-hosted)
 - [x] per-topic ntfy server override (`baseUrl`, users pick their own ntfy server)

@@ -173,7 +173,30 @@ func (p *Proxy) handleSubsWebhooks(w http.ResponseWriter, r *http.Request) {
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
 		}
-		p.writeJSON(w, map[string]any{"id": id})
+		hook, err := p.store.WebhookByIdentity(school, u.Username, et, eid, req.URL)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		if hook == nil {
+			// The row vanished between the insert and the read (concurrent delete).
+			// The id is still the honest answer to "what did this create".
+			p.writeJSON(w, map[string]any{"id": id})
+			return
+		}
+		het, heid := hook.Target()
+		resp := map[string]any{
+			"id":          hook.ID,
+			"school":      hook.School,
+			"elementType": het,
+			"elementId":   heid,
+			"name":        p.elementTargetName(hook.School, het, heid),
+			"classId":     hook.ClassID,
+			"url":         hook.URL,
+			"secret":      hook.Secret,
+			"createdBy":   hook.CreatedBy,
+		}
+		p.writeJSON(w, resp)
 		return
 	}
 
@@ -349,7 +372,28 @@ func (p *Proxy) handleSubsNtfy(w http.ResponseWriter, r *http.Request) {
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
 		}
-		p.writeJSON(w, map[string]any{"id": id})
+		t, err := p.store.NtfyTopicByDetails(school, u.Username, et, eid, req.Topic, baseURL)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		if t == nil {
+			p.writeJSON(w, map[string]any{"id": id})
+			return
+		}
+		tet, teid := t.Target()
+		resp := map[string]any{
+			"id":          t.ID,
+			"school":      t.School,
+			"elementType": tet,
+			"elementId":   teid,
+			"name":        p.elementTargetName(t.School, tet, teid),
+			"classId":     t.ClassID,
+			"topic":       t.Topic,
+			"baseUrl":     t.BaseURL,
+			"createdBy":   t.CreatedBy,
+		}
+		p.writeJSON(w, resp)
 		return
 	}
 

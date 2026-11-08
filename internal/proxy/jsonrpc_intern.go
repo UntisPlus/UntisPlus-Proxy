@@ -276,6 +276,9 @@ func isBase32Secret(s string) bool {
 }
 
 func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, body []byte) {
+	// Capture this before anything below calls stateFor (classNameFor does), or
+	// the school is already registered and the answer is always false.
+	isNewSchool := p.isNewSchool(school)
 	var req struct {
 		ID     json.RawMessage `json:"id"`
 		Params []struct {
@@ -371,42 +374,20 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	// person identity for this login (PersonInfo hiccup, degraded response),
 	// keep the previously known person/class instead of wiping the row to zeros
 	// (which would kick the user's class out of the pool and break ownership).
-	if existing, err := p.store.GetUser(auth.User); err == nil && existing != nil {
-		if user.PersonID == 0 {
-			user.PersonID = existing.PersonID
-		}
-		if user.PersonType == 0 {
-			user.PersonType = existing.PersonType
-		}
-		if user.ClassID == 0 {
-			user.ClassID = existing.ClassID
-			user.ClassName = existing.ClassName
-		}
-		if user.Email == "" {
-			user.Email = existing.Email
-		}
-		if user.DisplayName == "" {
-			user.DisplayName = existing.DisplayName
-		}
-		// Admin and CreatedAt are assigned out-of-band (untisctl users admin,
-		// -admin flag); upstream never reports them, so carry them over
-		// wholesale instead of zeroing them on every login.
-		user.Admin = existing.Admin
-		user.CreatedAt = existing.CreatedAt
-	}
+	p.preserveUserIdentity(user)
 	// The official anonymous login is only a session: don't persist
 	// "#anonymous#" as a pool account or owner.
 	if !isAnon {
 		_ = p.store.UpsertUser(user)
 		_ = p.store.Touch(auth.User)
 		p.stateFor(school)
-		if p.isNewSchool(school) {
+		if isNewSchool {
 			p.ensureReconScan(school)
 		}
 	}
 	go p.untis.Logout(school, cookie)
 
-	s := p.sessions.New(auth.User, info.ClassID)
+	s := p.sessions.New(auth.User, user.ClassID)
 	p.setSessionCookies(w, r, s.ID, school)
 	rewritten := p.markPooledElementsDisplayable(school, realBody, auth.User)
 	// Cache the raw body, not the rewritten one: the flags depend on the

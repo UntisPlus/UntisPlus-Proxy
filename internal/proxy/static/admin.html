@@ -108,6 +108,25 @@
     <button onclick="addNtfy()">add</button>
   </div>
   <table id="ntfy"><thead><tr><th>school</th><th>element</th><th>topic</th><th>server</th><th>by</th><th></th></tr></thead><tbody></tbody></table>
+
+  <h2>live stream (SSE)</h2>
+  <div class="row">
+    <select id="sseSchool"></select>
+    <select id="sseType">
+      <option value="CLASS">class</option>
+      <option value="PERSONAL">personal</option>
+      <option value="TEACHER">teacher</option>
+      <option value="ROOM">room</option>
+      <option value="SUBJECT">subject</option>
+      <option value="SCHOOL">school-wide</option>
+    </select>
+    <span class="pickwrap"><input id="sseElIn" placeholder="search element…" style="width:14rem">
+      <input type="hidden" id="sseElVal" value="0"><input type="hidden" id="sseElName"><div class="pickmenu" id="sseElMenu"></div></span>
+    <button onclick="sseConnect()">connect</button>
+    <button onclick="sseDisconnect()">disconnect</button>
+  </div>
+  <div class="log" id="sseLog" style="height:10rem; overflow:auto"></div>
+
 </section>
 
 <section id="tokensSection">
@@ -267,7 +286,7 @@ async function renderCards(){
   c.insertAdjacentHTML('beforeend', card('recon', status.recon));
   c.insertAdjacentHTML('beforeend', card('boosted', status.boosted));
   c.insertAdjacentHTML('beforeend', card('editors', status.editors));
-  for(const id of ['whSchool','ntfySchool','tokSchool','poolSchool','evSchool','rmSchool','abSchool']) fillSchoolSelect(id);
+  for(const id of ['whSchool','ntfySchool','tokSchool','poolSchool','evSchool','rmSchool','abSchool','sseSchool']) fillSchoolSelect(id);
   if(!$('evUser').dataset.bound){
     $('evUser').dataset.bound='1';
     $('evUser').addEventListener('keydown', function(ev){ if(ev.key==='Enter') loadEvents(); });
@@ -958,6 +977,15 @@ async function refreshAll(){
     // o = {input, hidden, name, menu, school, typeSel} — element search whose
     // type follows the linked <select>, like the calendar token picker.
     function sel(type){
+      // PERSONAL and SCHOOL are not searchable elements. Disable the box rather
+      // than querying /admin/search with a bogus type and then silently
+      // connecting with whatever was selected before.
+      const noElement = (type==='PERSONAL' || type==='SCHOOL');
+      $(o.input).disabled = noElement;
+      $(o.input).placeholder = noElement
+        ? (type==='PERSONAL' ? 'your personal timetable' : 'every class in this school')
+        : 'search element…';
+      if(noElement){ $(o.menu).style.display='none'; return; }
       makePicker({input:o.input, hidden:o.hidden, menu:o.menu, schoolSel:o.school, type:type,
         onpick:function(id,name){ const h=$(o.name); if(h) h.value=name||''; }});
     }
@@ -970,6 +998,49 @@ async function refreshAll(){
   }
   elPicker({input:'whElIn', hidden:'whElVal', name:'whElName', menu:'whElMenu', school:'whSchool', typeSel:'whType'});
   elPicker({input:'ntfyElIn', hidden:'ntfyElVal', name:'ntfyElName', menu:'ntfyElMenu', school:'ntfySchool', typeSel:'ntfyType'});
+  elPicker({input:"sseElIn", hidden:"sseElVal", name:"sseElName", menu:"sseElMenu", school:"sseSchool", typeSel:"sseType"});
+
+let sseEventSource = null;
+
+function sseLogLine(m){
+  const el=$('sseLog'); el.innerHTML += (new Date().toLocaleTimeString()+': '+m+'\n'); el.scrollTop=el.scrollHeight;
+}
+
+function sseBuildUrl(){
+  const school = $('sseSchool').value||'';
+  const type = $('sseType').value;
+  const el = parseInt($('sseElVal').value)||0;
+  let qs = 'school='+encodeURIComponent(school);
+  if(type==='PERSONAL'){
+    qs += '&personal=true';
+  } else if(type==='SCHOOL'){
+    qs += '&schoolWide=true';
+  } else {
+    if(el<=0){ sseLogLine('pick an element first'); return null; }
+    const key = {CLASS:'classId', TEACHER:'teacherId', ROOM:'roomId', SUBJECT:'subjectId'}[type];
+    qs += '&'+key+'='+el;
+  }
+  return '/api/timetable/stream?'+qs;
+}
+
+function sseConnect(){
+  sseDisconnect();
+  try {
+    const url = sseBuildUrl();
+    if(!url) return;
+    sseEventSource = new EventSource(url);
+    sseEventSource.onopen = ()=>sseLogLine('connected');
+    sseEventSource.onerror = ()=>sseLogLine('error');
+    sseEventSource.addEventListener('snapshot', e=>sseLogLine('snapshot: '+e.data));
+    sseEventSource.addEventListener('change', e=>sseLogLine('change: '+e.data));
+    sseEventSource.addEventListener('student-events', e=>sseLogLine('student-events: '+e.data));
+  } catch(e){ sseLogLine('connect error: '+e.message); }
+}
+
+function sseDisconnect(){
+  if(sseEventSource){ sseEventSource.close(); sseEventSource=null; sseLogLine('disconnected'); }
+}
+
   function tokPicker(type){
     makePicker({input:'tokElIn', hidden:'tokElVal', menu:'tokElMenu', schoolSel:'tokSchool', type:type,
       onpick:function(id,name){ $('tokElName').value = name || ''; }});

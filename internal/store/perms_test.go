@@ -228,9 +228,10 @@ func TestUsernameCaseSelfHealOnWrite(t *testing.T) {
 	}
 
 	// A capital-cased account exists (as if seeded before normalization) with a
-	// permission flag stored under the same capital casing.
-	if _, err := st.db.Exec(`INSERT INTO users (username,password,method,last_seen) VALUES (?,?,?,?)`,
-		"Jdoe", "pw", "key", 1000); err != nil {
+	// permission flag, school association and admin flag stored under the same
+	// capital casing.
+	if _, err := st.db.Exec(`INSERT INTO users (username,password,method,last_seen,school,admin) VALUES (?,?,?,?,?,?)`,
+		"Jdoe", "pw", "key", 1000, "testschool", 1); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.db.Exec(`INSERT INTO perms (username, feature, allowed) VALUES (?,?,?)`,
@@ -256,12 +257,65 @@ func TestUsernameCaseSelfHealOnWrite(t *testing.T) {
 	if in, _ := st.BoostedAccess("jdoe"); !in {
 		t.Fatal("flag must survive the write-time merge")
 	}
+	// A merge must not drop the school association or demote an admin: those
+	// fields are not part of the upstream profile and only exist in the row.
+	if got.School != "testschool" {
+		t.Errorf("merged school = %q, want testschool", got.School)
+	}
+	if !got.Admin {
+		t.Error("merged account lost its admin flag")
+	}
 	var n int
 	if err := st.db.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&n); err != nil {
 		t.Fatal(err)
 	}
 	if n != 1 {
 		t.Fatalf("expected a single merged row, got %d", n)
+	}
+}
+
+// TestGetUserAnyCaseResolvesStoredCasing: a login under a different casing must
+// find the existing profile before the write-time merge canonicalizes it.
+func TestGetUserAnyCaseResolvesStoredCasing(t *testing.T) {
+	st, err := Open(t.TempDir() + "/t.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.db.Exec(`INSERT INTO users (username,method,admin,school) VALUES (?,?,?,?)`,
+		"Jdoe", "key", 1, "testschool"); err != nil {
+		t.Fatal(err)
+	}
+	if exact, _ := st.GetUser("jdoe"); exact != nil {
+		t.Fatal("exact lookup should not match a differently-cased row (test premise)")
+	}
+	u, err := st.GetUserAnyCase("jdoe")
+	if err != nil || u == nil {
+		t.Fatalf("GetUserAnyCase err=%v user=%v", err, u)
+	}
+	if u.Username != "Jdoe" || !u.Admin || u.School != "testschool" {
+		t.Errorf("found %+v, want the Jdoe row with admin and school", u)
+	}
+}
+
+// TestSetAdminDemotesCaseVariant: UpsertUser never removes admin, so SetAdmin
+// must update existing rows directly, including a differently-cased one.
+func TestSetAdminDemotesCaseVariant(t *testing.T) {
+	st, err := Open(t.TempDir() + "/t.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.db.Exec(`INSERT INTO users (username,method,admin) VALUES (?,?,?)`,
+		"Jdoe", "key", 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetAdmin("jdoe", false); err != nil {
+		t.Fatal(err)
+	}
+	u, _ := st.GetUserAnyCase("jdoe")
+	if u == nil || u.Admin {
+		t.Fatalf("SetAdmin(false) did not demote the case variant: %+v", u)
 	}
 }
 

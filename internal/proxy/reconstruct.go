@@ -411,14 +411,14 @@ func periodElementIDs(pd map[string]any) []struct {
 			continue
 		}
 		t, _ := m["type"].(string)
-		idf, _ := m["id"].(float64)
-		if t == "" {
+		id, ok := jsonID(m["id"])
+		if t == "" || !ok {
 			continue
 		}
 		out = append(out, struct {
 			Type string
 			ID   int64
-		}{t, int64(idf)})
+		}{t, id})
 	}
 	return out
 }

@@ -67,6 +67,10 @@ type notifyHub struct {
 	// message indistinguishable at the channel, and the risk is a class subscriber
 	// receiving one student's event — so the separation is structural.
 	userSubs map[string]map[chan studentEventMsg]struct{}
+	// elemSubs carries change messages for element-targeted streams (teachers,
+	// rooms, subjects, and school-wide targets). Keys are namespaced to avoid
+	// collisions.
+	elemSubs map[string]map[chan notifyMsg]struct{}
 }
 
 // studentEventMsg tells one student that their own events changed. It carries no
@@ -92,6 +96,7 @@ func newNotifyHub() *notifyHub {
 	return &notifyHub{
 		subs:     map[string]map[chan notifyMsg]struct{}{},
 		userSubs: map[string]map[chan studentEventMsg]struct{}{},
+		elemSubs: map[string]map[chan notifyMsg]struct{}{},
 	}
 }
 
@@ -137,6 +142,48 @@ func (h *notifyHub) publishUser(school, username string, msg studentEventMsg) {
 			// A client that is not draining is dropped rather than blocking the
 			// admin's request. It recovers by polling, where the event version is
 			// still authoritative.
+		}
+	}
+}
+
+// elemHubKey is namespaced for non-class element subscriptions.
+func elemHubKey(school, et string, eid int64) string {
+	if et == "" || eid <= 0 {
+		// school-wide target: empty et/eid -> global channel for the school
+		return "e\x00" + school + "\x00" + "\x00" + "0"
+	}
+	return "e\x00" + school + "\x00" + strings.ToUpper(strings.TrimSpace(et)) + "\x00" + strconv.FormatInt(eid, 10)
+}
+
+func (h *notifyHub) subscribeElem(school, et string, eid int64) (chan notifyMsg, func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	ch := make(chan notifyMsg, 8)
+	k := elemHubKey(school, et, eid)
+	if h.elemSubs[k] == nil {
+		h.elemSubs[k] = map[chan notifyMsg]struct{}{}
+	}
+	h.elemSubs[k][ch] = struct{}{}
+	return ch, func() {
+		h.mu.Lock()
+		defer h.mu.Unlock()
+		if m, ok := h.elemSubs[k]; ok {
+			delete(m, ch)
+			close(ch)
+			if len(m) == 0 {
+				delete(h.elemSubs, k)
+			}
+		}
+	}
+}
+
+func (h *notifyHub) publishElem(school, et string, eid int64, msg notifyMsg) {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for ch := range h.elemSubs[elemHubKey(school, et, eid)] {
+		select {
+		case ch <- msg:
+		default:
 		}
 	}
 }
@@ -223,6 +270,106 @@ func periodRow(pd map[string]any, md *masterDataCache) store.PeriodRow {
 	}
 }
 
+// elementKey identifies one teacher/room/subject in the SSE element hub.
+type elementKey struct {
+	Type string
+	ID   int64
+}
+
+// affectedElements returns the teacher/room/subject ids a change actually
+// touched. It deliberately looks at the changed rows only, not the whole
+// timetable: a room subscription must not fire because some unrelated lesson in
+// the class was rescheduled.
+//
+// The new ids come from the fetched periods, which is exact. A changed or
+// removed period no longer carries its old elements in the new timetable, so
+// those are resolved back from the previous snapshot's names through masterData
+// — which is why a lesson moving R204 -> R112 notifies the R204 subscribers
+// too. The result is a set, so a teacher with six periods in the same change
+// still gets one message.
+func affectedElements(md *masterDataCache, queued, prev []store.PeriodRow, periods []map[string]any) map[elementKey]struct{} {
+	out := map[elementKey]struct{}{}
+	if len(queued) == 0 {
+		return out
+	}
+	changed := make(map[int64]struct{}, len(queued))
+	for _, r := range queued {
+		changed[r.PeriodID] = struct{}{}
+	}
+	for _, pd := range periods {
+		id, ok := jsonID(pd["id"])
+		if !ok {
+			continue
+		}
+		if _, ok := changed[id]; !ok {
+			continue
+		}
+		for _, el := range periodElementIDs(pd) {
+			switch el.Type {
+			case "TEACHER", "ROOM", "SUBJECT":
+				out[elementKey{el.Type, el.ID}] = struct{}{}
+			}
+		}
+	}
+
+	var byName map[string]map[string][]int64
+	prevByID := make(map[int64]store.PeriodRow, len(prev))
+	for _, r := range prev {
+		prevByID[r.PeriodID] = r
+	}
+	for _, r := range queued {
+		if r.Kind == "ADDED" {
+			continue
+		}
+		old, ok := prevByID[r.PeriodID]
+		if !ok {
+			continue
+		}
+		if byName == nil {
+			byName = elementIDsByName(md)
+		}
+		for _, f := range []struct {
+			et   string
+			name string
+		}{
+			{"TEACHER", old.Teacher},
+			{"ROOM", old.Room},
+			{"SUBJECT", old.Subject},
+		} {
+			for _, id := range byName[f.et][strings.ToLower(strings.TrimSpace(f.name))] {
+				out[elementKey{f.et, id}] = struct{}{}
+			}
+		}
+	}
+	return out
+}
+
+// elementIDsByName inverts the masterData name maps. It is only used for the
+// previous side of a change, where the snapshot kept names rather than ids.
+func elementIDsByName(md *masterDataCache) map[string]map[string][]int64 {
+	out := map[string]map[string][]int64{"TEACHER": {}, "ROOM": {}, "SUBJECT": {}}
+	if md == nil {
+		return out
+	}
+	for _, g := range []struct {
+		et    string
+		names map[int64]string
+	}{
+		{"TEACHER", md.teachers},
+		{"ROOM", md.rooms},
+		{"SUBJECT", md.subjects},
+	} {
+		for id, name := range g.names {
+			key := strings.ToLower(strings.TrimSpace(name))
+			if key == "" {
+				continue
+			}
+			out[g.et][key] = append(out[g.et][key], id)
+		}
+	}
+	return out
+}
+
 // checkClass polls one class for timetable changes, persisting any diff. It
 // returns true if a change was detected. Upstream errors are logged inside.
 func (p *Proxy) checkClass(school string, classID int64) bool {
@@ -271,9 +418,13 @@ func (p *Proxy) checkClassErr(school string, classID int64) (bool, error) {
 	targets := p.resolveTargets(school, hooks, topics)
 
 	// The queued deliveries are written by the same transaction that stamps
-	// newVer, so a committed change always has a delivery waiting for it.
+	// newVer, so a committed change always has a delivery waiting for it. The
+	// window end is passed too: the poller fetches a sliding [today-1, today+4]
+	// range, and without treating the newly visible far day as baseline every
+	// subscriber gets a burst of "new lesson" pushes at midnight (01:00/02:00
+	// local when the process runs in UTC).
 	var queued []store.PeriodRow
-	changed, err := p.store.ApplyClassSnapshot(school, classID, next, newVer, dropBefore,
+	changed, err := p.store.ApplyClassSnapshotWindow(school, classID, next, newVer, dropBefore, end,
 		func(rows []store.PeriodRow, put func(string, int64, []byte) error) error {
 			queued = rows
 			return p.enqueueChange(school, className, classID, newVer, rows, prevSnapshot, hooks, topics, targets, put)
@@ -286,12 +437,20 @@ func (p *Proxy) checkClassErr(school string, classID int64) (bool, error) {
 		return false, nil
 	}
 	sort.Slice(queued, func(i, j int) bool { return queued[i].PeriodID < queued[j].PeriodID })
-	p.hub.publish(school, classID, notifyMsg{
+	msg := notifyMsg{
 		School:  school,
 		ClassID: classID,
 		Version: newVer,
 		Changes: queued,
-	})
+	}
+	p.hub.publish(school, classID, msg)
+	// School-wide target (et="" eid=0) gets every class's change.
+	p.hub.publishElem(school, "", 0, msg)
+	// Element-targeted streams hear only about elements the changed rows mention,
+	// including the element a lesson just left.
+	for el := range affectedElements(md, queued, prevSnapshot, periods) {
+		p.hub.publishElem(school, el.Type, el.ID, msg)
+	}
 	log.Printf("[notify] class %d changed (%d updates) -> version %d", classID, changed, newVer)
 	return true, nil
 }
@@ -812,19 +971,20 @@ func (p *Proxy) handleTimetableChanges(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleTimetableStream is an SSE endpoint: it emits a change event whenever
-// the requester's own class timetable changes. Heartbeats every 30s.
+// handleTimetableStream is an SSE endpoint that streams timetable changes for
+// a chosen target. It accepts the same target params as notifications/calendar
+// (classId, personId, personal, teacherId, roomId, subjectId), plus
+// schoolWide=true for the privileged every-class target. No target means the
+// caller's own personal timetable (or their class for a session-only account).
+// Every stream also carries the caller's private student-events counter.
+// Heartbeats every 30s.
 func (p *Proxy) handleTimetableStream(w http.ResponseWriter, r *http.Request) {
 	u := p.sessionUser(r)
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	school := p.opts.School
-	if sc := r.URL.Query().Get("school"); sc != "" {
-		school = sc
-	}
-	classID := u.ClassID
+	school := p.requestSchool(r)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -836,66 +996,169 @@ func (p *Proxy) handleTimetableStream(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
-	ch, unsub := p.hub.subscribe(school, classID)
-	defer unsub()
+	var req notifTargetReq
+	if v := r.URL.Query().Get("classId"); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			req.ClassID = id
+		}
+	}
+	if v := r.URL.Query().Get("personId"); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			req.PersonID = id
+		}
+	}
+	if v := r.URL.Query().Get("personal"); v != "" && (v == "true" || v == "1") {
+		req.Personal = true
+	}
+	if v := r.URL.Query().Get("teacherId"); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			req.TeacherID = id
+		}
+	}
+	if v := r.URL.Query().Get("roomId"); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			req.RoomID = id
+		}
+	}
+	if v := r.URL.Query().Get("subjectId"); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			req.SubjectID = id
+		}
+	}
 
-	// A second, separate subscription for this student's own events. It is not the
-	// class subscription, so a change in one student's schedule cannot be delivered
-	// to a classmate's stream.
+	canAll := p.isEditor(u.Username) || p.isBoosted(u.Username) || p.isAdmin(u.Username)
+	schoolWide := false
+	if v := r.URL.Query().Get("schoolWide"); v == "true" || v == "1" {
+		schoolWide = true
+	}
+
+	explicit := req.ClassID > 0 || req.Personal || req.PersonID > 0 ||
+		req.TeacherID > 0 || req.RoomID > 0 || req.SubjectID > 0
+
+	var et string
+	var eid int64
+	var allowed bool
+	switch {
+	case schoolWide:
+		// School-wide is the privileged "every class in this school" target. It is
+		// explicit because the parameterless form is the legacy personal default,
+		// and combining it with an element target is a caller bug, not an
+		// invitation to guess which one was meant.
+		if explicit || !canAll {
+			p.forbidden(w)
+			return
+		}
+		allowed = true
+	case explicit:
+		et, eid, _, allowed = p.resolveNotifTarget(school, u, canAll, req)
+	default:
+		// Backward compatibility: an old app connects with just ?school= and
+		// expects its own timetable. Personal is the same class channel plus the
+		// private student-event signal; a session-only account with no person id
+		// still gets its class stream rather than a 403.
+		switch {
+		case u.PersonID > 0:
+			et, eid, allowed = "STUDENT", u.PersonID, true
+		case u.ClassID > 0:
+			et, eid, allowed = "CLASS", u.ClassID, true
+		}
+	}
+	if !allowed {
+		p.forbidden(w)
+		return
+	}
+
+	// A class/personal stream reads the class change channel; every other target
+	// reads the element channel. The element subscription for STUDENT with no
+	// class to watch is harmless and simply never fires.
+	classID := int64(0)
+	switch et {
+	case "STUDENT":
+		classID = u.ClassID
+	case "CLASS":
+		classID = eid
+	}
+	snapshot := map[string]any{
+		"event": "snapshot", "school": school,
+		"elementType": et, "elementId": eid,
+	}
+	var changes chan notifyMsg
+	var unsub func()
+	if classID > 0 {
+		changes, unsub = p.hub.subscribe(school, classID)
+		defer unsub()
+		rows, cur, _ := p.store.PendingChanges(school, classID, 0)
+		snapshot["classId"] = classID
+		snapshot["current"] = cur
+		snapshot["changes"] = rows
+	} else {
+		changes, unsub = p.hub.subscribeElem(school, et, eid)
+		defer unsub()
+		snapshot["current"] = 0
+		snapshot["changes"] = []any{}
+	}
+	if et == "STUDENT" {
+		ver, _ := p.store.StudentEventVersion(school, u.Username)
+		snapshot["eventVersion"] = ver
+	}
+
+	// Every stream carries this user's own event counter, whatever target was
+	// chosen. It is a second, structurally separate channel so another student's
+	// event can never be delivered here; it leaks content only as a counter, and
+	// the client refetches through an authenticated surface.
 	evCh, unsubEvents := p.hub.subscribeUser(school, u.Username)
 	defer unsubEvents()
 
 	heartbeat := time.NewTicker(30 * time.Second)
 	defer heartbeat.Stop()
 
-	// initial snapshot so the client syncs state on connect
-	rows, cur, _ := p.store.PendingChanges(school, classID, 0)
-	evVersion, _ := p.store.StudentEventVersion(school, u.Username)
-	if data, err := json.Marshal(map[string]any{
-		"event": "snapshot", "school": school, "classId": classID,
-		"current": cur, "changes": rows, "eventVersion": evVersion,
-	}); err == nil {
-		fmt.Fprintf(w, "event: snapshot\ndata: %s\n\n", data)
+	send := func(event string, data []byte) bool {
+		if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data); err != nil {
+			return false
+		}
 		flusher.Flush()
+		return true
 	}
 
-	notifyClosed := r.Context().Done()
+	if data, err := json.Marshal(snapshot); err == nil {
+		if !send("snapshot", data) {
+			return
+		}
+	}
+
 	for {
 		select {
-		case <-notifyClosed:
+		case <-r.Context().Done():
 			return
 		case <-heartbeat.C:
 			if _, err := fmt.Fprint(w, ": heartbeat\n\n"); err != nil {
 				return
 			}
 			flusher.Flush()
-		case msg := <-ch:
+		case msg := <-changes:
 			data, err := json.Marshal(map[string]any{
 				"event": "change", "school": msg.School,
-				"classId": msg.ClassID, "version": msg.Version, "changes": msg.Changes,
+				"classId": msg.ClassID, "elementType": et, "elementId": eid,
+				"version": msg.Version, "changes": msg.Changes,
 			})
 			if err != nil {
 				continue
 			}
-			if _, err := fmt.Fprintf(w, "event: change\ndata: %s\n\n", data); err != nil {
+			if !send("change", data) {
 				return
 			}
-			flusher.Flush()
 		case ev := <-evCh:
-			// A student's own event change. No title, no time: only the counter, so
-			// the client knows to re-fetch through a surface it is already
-			// authenticated for.
 			data, err := json.Marshal(map[string]any{
 				"event": "student-events", "school": ev.School,
+				"elementType": "STUDENT", "elementId": u.PersonID,
 				"eventVersion": ev.EventVersion, "reason": ev.Reason,
 			})
 			if err != nil {
 				continue
 			}
-			if _, err := fmt.Fprintf(w, "event: student-events\ndata: %s\n\n", data); err != nil {
+			if !send("student-events", data) {
 				return
 			}
-			flusher.Flush()
 		}
 	}
 }

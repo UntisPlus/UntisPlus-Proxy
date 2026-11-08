@@ -919,29 +919,31 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 			req.Method = "password"
 		}
 		existing, _ := p.store.GetUser(req.Username)
-		if existing != nil {
-			existing.Admin = req.Admin
-			if req.Password != "" {
-				existing.Password = req.Password
-				existing.Method = req.Method
-				// Keep the credential in the secrets table too: a pasted base32
-				// value for a key account is the replay key, anything else is the
-				// account password.
-				if req.Method == "key" && isBase32Secret(req.Password) {
-					_ = p.store.UpsertSecret(req.Username, req.Password)
-				} else {
-					_ = p.store.SetAccountPassword(req.Username, req.Password)
-				}
+		if existing == nil {
+			existing = &store.User{Username: req.Username}
+		}
+		existing.Admin = req.Admin
+		if req.Password != "" {
+			existing.Password = req.Password
+			existing.Method = req.Method
+			// Keep the credential in the secrets table too: a pasted base32
+			// value for a key account is the replay key, anything else is the
+			// account password.
+			if req.Method == "key" && isBase32Secret(req.Password) {
+				_ = p.store.UpsertSecret(req.Username, req.Password)
+			} else {
+				_ = p.store.SetAccountPassword(req.Username, req.Password)
 			}
-			if err := p.store.UpsertUser(existing); err != nil {
-				p.writeJSON(w, map[string]any{"error": "store error"})
-				return
-			}
-		} else {
-			if err := p.store.SetAdmin(req.Username, req.Admin); err != nil {
-				p.writeJSON(w, map[string]any{"error": "store error"})
-				return
-			}
+		}
+		if err := p.store.UpsertUser(existing); err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		// UpsertUser never removes the admin flag (a login that cannot know it
+		// must not demote), so an explicit demotion has to go through SetAdmin.
+		if err := p.store.SetAdmin(existing.Username, req.Admin); err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
 		}
 		if req.Admin {
 			_ = p.store.SetPerm(req.Username, store.FeatureBoosted, true)

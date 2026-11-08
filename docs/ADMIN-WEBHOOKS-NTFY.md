@@ -137,6 +137,13 @@ The target keys are the calendar mint's (`classId` / `personal` / `personId` /
 `teacherId` / `roomId` / `subjectId`); at most one may be set, and none means
 school-wide (privileged only).
 
+Creating a webhook is idempotent for its destination: school, owner, element
+target and URL. POSTing the same destination twice — including two concurrent
+requests — returns the existing id and leaves one row, so a retry cannot
+double-deliver. The secret is mutable configuration, not identity: re-posting
+with a new secret rotates the signature on the existing row instead of adding a
+second hook that delivers twice. The admin route behaves the same way.
+
 ## Push notifications via ntfy
 
 Change events are also fanned out to ntfy topics. Topics use exactly the same
@@ -155,6 +162,11 @@ Self-service `POST /api/ntfy` takes the same target keys as `/api/webhooks`
 (`teacherId`/`roomId`/`subjectId`/`personal`, gated by recon/boosted/staff), and
 `GET /api/ntfy` lists only the caller's own topics. Discovery is via
 `GET /api/notifications/options`.
+
+Topic creation is idempotent for the exact identity (school, owner, element,
+topic and server), exactly like webhooks: a retried or double-tapped save returns
+the existing row instead of queueing a second notification. A different
+`baseUrl` or topic is a separate subscription.
 
 ### Topic naming recommendation
 
@@ -202,10 +214,28 @@ session, or the separate loopback `-metrics-addr` listener.
 
 ## Streaming API (SSE)
 
-`GET /api/timetable/stream?school=<s>` emits `event: change`
-messages on every detected change; `GET /api/timetable/changes?since=N` is the
+`GET /api/timetable/stream?school=<s>` emits `event: snapshot` on connect,
+`event: change` on every detected change, and `event: student-events` for the
+caller's private Technik counter. `GET /api/timetable/changes?since=N` is the
 pollable diff. Android apps can use either the SSE stream or the per-class ntfy
 topic as the push trigger and reconcile via `/api/timetable/changes`.
+
+The stream accepts the same target keys as notifications:
+
+| Query | Target |
+|---|---|
+| *(none)* | personal, or the caller's class when the account has no person id |
+| `classId=5000` | that class |
+| `personal=true` / `personId=N` | the caller's own timetable |
+| `teacherId=N` / `roomId=N` / `subjectId=N` | changes whose rows name that element |
+| `schoolWide=true` | every class in the school (editor/boosted/admin) |
+
+`schoolWide` must be explicit: no parameters means the legacy personal default,
+never a silent escalation. Combining `schoolWide` with an element target is
+rejected. Element streams fire only for elements mentioned by the changed rows
+(once per element, not once per period) and include the element a changed or
+removed lesson is leaving. Every stream, whatever its target, also carries the
+session user's own `student-events` counter.
 
 ## Student events (Technik) — and why they bypass the outbox
 
