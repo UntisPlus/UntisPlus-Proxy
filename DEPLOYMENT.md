@@ -234,7 +234,8 @@ git push origin v1.14.0
 That tag push runs the full CI gate, publishes
 `untisplus/untisplus-proxy:v1.14.0` and `:latest` for `linux/amd64` and
 `linux/arm64`, and creates the `v1.14.0` GitHub release. The tag is passed to
-the build as `VERSION`, so `/status` and `untis-server -version` report it.
+the build as `VERSION`, so `/status` reports it (`-version` is the flag that
+sets the reported value).
 
 The Docker build is a multi-arch buildx build. The first `linux/arm64` build
 takes longer because it runs through QEMU; later builds reuse the GitHub Actions
