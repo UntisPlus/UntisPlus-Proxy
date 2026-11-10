@@ -208,7 +208,12 @@ the `CI / Test` and `CI / Race detector` checks.
 
 ### Required secrets
 
-Add these under **Settings → Secrets and variables → Actions**:
+Add these under **Settings → Secrets and variables → Actions**. The publish job
+uses the `DOCKER_TOKEN` environment, so either:
+
+- create an environment named `DOCKER_TOKEN` and add both as **environment
+  secrets** (this repository's setup), or
+- add both as **repository secrets**.
 
 | Secret | Value |
 |---|---|
