@@ -144,7 +144,13 @@ the `cloudflare-net` / `npm_network` external networks).
    ```sh
    docker exec untis-proxy untisctl -db /data/untis.db status
    docker exec untis-proxy untisctl -db /data/untis.db perms list
+   # gentlest registry rebuild (one fetch at a time, 1s apart, live %)
+   docker exec -it untis-proxy untisctl -db /data/untis.db recon --mode slow
+   # fastest rebuild, start over from the school year
+   docker exec -it untis-proxy untisctl -db /data/untis.db recon --mode hard --full
    ```
+   `recon` writes the database directly; restart the container afterwards so the
+   running server loads the new element registry.
 
 > `untisctl` is baked into the image as `/usr/local/bin/untisctl`. Always pass
 > `-db` — inside the container the database is `/data/untis.db`, and the default

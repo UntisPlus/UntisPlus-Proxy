@@ -631,6 +631,32 @@ Flags are accepted in any position (`totp Asmith --scan`). Reads the account's
 base32 secret from the DB and computes the live RFC-6238 code — handy for the app
 login when you don't have an authenticator handy.
 
+### recon — rebuild the teacher/room/subject registry
+
+The background scan enumerates the elements that appear in the pooled classes'
+timetables. When that registry is empty, stale, or was built while the wrong
+classes were pooled, run a sweep directly instead of waiting for the next boot:
+
+```sh
+untisctl -school example-school recon --mode slow          # resume, one fetch at a time, 1s apart
+untisctl -school example-school recon --mode hard          # resume, 8 fetches at once
+untisctl -school example-school recon --mode hard --full   # ignore saved horizons, start at the school year
+untisctl -school example-school recon --mode hard --full --dry-run   # size only, no requests/writes
+untisctl -school example-school recon --mode slow --concurrency 2 --delay 250ms
+```
+
+`--mode hard` is the fastest way to fill a stale registry but puts the most load
+on the school server; `--mode slow` is the safe default while users are active.
+Both print a live percentage; `--full` starts every class at the year start
+instead of resuming from its saved scan horizon. Each class is fetched in
+<=2-week chunks, and a failed class does not advance its saved horizon, so the
+next run retries it.
+
+The command reads and writes the SQLite file directly. A **running server keeps
+its own in-memory element registry**, so restart the proxy (or use the
+dashboard's recon rescan) for a CLI sweep to become visible; the next boot loads
+the persisted set immediately.
+
 ### status — database stats
 
 ```sh

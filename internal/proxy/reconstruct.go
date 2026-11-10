@@ -190,8 +190,15 @@ func (p *Proxy) fetchClassChunkFresh(school string, classID int64, start, end st
 }
 
 func (p *Proxy) fetchClassChunkMode(school string, classID int64, start, end string, fresh bool) ([]map[string]any, error) {
+	return p.fetchClassChunkImpl(school, classID, start, end, !fresh, true)
+}
+
+// fetchClassChunkImpl is the shared fetch path. readCache/writeCache let a
+// bulk sweep bypass the TTL cache entirely: caching every chunk of a full recon
+// would fill the map with data nothing will read before it expires.
+func (p *Proxy) fetchClassChunkImpl(school string, classID int64, start, end string, readCache, writeCache bool) ([]map[string]any, error) {
 	key := fmt.Sprintf("recon|%s|%d|%s|%s", school, classID, start, end)
-	if !fresh {
+	if readCache {
 		if v, ok := p.tt.Get(key); ok {
 			var out []map[string]any
 			if err := json.Unmarshal(v, &out); err == nil {
@@ -235,8 +242,10 @@ func (p *Proxy) fetchClassChunkMode(school string, classID int64, start, end str
 	if resp.Result.Timetable.Periods == nil && jsonrpcError(b) != "" {
 		return nil, fmt.Errorf("class %d timetable: upstream jsonrpc error: %s", classID, jsonrpcError(b))
 	}
-	raw, _ := json.Marshal(resp.Result.Timetable.Periods)
-	p.tt.Put(key, raw)
+	if writeCache {
+		raw, _ := json.Marshal(resp.Result.Timetable.Periods)
+		p.tt.Put(key, raw)
+	}
 	return resp.Result.Timetable.Periods, nil
 }
 

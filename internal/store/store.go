@@ -120,12 +120,22 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("refusing to open %q under test: a test database must live in a temporary directory (t.TempDir()), not in %s", path, tmp)
 		}
 	}
+	// _txlock=immediate makes a write transaction take the write lock when it
+	// begins, so the busy timeout applies there. With the default deferred
+	// transaction, a writer that starts after another writer has committed is
+	// handed SQLITE_BUSY on the upgrade, which no busy handler can retry
+	// without risking deadlock.
 	db, err := sql.Open("sqlite", path+
-		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=synchronous(NORMAL)")
+		"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(10000)&_pragma=synchronous(NORMAL)&_txlock=immediate")
 	if err != nil {
 		return nil, err
 	}
-	db.SetMaxOpenConns(1)
+	// WAL lets readers proceed while the poller writes, so a single connection
+	// no longer has to serialize timetable reads behind every snapshot
+	// transaction. More than one writer still serializes at SQLite's write
+	// lock, with busy_timeout absorbing the wait.
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS users (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		username TEXT NOT NULL UNIQUE,
@@ -143,6 +153,14 @@ func Open(path string) (*Store, error) {
 		admin INTEGER NOT NULL DEFAULT 0
 	)`)
 	if err != nil {
+		return nil, err
+	}
+	// PoolContains and OwnerForClass run on every class timetable request and
+	// filter by class_id, so without this the users table is scanned in full per
+	// request. The composite keeps the school discriminator in the same index
+	// so a multi-school deployment can still resolve one class cheaply.
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS users_class_school
+		ON users (class_id, school)`); err != nil {
 		return nil, err
 	}
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS secrets (

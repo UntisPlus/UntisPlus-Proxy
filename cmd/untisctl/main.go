@@ -83,6 +83,12 @@ Commands:
                                      for USER; --scan prints the otpauth:// URI
                                      (ANSI QR if qrencode is installed)
 
+  recon [--mode hard|slow] [--full]  enumerate teachers/rooms/subjects for every
+    --concurrency N --delay D           pooled class with a live percentage;
+    --year-start D --year-end D         hard = parallel, slow = one at a time
+    --dry-run                           with a delay; --full ignores saved
+                                        progress and starts at the year start
+
   status                             db stats: users, pool, perms, recon, tokens
 
   backup [--out PATH] [--keep N]     consistent copy of the database via
@@ -123,6 +129,8 @@ Run 'untisctl <command> -h' for per-command flags.
 		cmdCalendar(st, flag.Args()[1:])
 	case "totp":
 		cmdTotp(st, flag.Args()[1:])
+	case "recon":
+		cmdRecon(st, flag.Args()[1:], *server, *school)
 	case "status":
 		cmdStatus(st, *school)
 	case "backup":
