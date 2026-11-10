@@ -15,7 +15,9 @@ log in once and then:
   6-digit TOTP).
 
 It is multi-school: the first login from a school it has never seen registers
-that school — own pool, recon, caches, change polling — with no restart.
+that school — own pool, recon, caches, change polling — with no restart. An
+admin can **block** a school or switch off new-school auto-registration from
+the dashboard, so a school you do not serve cannot use the proxy.
 
 > **Hosting, Docker, the tunnel, backups and troubleshooting live in
 > [`DEPLOYMENT.md`](DEPLOYMENT.md).** This file is about what the proxy does and
@@ -185,8 +187,8 @@ once at startup.
 Embedded single-page UI at **`/admin`**, gated by an admin session
 (`users.admin`). It grants full DB/`untisctl` capability: users (including the
 `techniker` toggle), perms, pool, tokens, schools, search, webhooks, ntfy topics,
-recon, **student events**, the **event-absence register** with its changelog,
-the **room map**, and the delivery **outbox**.
+**outage alerts**, recon, **student events**, the **event-absence register** with
+its changelog, the **room map**, and the delivery **outbox**.
 
 `GET /admin/outbox` reports the notification-delivery backlog — counts by state
 plus the most recent destinations that gave up, with their error. `/admin/status`
@@ -334,6 +336,26 @@ subscription.
 > targets are not: a class-wide change that matches both a `CLASS` row and a
 > `STUDENT` row pointing at the same server and topic delivers twice, with the
 > same title. Keep one row per (element, server, topic) you actually want.
+
+### Outage alerts
+
+The dashboard's **Outage alerts (ntfy)** section (API: `/admin/outage-ntfy`)
+sends an ntfy push when the class poller stops reaching Untis and another when
+it recovers. Choose **all schools** to be told whenever any registered school is
+down (the message names each one), or one school to watch only that school.
+
+The trigger is **poll health**, not recon progress: the latest poll failed, no
+poll has ever succeeded, or the last successful poll is more than ten minutes
+old. A school with no pooled classes is ignored, and a blocked school is never
+polled or alerted. The failure must persist for three minutes before the down
+alert fires, so a single timeout does not page anyone; the recovery alert is sent
+once and a sustained outage does not repeat. Each subscription can use its own
+ntfy server (`baseUrl`), and every row has a **test** button.
+
+```sh
+curl -X POST /admin/outage-ntfy -d '{"topic":"untis-outages"}'
+curl -X POST /admin/outage-ntfy -d '{"school":"myschool","topic":"untis-myschool"}'
+```
 
 ---
 

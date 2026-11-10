@@ -871,7 +871,7 @@ func (p *Proxy) StartPollLoop(school string, interval time.Duration, done <-chan
 			p.pollOnce(school)
 			if schools, err := p.store.ListSchools(); err == nil {
 				for _, sc := range schools {
-					if sc.Name != school {
+					if sc.Name != school && !sc.Blocked {
 						p.pollOnce(sc.Name)
 					}
 				}

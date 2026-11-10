@@ -64,8 +64,12 @@
   <div class="row" style="margin-bottom:.5rem">
     <input id="sName" placeholder="school login name">
     <button onclick="addSchool()">register</button>
+    <label style="display:flex;align-items:center;gap:.35rem;font-size:.8rem;color:#c7ccd8">
+      <input type="checkbox" id="allowNew" onchange="toggleAllowNew(this.checked)">
+      allow new schools to auto-register
+    </label>
   </div>
-  <table id="schools"><thead><tr><th>school</th><th>added</th><th>last seen</th></tr></thead><tbody></tbody></table>
+  <table id="schools"><thead><tr><th>school</th><th>added</th><th>last seen</th><th>status</th><th></th></tr></thead><tbody></tbody></table>
 </section>
 
 <section>
@@ -127,6 +131,21 @@
   </div>
   <div class="log" id="sseLog" style="height:10rem; overflow:auto"></div>
 
+</section>
+
+<section>
+  <h2>Outage alerts (ntfy) <button class="mini" onclick="loadOutageNtfy()">refresh</button></h2>
+  <div class="hint" style="font-size:.75rem;color:#9aa0ae;margin-bottom:.4rem">
+    Sends a push when the class poller stops reaching Untis, and another when it recovers.
+    "all schools" alerts whenever any registered school is down and names every affected school.
+  </div>
+  <div class="row" style="margin-bottom:.5rem">
+    <select id="outSchool"></select>
+    <input id="outTopic" placeholder="ntfy topic" style="flex:1">
+    <input id="outBase" placeholder="server (optional, e.g. https://ntfy.myserver.de)" style="width:16rem">
+    <button onclick="addOutageNtfy()">add</button>
+  </div>
+  <table id="outageNtfy"><thead><tr><th>scope</th><th>topic</th><th>server</th><th>by</th><th></th></tr></thead><tbody></tbody></table>
 </section>
 
 <section id="tokensSection">
@@ -278,6 +297,7 @@ async function renderCards(){
   c.insertAdjacentHTML('beforeend', card('tokens', status.tokens));
   c.insertAdjacentHTML('beforeend', card('webhooks', status.webhooks));
   c.insertAdjacentHTML('beforeend', card('ntfy topics', status.ntfyTopics));
+  c.insertAdjacentHTML('beforeend', card('outage alerts', status.outageNtfy || 0));
   // Notification delivery backlog. Pending means retrying; dead means a
   // destination gave up and someone has to look at /admin/outbox.
   const ob = status.outbox || {pending:0, sending:0, dead:0};
@@ -287,6 +307,7 @@ async function renderCards(){
   c.insertAdjacentHTML('beforeend', card('boosted', status.boosted));
   c.insertAdjacentHTML('beforeend', card('editors', status.editors));
   for(const id of ['whSchool','ntfySchool','tokSchool','poolSchool','evSchool','rmSchool','abSchool','sseSchool']) fillSchoolSelect(id);
+  fillOutageSchoolSelect();
   if(!$('evUser').dataset.bound){
     $('evUser').dataset.bound='1';
     $('evUser').addEventListener('keydown', function(ev){ if(ev.key==='Enter') loadEvents(); });
@@ -375,6 +396,20 @@ function fillSchoolSelect(id){
   const want=sel.dataset.pick || defaultSchool();
   if(want && Array.prototype.some.call(sel.options, function(o){ return o.value===want; })) sel.value=want;
   if(!sel.value && sel.options.length) sel.value=sel.options[0].value;
+}
+
+// fillOutageSchoolSelect is fillSchoolSelect with an explicit "all schools"
+// scope first. An empty value is the global subscription, not "no school".
+function fillOutageSchoolSelect(){
+  const sel=$('outSchool'); if(!sel) return;
+  const want = sel.dataset.pick || sel.value || '';
+  sel.innerHTML='';
+  const all=document.createElement('option'); all.value=''; all.textContent='all schools (global)'; sel.appendChild(all);
+  (schoolList||[]).forEach(function(s){
+    const o=document.createElement('option'); o.value=s.name; o.textContent=s.name; sel.appendChild(o);
+  });
+  if(want && Array.prototype.some.call(sel.options, function(o){ return o.value===want; })) sel.value=want;
+  else sel.value='';
 }
 
 // Student events are per-student entries on one person's own timetable: a
@@ -847,11 +882,44 @@ async function loadSchools(){
   // makes the school selectors usable; renderCards used to fill them from a
   // count, which is not iterable.
   schoolList = d.schools || [];
+  const allow=$('allowNew');
+  if(allow) allow.checked = d.allowNew !== false;
+  const def=d.defaultSchool || defaultSchool();
   const tb=$('schools').querySelector('tbody'); tb.innerHTML='';
-  for(const s of d.schools){ const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+esc(s.name)+'</td><td>'+new Date(s.addedAt*1000||0).toLocaleDateString()+'</td><td>'+new Date(s.lastSeen*1000||0).toLocaleString()+'</td>'; tb.appendChild(tr); }
+  for(const s of d.schools){
+    const tr=document.createElement('tr');
+    const n=jsq(s.name);
+    const isDefault = s.name===def;
+    let actions='';
+    if(isDefault){
+      actions='<span style="font-size:.72rem;color:#9aa0ae">default</span>';
+    }else{
+      actions='<button class="mini '+(s.blocked?'':'danger')+'" onclick="setSchoolBlocked('+n+','+(!s.blocked)+')">'+(s.blocked?'unblock':'block')+'</button> '+
+              '<button class="mini danger" onclick="delSchool('+n+')">del</button>';
+    }
+    tr.innerHTML='<td>'+esc(s.name)+'</td><td>'+new Date(s.addedAt*1000||0).toLocaleDateString()+'</td><td>'+new Date(s.lastSeen*1000||0).toLocaleString()+'</td>'+
+      '<td>'+(s.blocked?'<span style="color:#ff6b6b">blocked</span>':'active')+'</td><td>'+actions+'</td>';
+    tb.appendChild(tr);
+  }
 }
-async function addSchool(){ const n=$('sName').value.trim(); if(!n) return; await api('POST','schools/'+n); $('sName').value=''; log('registered '+n); loadSchools(); renderCards(); }
+async function addSchool(){ const n=$('sName').value.trim(); if(!n) return; await api('POST','schools/'+encodeURIComponent(n)); $('sName').value=''; log('registered '+n); loadSchools(); renderCards(); }
+async function toggleAllowNew(v){
+  const d=await api('POST','schools/settings',{allowNew:v});
+  log('new-school auto-registration '+(d.allowNew?'enabled':'disabled'));
+  loadSchools(); renderCards();
+}
+async function setSchoolBlocked(name, blocked){
+  const d=await api('POST','schools/'+encodeURIComponent(name)+(blocked?'/block':'/unblock'));
+  if(d.error){ log('school access: '+d.error); return; }
+  log((blocked?'blocked ':'unblocked ')+name);
+  loadSchools(); renderCards();
+}
+async function delSchool(name){
+  if(!confirm('remove school "'+name+'"? This does not delete its users or pool.')) return;
+  const d=await api('DELETE','schools/'+encodeURIComponent(name));
+  if(d.error){ log('delete school: '+d.error); return; }
+  log('removed '+name); loadSchools(); renderCards();
+}
 
 function elementCell(el){
   if(!el || !el.elementType) return 'all';
@@ -901,6 +969,39 @@ async function testNtfy(id,btn){
       ? ('delivered to '+d.server+'/'+d.topic+', HTTP '+d.status)
       : ('FAILED: '+(d.error||('HTTP '+d.status)))));
   } catch(e){ log('ntfy '+id+' test error: '+e.message); }
+  btn.disabled=false; btn.textContent='test';
+}
+
+async function loadOutageNtfy(){
+  const d=await api('GET','outage-ntfy');
+  const tb=$('outageNtfy').querySelector('tbody'); tb.innerHTML='';
+  for(const o of d.subscriptions){
+    const tr=document.createElement('tr');
+    const scope=o.scope==='all'?'all schools':o.scope;
+    tr.innerHTML='<td>'+esc(scope)+'</td><td style="word-break:break-all">'+esc(o.topic)+'</td><td>'+esc(o.baseUrl||'(default)')+'</td><td>'+esc(o.createdBy||'')+'</td>'+
+      '<td><button class="mini" onclick="testOutageNtfy('+o.id+',this)">test</button> <button class="mini danger" onclick="delOutageNtfy('+o.id+')">del</button></td>';
+    tb.appendChild(tr);
+  }
+}
+async function addOutageNtfy(){
+  const d=await api('POST','outage-ntfy',{
+    school:$('outSchool').value,
+    topic:$('outTopic').value.trim(),
+    baseUrl:$('outBase').value.trim()
+  });
+  if(d.error){ log('outage alert: '+d.error); return; }
+  $('outTopic').value=''; $('outBase').value=''; log('added outage alert for '+d.scope);
+  loadOutageNtfy(); renderCards();
+}
+async function delOutageNtfy(id){ await api('DELETE','outage-ntfy/'+id); loadOutageNtfy(); renderCards(); }
+async function testOutageNtfy(id,btn){
+  btn.disabled=true; btn.textContent='…';
+  try {
+    const d=await api('POST','outage-ntfy/'+id+'/test');
+    log('outage alert '+id+' test: '+(d.ok
+      ? ('delivered to '+d.server+'/'+d.topic+', HTTP '+d.status)
+      : ('FAILED: '+(d.error||('HTTP '+d.status)))));
+  } catch(e){ log('outage alert '+id+' test error: '+e.message); }
   btn.disabled=false; btn.textContent='test';
 }
 
@@ -963,7 +1064,7 @@ async function refreshAll(){
   const mark = new Date().toTimeString().slice(0,8);
   const hint = $('refreshHint'); if(hint) hint.textContent = 'last refresh '+mark;
   const jobs = {users:loadUsers, webhooks:loadWebhooks,
-                ntfy:loadNtfy, tokens:loadTokens, pool:loadPool, roommap:loadRoomMap};
+                ntfy:loadNtfy, outage:loadOutageNtfy, tokens:loadTokens, pool:loadPool, roommap:loadRoomMap};
   // The school list has to land before the cards render, because rendering the
   // cards is what fills the school selectors.
   try { await loadSchools(); } catch(e){ log('schools: '+e); }

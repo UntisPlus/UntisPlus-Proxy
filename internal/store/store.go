@@ -242,6 +242,27 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Outage alerts are deliberately a separate table from ntfy_topics: they are
+	// not timetable-change subscriptions, and mixing them into the change-delivery
+	// matching code would make an outage topic look like a timetable target. An
+	// empty school is the "all schools" scope.
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS outage_ntfy (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		school TEXT NOT NULL DEFAULT '',
+		topic TEXT NOT NULL,
+		base_url TEXT NOT NULL DEFAULT '',
+		enabled INTEGER NOT NULL DEFAULT 1,
+		created_by TEXT NOT NULL DEFAULT '',
+		created_at INTEGER NOT NULL DEFAULT 0
+	)`)
+	if err != nil {
+		return nil, err
+	}
+	_, err = db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS outage_ntfy_identity
+		ON outage_ntfy (school, topic, base_url)`)
+	if err != nil {
+		return nil, err
+	}
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS class_tokens (
 		token TEXT NOT NULL PRIMARY KEY,
 		school TEXT NOT NULL,
@@ -502,6 +523,12 @@ func Open(path string) (*Store, error) {
 	}
 	// migration: add school column to users for multi-school support
 	if err := addColumnIfMissing(db, "users", "school", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return nil, err
+	}
+	// migration: an admin can refuse a school that auto-registered from a login.
+	// The row stays so the decision survives a restart and the school can be
+	// unblocked from the dashboard.
+	if err := addColumnIfMissing(db, "schools", "blocked", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return nil, err
 	}
 	// migration: add admin flag column to users
@@ -1174,11 +1201,42 @@ type School struct {
 	Name     string
 	AddedAt  time.Time
 	LastSeen time.Time
+	// Blocked refuses every public request for this school. The row and its
+	// data stay, so unblocking is a single flag flip rather than a re-import.
+	Blocked bool
+}
+
+// SettingSchoolsAllowNew is the settings key that decides whether an unknown
+// school may auto-register from its first login. A missing row means yes,
+// preserving the behaviour every existing deployment had before the switch
+// existed.
+const SettingSchoolsAllowNew = "schools_allow_new"
+
+// AllowNewSchools reports whether a school that is not registered yet may
+// register itself by logging in.
+func (s *Store) AllowNewSchools() (bool, error) {
+	v, ok, err := s.GetSetting(SettingSchoolsAllowNew)
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return true, nil
+	}
+	return v != "0", nil
+}
+
+// SetAllowNewSchools stores the auto-registration switch.
+func (s *Store) SetAllowNewSchools(allow bool) error {
+	v := "0"
+	if allow {
+		v = "1"
+	}
+	return s.SetSetting(SettingSchoolsAllowNew, v)
 }
 
 // ListSchools returns every registered school, most recently seen first.
 func (s *Store) ListSchools() ([]*School, error) {
-	rows, err := s.db.Query(`SELECT school, added_at, last_seen FROM schools ORDER BY last_seen DESC, school`)
+	rows, err := s.db.Query(`SELECT school, added_at, last_seen, blocked FROM schools ORDER BY last_seen DESC, school`)
 	if err != nil {
 		return nil, err
 	}
@@ -1186,14 +1244,32 @@ func (s *Store) ListSchools() ([]*School, error) {
 	var out []*School
 	for rows.Next() {
 		var sc School
-		var a, ls int64
-		if err := rows.Scan(&sc.Name, &a, &ls); err != nil {
+		var a, ls, blocked int64
+		if err := rows.Scan(&sc.Name, &a, &ls, &blocked); err != nil {
 			return nil, err
 		}
 		sc.AddedAt, sc.LastSeen = time.Unix(a, 0), time.Unix(ls, 0)
+		sc.Blocked = blocked != 0
 		out = append(out, &sc)
 	}
 	return out, rows.Err()
+}
+
+// SchoolInfo returns one registered school, or nil when it is unknown.
+func (s *Store) SchoolInfo(school string) (*School, error) {
+	var sc School
+	var a, ls, blocked int64
+	err := s.db.QueryRow(`SELECT school, added_at, last_seen, blocked FROM schools WHERE school=?`, school).
+		Scan(&sc.Name, &a, &ls, &blocked)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	sc.AddedAt, sc.LastSeen = time.Unix(a, 0), time.Unix(ls, 0)
+	sc.Blocked = blocked != 0
+	return &sc, nil
 }
 
 // KnownSchool reports whether a school is already registered.
@@ -1203,11 +1279,36 @@ func (s *Store) KnownSchool(school string) (bool, error) {
 	return n > 0, err
 }
 
-// UpsertSchool registers (or bumps last_seen for) a school.
+// UpsertSchool registers (or bumps last_seen for) a school. It deliberately
+// leaves the blocked flag untouched: a blocked school that keeps trying must
+// not clear its own block by being upserted.
 func (s *Store) UpsertSchool(school string) error {
 	_, err := s.db.Exec(`INSERT INTO schools (school, added_at, last_seen) VALUES (?,?,?)
 		ON CONFLICT(school) DO UPDATE SET last_seen=excluded.last_seen`,
 		school, time.Now().Unix(), time.Now().Unix())
+	return err
+}
+
+// SetSchoolBlocked blocks or unblocks a school. Blocking a school that is not
+// registered yet creates the row, so an admin can pre-empt a login.
+func (s *Store) SetSchoolBlocked(school string, blocked bool) error {
+	b := 0
+	if blocked {
+		b = 1
+	}
+	now := time.Now().Unix()
+	_, err := s.db.Exec(`INSERT INTO schools (school, added_at, last_seen, blocked) VALUES (?,?,?,?)
+		ON CONFLICT(school) DO UPDATE SET blocked=excluded.blocked`,
+		school, now, now, b)
+	return err
+}
+
+// DeleteSchool removes a school registration. Its pool, users, tokens and other
+// per-school rows are left alone: this is an access/list decision, not a
+// data-wipe. With auto-registration disabled, the school then cannot log in
+// again until an admin registers it.
+func (s *Store) DeleteSchool(school string) error {
+	_, err := s.db.Exec(`DELETE FROM schools WHERE school=?`, school)
 	return err
 }
 
@@ -1441,6 +1542,100 @@ func (s *Store) ListNtfyTopics(school string) ([]*NtfyTopic, error) {
 // DeleteNtfyTopic removes an ntfy topic subscription by id.
 func (s *Store) DeleteNtfyTopic(id int64) (int64, error) {
 	res, err := s.db.Exec(`DELETE FROM ntfy_topics WHERE id=?`, id)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
+// OutageNtfy is an ntfy subscription that reports poll outages rather than
+// timetable changes. An empty School means "all schools": the alert names every
+// school that is currently down.
+type OutageNtfy struct {
+	ID        int64
+	School    string
+	Topic     string
+	BaseURL   string
+	Enabled   bool
+	CreatedBy string
+	CreatedAt time.Time
+}
+
+// Scope is the dashboard/API rendering of the target: "all" or a school name.
+func (o *OutageNtfy) Scope() string {
+	if o.School == "" {
+		return "all"
+	}
+	return o.School
+}
+
+// AddOutageNtfy registers an outage subscription and returns its id. Re-adding
+// the exact same scope/topic/server returns the existing row, so a double-tap
+// cannot create duplicate down/recovery alerts.
+func (s *Store) AddOutageNtfy(o *OutageNtfy) (int64, error) {
+	en := 0
+	if o.Enabled {
+		en = 1
+	}
+	res, err := s.db.Exec(`INSERT INTO outage_ntfy (school, topic, base_url, enabled, created_by, created_at)
+		VALUES (?,?,?,?,?,?)
+		ON CONFLICT (school, topic, base_url) DO NOTHING`,
+		o.School, o.Topic, o.BaseURL, en, o.CreatedBy, time.Now().Unix())
+	if err != nil {
+		return 0, err
+	}
+	if nrows, err := res.RowsAffected(); err == nil && nrows == 0 {
+		var id int64
+		if err := s.db.QueryRow(`SELECT id FROM outage_ntfy WHERE school=? AND topic=? AND base_url=? LIMIT 1`,
+			o.School, o.Topic, o.BaseURL).Scan(&id); err != nil {
+			return 0, err
+		}
+		return id, nil
+	}
+	return res.LastInsertId()
+}
+
+// ListOutageNtfy returns every outage subscription, in creation order.
+func (s *Store) ListOutageNtfy() ([]*OutageNtfy, error) {
+	rows, err := s.db.Query(`SELECT id, school, topic, base_url, enabled, created_by, created_at
+		FROM outage_ntfy ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*OutageNtfy
+	for rows.Next() {
+		var o OutageNtfy
+		var en, ca int64
+		if err := rows.Scan(&o.ID, &o.School, &o.Topic, &o.BaseURL, &en, &o.CreatedBy, &ca); err != nil {
+			return nil, err
+		}
+		o.Enabled, o.CreatedAt = en != 0, time.Unix(ca, 0)
+		out = append(out, &o)
+	}
+	return out, rows.Err()
+}
+
+// OutageNtfyByID returns one outage subscription, or nil.
+func (s *Store) OutageNtfyByID(id int64) (*OutageNtfy, error) {
+	var o OutageNtfy
+	var en, ca int64
+	err := s.db.QueryRow(`SELECT id, school, topic, base_url, enabled, created_by, created_at
+		FROM outage_ntfy WHERE id=?`, id).
+		Scan(&o.ID, &o.School, &o.Topic, &o.BaseURL, &en, &o.CreatedBy, &ca)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	o.Enabled, o.CreatedAt = en != 0, time.Unix(ca, 0)
+	return &o, nil
+}
+
+// DeleteOutageNtfy removes an outage subscription by id.
+func (s *Store) DeleteOutageNtfy(id int64) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM outage_ntfy WHERE id=?`, id)
 	if err != nil {
 		return 0, err
 	}

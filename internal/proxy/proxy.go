@@ -175,6 +175,70 @@ func (p *Proxy) isNewSchool(school string) bool {
 	return err == nil && !known
 }
 
+// forgetSchool drops a school's live state after its registration row is
+// deleted, so a later re-registration starts from the database rather than from
+// an orphaned in-memory pool.
+func (p *Proxy) forgetSchool(school string) {
+	p.schoolsMu.Lock()
+	delete(p.schools, school)
+	p.schoolsMu.Unlock()
+}
+
+// schoolAdmitted reports whether a school may be served. The configured default
+// school is always admitted so an admin cannot lock the deployment out of
+// itself; every other school is refused when its row is blocked or, for a school
+// that has never registered, when auto-registration has been switched off.
+func (p *Proxy) schoolAdmitted(school string) bool {
+	if school == "" {
+		school = p.opts.School
+	}
+	if school == p.opts.School {
+		return true
+	}
+	info, err := p.store.SchoolInfo(school)
+	if err != nil {
+		// Fail closed: an unreadable access decision must not accidentally open
+		// a blocked school.
+		return false
+	}
+	if info != nil {
+		return !info.Blocked
+	}
+	allow, err := p.store.AllowNewSchools()
+	if err != nil {
+		return false
+	}
+	return allow
+}
+
+// gateSchools enforces schoolAdmitted before a public handler runs. It looks at
+// the explicit ?school= first, then at the school of the authenticated session,
+// so blocking a school cuts off both new logins and requests from an existing
+// session. Admin routes are exempt: an admin must still be able to unblock a
+// school from the dashboard.
+func (p *Proxy) gateSchools(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/admin" || strings.HasPrefix(r.URL.Path, "/admin/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		school := r.URL.Query().Get("school")
+		if school == "" {
+			if u := p.sessionUser(r); u != nil && u.School != "" {
+				school = u.School
+			}
+		}
+		if school != "" && !p.schoolAdmitted(school) {
+			log.Printf("[access] refused school %q for %s %s", school, r.Method, r.URL.Path)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-8530,"message":"school not allowed"}}`))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // schoolYearRange mirrors the server's schoolYear helper so login-triggered
 // recon scans (and any future per-school scans) use the same German school year
 // bounds as the boot-time scan.
@@ -380,6 +444,7 @@ func (p *Proxy) Handler() http.Handler {
 	mux.HandleFunc("/admin", p.handleAdminDashboard)
 	mux.HandleFunc("/admin/login", p.handleAdminLogin)
 	mux.HandleFunc("/admin/", p.handleAdmin)
+	gated := p.gateSchools(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		h := w.Header()
 		h.Set("X-Content-Type-Options", "nosniff")
@@ -392,7 +457,7 @@ func (p *Proxy) Handler() http.Handler {
 		if r.Body != nil {
 			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 		}
-		mux.ServeHTTP(w, r)
+		gated.ServeHTTP(w, r)
 	})
 }
 

@@ -103,6 +103,8 @@ func (p *Proxy) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		p.adminWebhooks(w, r, parts[1:])
 	case parts[0] == "ntfy":
 		p.adminNtfy(w, r, parts[1:])
+	case parts[0] == "outage-ntfy":
+		p.adminOutageNtfy(w, r, parts[1:])
 	case parts[0] == "outbox" && r.Method == http.MethodGet:
 		p.adminOutbox(w, r)
 	case parts[0] == "recon":
@@ -123,6 +125,7 @@ func (p *Proxy) adminStatus(w http.ResponseWriter) {
 	perms, _ := p.store.AllPerms()
 	webhooks, _ := p.store.ListWebhooks("")
 	ntfy, _ := p.store.ListNtfyTopics("")
+	outageNtfy, _ := p.store.ListOutageNtfy()
 	// Delivery backlog: pending means retrying, dead means a destination gave up
 	// and someone has to look at it.
 	outbox, _ := p.store.OutboxStats()
@@ -163,6 +166,7 @@ func (p *Proxy) adminStatus(w http.ResponseWriter) {
 		"tokens":     len(tokens),
 		"webhooks":   len(webhooks),
 		"ntfyTopics": len(ntfy),
+		"outageNtfy": len(outageNtfy),
 		"outbox": map[string]int{
 			"pending": outbox.Pending,
 			"sending": outbox.Sending,
@@ -455,7 +459,56 @@ func (p *Proxy) adminTokens(w http.ResponseWriter, r *http.Request, parts []stri
 }
 
 func (p *Proxy) adminSchools(w http.ResponseWriter, r *http.Request, parts []string) {
-	if r.Method == http.MethodPost && len(parts) == 1 {
+	switch {
+	case r.Method == http.MethodPost && len(parts) == 1 && parts[0] == "settings":
+		var req struct {
+			AllowNew *bool `json:"allowNew"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.AllowNew == nil {
+			p.writeJSON(w, map[string]any{"error": "allowNew required"})
+			return
+		}
+		if err := p.store.SetAllowNewSchools(*req.AllowNew); err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.writeJSON(w, map[string]any{"allowNew": *req.AllowNew})
+		return
+	case r.Method == http.MethodPost && len(parts) == 2 && (parts[1] == "block" || parts[1] == "unblock"):
+		name := strings.TrimSpace(parts[0])
+		if name == "" {
+			p.writeJSON(w, map[string]any{"error": "school required"})
+			return
+		}
+		blocked := parts[1] == "block"
+		if blocked && name == p.opts.School {
+			p.writeJSON(w, map[string]any{"error": "cannot block the configured default school"})
+			return
+		}
+		if err := p.store.SetSchoolBlocked(name, blocked); err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.writeJSON(w, map[string]any{"school": name, "blocked": blocked})
+		return
+	case r.Method == http.MethodDelete && len(parts) == 1:
+		name := strings.TrimSpace(parts[0])
+		if name == "" {
+			p.writeJSON(w, map[string]any{"error": "school required"})
+			return
+		}
+		if name == p.opts.School {
+			p.writeJSON(w, map[string]any{"error": "cannot delete the configured default school"})
+			return
+		}
+		if err := p.store.DeleteSchool(name); err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.forgetSchool(name)
+		p.writeJSON(w, map[string]any{"school": name, "deleted": true})
+		return
+	case r.Method == http.MethodPost && len(parts) == 1:
 		_ = p.store.UpsertSchool(parts[0])
 		p.stateFor(parts[0])
 		p.writeJSON(w, map[string]any{"school": parts[0], "registered": true})
@@ -466,16 +519,22 @@ func (p *Proxy) adminSchools(w http.ResponseWriter, r *http.Request, parts []str
 		p.writeJSON(w, map[string]any{"error": "store error"})
 		return
 	}
+	allowNew, err := p.store.AllowNewSchools()
+	if err != nil {
+		p.writeJSON(w, map[string]any{"error": "store error"})
+		return
+	}
 	type schoolOut struct {
 		Name     string `json:"name"`
 		AddedAt  int64  `json:"addedAt"`
 		LastSeen int64  `json:"lastSeen"`
+		Blocked  bool   `json:"blocked"`
 	}
 	out := make([]schoolOut, 0, len(schools))
 	for _, sc := range schools {
-		out = append(out, schoolOut{sc.Name, sc.AddedAt.Unix(), sc.LastSeen.Unix()})
+		out = append(out, schoolOut{sc.Name, sc.AddedAt.Unix(), sc.LastSeen.Unix(), sc.Blocked})
 	}
-	p.writeJSON(w, map[string]any{"schools": out})
+	p.writeJSON(w, map[string]any{"schools": out, "allowNew": allowNew, "defaultSchool": p.opts.School})
 }
 
 func (p *Proxy) adminWebhooks(w http.ResponseWriter, r *http.Request, parts []string) {
@@ -777,6 +836,120 @@ func (p *Proxy) adminNtfy(w http.ResponseWriter, r *http.Request, parts []string
 		})
 	}
 	p.writeJSON(w, map[string]any{"topics": out})
+}
+
+// adminOutageNtfy manages ntfy subscriptions that report poll outages. It is a
+// separate API from /admin/ntfy on purpose: these rows never take part in
+// timetable change matching.
+func (p *Proxy) adminOutageNtfy(w http.ResponseWriter, r *http.Request, parts []string) {
+	if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "test" {
+		id, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil || id <= 0 {
+			p.writeJSON(w, map[string]any{"error": "bad id"})
+			return
+		}
+		o, err := p.store.OutageNtfyByID(id)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		if o == nil {
+			p.writeJSON(w, map[string]any{"error": "not found"})
+			return
+		}
+		status, err := p.testOutageNtfy(o)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		p.writeJSON(w, map[string]any{
+			"ok": true, "status": status,
+			"topic": o.Topic, "server": ntfyBaseURL(&store.NtfyTopic{BaseURL: o.BaseURL}),
+			"scope": o.Scope(),
+		})
+		return
+	}
+	if r.Method == http.MethodPost && len(parts) == 0 {
+		var req struct {
+			School  string `json:"school"`
+			Topic   string `json:"topic"`
+			BaseURL string `json:"baseUrl"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			p.writeJSON(w, map[string]any{"error": "bad request"})
+			return
+		}
+		req.School = strings.TrimSpace(req.School)
+		req.Topic = strings.TrimSpace(req.Topic)
+		if req.Topic == "" {
+			p.writeJSON(w, map[string]any{"error": "topic required"})
+			return
+		}
+		baseURL := cleanNtfyBase(req.BaseURL)
+		if baseURL != "" {
+			if err := validateTargetURL(baseURL, allowPrivateTargets); err != nil {
+				p.writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+		}
+		id, err := p.store.AddOutageNtfy(&store.OutageNtfy{
+			School: req.School, Topic: req.Topic, BaseURL: baseURL,
+			Enabled: true, CreatedBy: "admin",
+		})
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.writeJSON(w, map[string]any{"id": id, "scope": scopeLabel(req.School)})
+		return
+	}
+	if r.Method == http.MethodDelete && len(parts) == 1 {
+		id, err := strconv.ParseInt(parts[0], 10, 64)
+		if err != nil || id <= 0 {
+			p.writeJSON(w, map[string]any{"error": "bad id"})
+			return
+		}
+		n, err := p.store.DeleteOutageNtfy(id)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.writeJSON(w, map[string]any{"deleted": n > 0})
+		return
+	}
+	if r.Method != http.MethodGet || len(parts) != 0 {
+		p.writeJSON(w, map[string]any{"error": "not found"})
+		return
+	}
+	subs, err := p.store.ListOutageNtfy()
+	if err != nil {
+		p.writeJSON(w, map[string]any{"error": "store error"})
+		return
+	}
+	type outageOut struct {
+		ID        int64  `json:"id"`
+		School    string `json:"school"`
+		Scope     string `json:"scope"`
+		Topic     string `json:"topic"`
+		BaseURL   string `json:"baseUrl"`
+		Enabled   bool   `json:"enabled"`
+		CreatedBy string `json:"createdBy"`
+	}
+	out := make([]outageOut, 0, len(subs))
+	for _, o := range subs {
+		out = append(out, outageOut{
+			ID: o.ID, School: o.School, Scope: o.Scope(), Topic: o.Topic,
+			BaseURL: o.BaseURL, Enabled: o.Enabled, CreatedBy: o.CreatedBy,
+		})
+	}
+	p.writeJSON(w, map[string]any{"subscriptions": out})
+}
+
+func scopeLabel(school string) string {
+	if school == "" {
+		return "all"
+	}
+	return school
 }
 
 // reconProgress summarises, for one school, how much of the pooled class list

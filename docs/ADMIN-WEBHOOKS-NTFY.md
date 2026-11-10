@@ -44,14 +44,21 @@ An admin can do everything `untisctl` can, from the dashboard:
 | `/admin/pool[/{school}]` | GET | pooled classes + owners |
 | `/admin/tokens[/{school}]` | GET | calendar tokens |
 | `/admin/tokens/{token}` | DELETE | revoke a token |
-| `/admin/schools` | GET | registered schools |
+| `/admin/schools` | GET | registered schools, their `blocked` flag, and `allowNew` |
 | `/admin/schools/{school}` | POST | register a school |
+| `/admin/schools/{school}/block` | POST | refuse every public request for that school |
+| `/admin/schools/{school}/unblock` | POST | restore access to that school |
+| `/admin/schools/{school}` | DELETE | remove the registration row (data is kept) |
+| `/admin/schools/settings` | POST | `{allowNew: bool}` — whether an unknown school may auto-register |
 | `/admin/webhooks` | GET/POST | list / add (`school`, `url`, `secret` + target `classId` (legacy) or `elementType`/`elementId` for class/student/teacher/room/subject) |
 | `/admin/webhooks/{id}` | DELETE | remove |
 | `/admin/webhooks/{id}/test` | POST | send a test change to one hook (owner/admin) |
 | `/admin/ntfy` | GET/POST | list / add (`school`, `topic`, `baseUrl` + target `classId` or `elementType`/`elementId`) |
 | `/admin/ntfy/{id}` | DELETE | remove |
 | `/admin/ntfy/{id}/test` | POST | publish a test change to one topic (owner/admin) |
+| `/admin/outage-ntfy` | GET/POST | list / add (`school` empty = all schools, `topic`, `baseUrl`) |
+| `/admin/outage-ntfy/{id}` | DELETE | remove an outage subscription |
+| `/admin/outage-ntfy/{id}/test` | POST | publish a test outage alert to one subscription |
 | `/admin/recon[/{school}]` | GET | recon snapshot stats |
 | `/admin/rooms[/{school}]` | GET/POST | event-room-text → Untis room-id map (overrides the school catalogue) |
 | `/admin/outbox` | GET | notification-delivery backlog (`?state=dead` for exhausted deliveries) |
@@ -173,6 +180,40 @@ the existing row instead of queueing a second notification. A different
 Use per-school prefixes so different schools never collide on the public ntfy
 server, e.g. `schl{schule}-klasse{ID}` and `schl{schule}-all`. The proxy itself
 only enforces per-row `school`, not topic naming.
+
+### Outage alerts
+
+The dashboard's **Outage alerts (ntfy)** section (and `/admin/outage-ntfy`)
+configures a different kind of push: a notification when the class poller stops
+reaching Untis, and another when it recovers. These rows are kept in their own
+`outage_ntfy` table, so they never take part in timetable-change matching.
+
+- **Scope `all schools`** (`school` empty) fires whenever *any* registered,
+  unblocked school is down, and the message names every affected school.
+- **Scope `<school>`** fires only for that school.
+- The alert is based on **poll success**, not recon progress. A school with no
+  pooled classes is ignored. A school is down when its latest poll failed, when
+  no poll has ever succeeded, or when the last successful poll is older than the
+  10-minute health window.
+- A failure must persist for **3 minutes** before the down alert is sent. This
+  keeps a single timeout or upstream restart from paging anyone. The recovery
+  alert is sent once when the condition clears; a sustained outage does not
+  repeat every tick.
+- Each subscription can set its own `baseUrl`, exactly like a timetable topic.
+  `POST /admin/outage-ntfy/{id}/test` sends a sample alert through the same path.
+- A blocked school is not polled and never appears in an outage alert.
+
+Example:
+
+```sh
+# global outage topic
+curl -X POST /admin/outage-ntfy \
+  -d '{"topic":"untis-outages","baseUrl":"https://ntfy.example.org"}'
+
+# only one school
+curl -X POST /admin/outage-ntfy \
+  -d '{"school":"myschool","topic":"untis-myschool"}'
+```
 
 ## Delivery reliability
 
@@ -322,8 +363,30 @@ A single proxy process can serve many WebUntis schools:
 - Clients select a school with `?school=` on the login/JSON-RPC/REST requests
   (and it is persisted on the user row); a `schoolname` cookie remembers it.
 
-Exit condition / accounting: an admin can remove a school row from the Schools
-section; its data remains keyed by school name and becomes orphaned.
+### Access control
+
+Auto-registration is convenient, but public: anyone who knows a WebUntis school
+login can be the first user from that school. The Schools section therefore has
+two controls:
+
+- **allow new schools to auto-register** (`/admin/schools/settings`,
+  `{allowNew: bool}`). Default **on**, preserving the behaviour above. With it
+  off, an unknown `?school=` is refused before any handler runs; an admin can
+  still register the school explicitly with `POST /admin/schools/{school}`.
+- **block / unblock** a registered school. Blocking refuses every public request
+  for that school — new logins and existing sessions alike — on JSON-RPC, REST,
+  calendar tokens and the `.ics`/`/week` feeds. The row and its data stay, so
+  unblocking is a single flag flip. The configured default school cannot be
+  blocked, which prevents locking the deployment out of itself.
+
+`DELETE /admin/schools/{school}` removes the registration row only; the pool,
+users, tokens and other per-school data remain. If auto-registration is still
+on, that school can register again on its next login — use **block** to keep it
+out. Deleting is for cleaning up a school that should never have been listed.
+
+An admin can also pre-block a school name that has not logged in yet: `POST
+/admin/schools/{school}/block` creates the row with the block set. That is the
+simplest way to stop a school without waiting to see its login name in the list.
 
 ## Files
 
@@ -332,10 +395,13 @@ section; its data remains keyed by school name and becomes orphaned.
 - `internal/proxy/subs.go` — self-service `/api/webhooks`, `/api/ntfy`.
 - `internal/proxy/notify.go` — `deliverChange`, `postWebhook`, `publishNtfy`,
   `StartPollLoop` (multi-school), changes/stream API.
+- `internal/proxy/outage.go` — poll-outage ntfy alerts (`StartOutageAlertLoop`,
+  `/admin/outage-ntfy`).
 - `internal/proxy/events_admin.go` — `/api/admin/events` CRUD + the private
   change signal.
 - `internal/proxy/roommap.go` — event-room-text → Untis room-id overrides.
 - `internal/proxy/event_absences.go` — the event-absence register + changelog.
 - `internal/proxy/events_import.go` — the Technik CSV/JSON import fan-out.
-- `internal/store/store.go` — `users.admin`, `schools`, `webhooks`, `ntfy_topics`,
-  `student_events`, `student_event_versions` tables + school-scoped queries.
+- `internal/store/store.go` — `users.admin`, `schools` (incl. `blocked`),
+  `webhooks`, `ntfy_topics`, `outage_ntfy`, `student_events`,
+  `student_event_versions` tables + school-scoped queries.

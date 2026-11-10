@@ -147,6 +147,12 @@ func main() {
 	pollDone := make(chan struct{})
 	go p.StartPollLoop(*school, *poll, pollDone)
 
+	// Outage alerts watch the same poll health and post to ntfy. They are
+	// independent of the change poll cadence: a minute is fine even when the
+	// polls themselves are spaced further apart.
+	outageDone := make(chan struct{})
+	go p.StartOutageAlertLoop(time.Minute, outageDone)
+
 	// Deliveries are durably queued by the poller in the same transaction that
 	// stamps the new class version; this worker is what actually sends them. It
 	// must be running, or notifications queue up and never leave.
@@ -192,6 +198,7 @@ func main() {
 	}
 
 	close(pollDone)
+	close(outageDone)
 	// Wait for the worker to finish the batch it is on before the store closes,
 	// so a delivery in flight is not abandoned mid-request.
 	close(outboxDone)

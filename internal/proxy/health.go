@@ -53,7 +53,7 @@ func (p *Proxy) health() (all []schoolHealth, ok bool) {
 	}
 	seen := map[string]bool{}
 	for _, sc := range schools {
-		if sc.Name == "" || seen[sc.Name] {
+		if sc.Name == "" || seen[sc.Name] || sc.Blocked {
 			continue
 		}
 		seen[sc.Name] = true

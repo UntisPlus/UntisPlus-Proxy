@@ -78,6 +78,12 @@ func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 	if school == "" {
 		school = p.opts.School
 	}
+	if !p.schoolAdmitted(school) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"school not allowed"}`))
+		return
+	}
 	tz := req.Timezone
 	if tz == "" {
 		tz = "Europe/Berlin"
@@ -698,7 +704,7 @@ func icsFilename(tok *store.ClassToken) string {
 func (p *Proxy) handleCalendarICS(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimSuffix(r.PathValue("token"), ".ics")
 	tok, err := p.store.ClassTokenByToken(token)
-	if err != nil || tok == nil || tokenExpired(tok) {
+	if err != nil || tok == nil || tokenExpired(tok) || !p.schoolAdmitted(tok.School) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
