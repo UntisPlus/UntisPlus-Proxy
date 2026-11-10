@@ -204,7 +204,11 @@ Three workflows live in `.github/workflows/`:
 
 Failures show on the pull request and in the repository's **Actions** tab. To
 make a red run block merging, enable branch protection for `main` and require
-the `CI / Test` and both `CI / Race …` checks.
+the `CI / Test` and `CI / Race detector` checks.
+
+The `Docker` workflow also has a manual **Run workflow** option to build both
+architectures without pushing, which validates the exact release build without
+publishing an image.
 
 ### Required secrets
 

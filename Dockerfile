@@ -10,7 +10,8 @@ ARG TARGETOS
 ARG TARGETARCH
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
 
 COPY cmd/ ./cmd/
 COPY internal/ ./internal/
@@ -19,7 +20,9 @@ COPY internal/ ./internal/
 # flag or environment variable that could disagree with the tag it is published
 # under. Plain `docker build .` leaves it "dev".
 ARG VERSION=dev
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.buildVersion=${VERSION}" -o /out/untis-server ./cmd/server && \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X main.buildVersion=${VERSION}" -o /out/untis-server ./cmd/server && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/untis-seed ./cmd/seed && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/untis-perm ./cmd/perm && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/untisctl ./cmd/untisctl

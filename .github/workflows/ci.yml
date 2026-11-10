@@ -55,14 +55,8 @@ jobs:
         run: node scripts/check-admin-ui.js
 
   race:
-    name: Race ${{ matrix.package }}
+    name: Race detector
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        package:
-          - ./internal/store
-          - ./internal/proxy
     steps:
       - uses: actions/checkout@v7
 
@@ -72,4 +66,4 @@ jobs:
           cache: true
 
       - name: Test with -race
-        run: go test -race -count=1 ${{ matrix.package }}
+        run: go test -race -count=1 ./internal/store ./internal/proxy
