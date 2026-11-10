@@ -1,5 +1,7 @@
 # untis-proxy
 
+[![CI](https://github.com/UntisPlus/UntisPlus-Proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/UntisPlus/UntisPlus-Proxy/actions/workflows/ci.yml)
+
 A Go reverse-proxy in front of WebUntis. It lets the **BetterPlus-Android** app
 log in once and then:
 

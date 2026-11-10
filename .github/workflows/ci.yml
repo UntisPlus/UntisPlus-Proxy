@@ -1,0 +1,69 @@
+name: CI
+
+# The gate every change goes through. The release workflow calls this same file,
+# so a tag cannot publish an image that did not pass the tests.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check formatting
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt would rewrite these files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Build
+        run: go build ./...
+
+      - name: Test
+        run: go test -count=1 ./...
+
+      # The Go tests cannot execute the admin page's JavaScript; this runs its
+      # script against a DOM shim and drives the event pickers.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Admin UI runtime check
+        run: node scripts/check-admin-ui.js
+
+  race:
+    name: Race detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Test with -race
+        run: go test -race -count=1 ./internal/store ./internal/proxy

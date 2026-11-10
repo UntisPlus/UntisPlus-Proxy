@@ -12,6 +12,7 @@ the proxy does and how to use it, see [`README.md`](README.md).
 - [Docker Compose on a NAS](#docker-compose-on-a-nas)
 - [Exposing it publicly (Cloudflare Tunnel)](#exposing-it-publicly-cloudflare-tunnel)
 - [Building and pushing the image](#building-and-pushing-the-image)
+- [GitHub Actions (CI/CD)](#github-actions-cicd)
 - [The release gate](#the-release-gate)
 - [Backups](#backups)
 - [Reading the log](#reading-the-log)
@@ -186,13 +187,71 @@ docker push <your-namespace>/untisplus-proxy:latest
 docker push <your-namespace>/untisplus-proxy:<published tag>
 ```
 
-Usually done for you by [the release gate](#the-release-gate).
+Usually done for you by [GitHub Actions](#github-actions-cicd) when a version
+tag is pushed.
+
+---
+
+## GitHub Actions (CI/CD)
+
+Three workflows live in `.github/workflows/`:
+
+| Workflow | Trigger | What it does |
+|---|---|---|
+| `ci.yml` | pull requests, pushes to `main`, and called by the release | `gofmt`, `go vet`, `go build`, the full `go test ./...` suite, the admin UI runtime check, and `go test -race` for `internal/store` and `internal/proxy` |
+| `docker.yml` | pull requests and pushes to `main` | builds the image for `linux/amd64` **without pushing**, so a broken Dockerfile fails the PR instead of the release |
+| `release.yml` | tags matching `v*` | runs `ci.yml`, builds and pushes the image, then creates a GitHub release with generated notes |
+
+Failures show on the pull request and in the repository's **Actions** tab. To
+make a red run block merging, enable branch protection for `main` and require
+the `CI / Test` and `CI / Race detector` checks.
+
+### Required secrets
+
+Add these under **Settings → Secrets and variables → Actions**:
+
+| Secret | Value |
+|---|---|
+| `DOCKERHUB_USERNAME` | Docker Hub account that owns `untisplus/untisplus-proxy` |
+| `DOCKERHUB_TOKEN` | Docker Hub **access token** with Read & Write (not the account password) |
+
+`GITHUB_TOKEN` is provided automatically; the release job uses it to create the
+GitHub release (`contents: write`). No other secrets are needed — tests are
+self-contained and never read `.env`.
+
+### Cutting a release
+
+Push `main` first, then push the tag:
+
+```sh
+git switch main
+git pull --ff-only
+git push origin main
+git tag v1.14.0
+git push origin v1.14.0
+```
+
+That tag push runs the full CI gate, publishes
+`untisplus/untisplus-proxy:v1.14.0` and `:latest` for `linux/amd64` and
+`linux/arm64`, and creates the `v1.14.0` GitHub release. The tag is passed to
+the build as `VERSION`, so `/status` and `untis-server -version` report it.
+
+The Docker build is a multi-arch buildx build. The first `linux/arm64` build
+takes longer because it runs through QEMU; later builds reuse the GitHub Actions
+cache.
+
+To retry a failed release, open **Actions → Release → the run → Re-run all
+jobs**. The Docker push is idempotent, and an existing GitHub release is left
+alone rather than failing the rerun.
+
+`scripts/release.sh` still works for an offline or manual release, but do not
+run it for the same version as the pipeline — pick one path.
 
 ---
 
 ## The release gate
 
-`scripts/release.sh` is the single path that ships: `go vet`, `go build`, the
+`scripts/release.sh` is the local path that ships: `go vet`, `go build`, the
 full test run, an optional backup, then the Docker Hub push and the git push.
 
 ```sh
