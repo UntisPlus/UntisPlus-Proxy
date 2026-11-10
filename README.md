@@ -568,7 +568,8 @@ untisctl users add --user Asmith --secret <base32-key> --method key
 untisctl users add --user X --secret <password> --method password
 untisctl users admin --user evan        # grant admin (or --off to revoke)
 untisctl users remove --user Asmith     # also removes secret, perms, personal tokens
-untisctl users check                   # live login test for every stored account
+untisctl users check                   # live login test for every stored account,
+                                       # each against the school saved on that account
 untisctl users check --remove-classless # also delete accounts the API reports without a class
 ```
 

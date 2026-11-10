@@ -221,6 +221,9 @@ the fast way to inspect the digest.
 - [ ] Data of school A never appears under school B (pool, tokens, timetables, webhooks)
 - [ ] First login from an unknown school auto-registers it (log: `auto-registered school "…"`)
 - [ ] `schoolname` cookie is honoured and survives a restart
+- [ ] `untisctl users check` shows each account's own `SCHOOL`, and class names do not
+      leak between schools when the same numeric class ID exists in both (the global
+      `-school` is only used for rows with no recorded school)
 
 ## 12. Recon
 

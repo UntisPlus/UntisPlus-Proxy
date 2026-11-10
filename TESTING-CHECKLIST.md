@@ -184,7 +184,8 @@ Use a throwaway user (`testtier`) — create, then remove at the end.
 
 ## 11. untisctl CLI (against `data/untis.db`)
 - [ ] 11.1 `status` → 5 users / 5 classes / 3 tokens etc.
-- [ ] 11.2 `users list`, `users check jdoe` (asks real API for the class)
+- [ ] 11.2 `users list`, `users check` (each account is checked against its own
+      school; the global `-school` is only a fallback for legacy rows without one)
 - [ ] 11.3 `perms grant/revoke/clear` round-trips
 - [ ] 11.4 `pool list`, `pool owners`
 - [ ] 11.5 `calendar create --class 5004`; `calendar list`; `calendar revoke <token>`

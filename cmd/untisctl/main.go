@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -55,7 +56,9 @@ Commands:
   users add --user U --secret S [--method password|key]
   users remove --user U              delete user + secret + overrides + personal tokens
   users admin --user U [--on|--off]  grant or revoke admin dashboard access
-  users check [--remove-classless]   ask the real Untis API for each account's class;
+  users check [--remove-classless]   ask the real Untis API for each account's class,
+                                     using the account's own school (-school is only a
+                                     fallback for legacy rows without one);
                                      --remove-classless deletes students the API
                                      reports without a class
 
@@ -401,86 +404,121 @@ func userRemove(st *store.Store, args []string) {
 	fmt.Printf("removed user %q (%d related row(s) cleaned)\n", *user, n)
 }
 
+// userCheckAPI is the subset of the upstream Untis API used by `users check`.
+// Keeping it behind an interface lets the per-school routing be tested without
+// a network.
+type userCheckAPI interface {
+	Session(school, username, secret, method string) (string, error)
+	GetKlassen(school, cookie string) ([]byte, error)
+	PersonInfo(school, cookie string) (*untis.PersonInfo, error)
+	Logout(school, cookie string)
+}
+
 // userCheck asks the real Untis API what class each stored account belongs to
-// (via a real session from its saved credential). Students the API reports as
-// having no class are flagged CLASSLESS; with --remove-classless they are
-// deleted. Teachers (personType != 5) are never deleted.
+// (via a real session from its saved credential). Each account is checked
+// against its own school; the global -school is only a fallback for legacy rows
+// that predate per-user schools. Students the API reports as having no class are
+// flagged CLASSLESS; with --remove-classless they are deleted. Teachers
+// (personType != 5) are never deleted.
 func userCheck(st *store.Store, server, school string, args []string) {
 	fs := flag.NewFlagSet("users check", flag.ExitOnError)
 	remove := fs.Bool("remove-classless", false, "delete student accounts the API reports without a class")
 	fs.Parse(args)
 
+	uc := untis.New(untis.Config{Server: server, School: school})
+	checkUsers(st, uc, school, *remove, os.Stdout)
+}
+
+// checkUsers validates every account against the school recorded on that
+// account. Class IDs are only unique within one school, so class names are
+// cached per school; sharing one map would label a class with another school's
+// name whenever the numeric IDs collide.
+func checkUsers(st *store.Store, uc userCheckAPI, fallbackSchool string, remove bool, w io.Writer) {
 	users, err := st.ListUsers()
 	if err != nil {
 		fatal("users check: %v", err)
 	}
-	uc := untis.New(untis.Config{Server: server, School: school})
 
-	// Build id -> name from whichever account can fetch the class list.
-	klassen := map[int64]string{}
-	for _, u := range users {
-		if u.Password == "" {
-			continue
-		}
-		ck, err := uc.Session(school, u.Username, u.Password, u.Method)
-		if err != nil {
-			continue
-		}
-		if b, err := uc.GetKlassen(school, ck); err == nil {
-			var res struct {
-				Result []struct {
-					ID   int64  `json:"id"`
-					Name string `json:"name"`
-				} `json:"result"`
-			}
-			if json.Unmarshal(b, &res) == nil {
-				for _, c := range res.Result {
-					klassen[c.ID] = c.Name
-				}
-			}
-			uc.Logout(school, ck)
-			if len(klassen) > 0 {
-				break
-			}
-		} else {
-			uc.Logout(school, ck)
-		}
-	}
+	klassen := map[string]map[int64]string{}
 
-	fmt.Printf("%-12s %-8s %-9s %-9s %-14s %s\n", "USER", "METHOD", "API_TYPE", "CLASS_ID", "CLASS", "VERDICT")
+	fmt.Fprintf(w, "%-12s %-8s %-9s %-9s %-20s %-14s %s\n", "USER", "METHOD", "API_TYPE", "CLASS_ID", "SCHOOL", "CLASS", "VERDICT")
 	removed := 0
 	for _, u := range users {
 		if u.Password == "" {
-			fmt.Printf("%-12s %-8s  (no saved credential, skipped)\n", u.Username, u.Method)
+			fmt.Fprintf(w, "%-12s %-8s  (no saved credential, skipped)\n", u.Username, u.Method)
 			continue
 		}
-		ck, err := uc.Session(school, u.Username, u.Password, u.Method)
+		userSchool := u.School
+		if userSchool == "" {
+			// Rows created before schools were stored per user have no school.
+			// They can only be checked against the explicit global fallback.
+			userSchool = fallbackSchool
+		}
+		if userSchool == "" {
+			fmt.Fprintf(w, "%-12s %-8s  (no school on the account and no fallback -school, skipped)\n", u.Username, u.Method)
+			continue
+		}
+
+		ck, err := uc.Session(userSchool, u.Username, u.Password, u.Method)
 		if err != nil {
-			fmt.Printf("%-12s %-8s login failed: %v\n", u.Username, u.Method, err)
+			fmt.Fprintf(w, "%-12s %-8s school %s: login failed: %v\n", u.Username, u.Method, userSchool, err)
 			continue
 		}
-		info, _ := uc.PersonInfo(school, ck)
-		uc.Logout(school, ck)
+		// Fetch the class list once per school, from the first account that can
+		// read it. Failed attempts are retried with the next account of that
+		// school instead of leaving every later row without a class name.
+		if _, ok := klassen[userSchool]; !ok {
+			if names, err := fetchKlassen(uc, userSchool, ck); err == nil && len(names) > 0 {
+				klassen[userSchool] = names
+			}
+		}
+		info, _ := uc.PersonInfo(userSchool, ck)
+		uc.Logout(userSchool, ck)
+		if info == nil {
+			info = &untis.PersonInfo{}
+		}
 
 		verdict := "keep"
 		if info.PersonID == 0 && info.PersonType == 0 && info.ClassID == 0 {
 			verdict = "info unavailable"
 		} else if info.PersonType == 5 && info.ClassID == 0 {
 			verdict = "CLASSLESS"
-			if *remove {
+			if remove {
 				if _, err := st.DeleteUser(u.Username); err != nil {
-					fmt.Printf("%-12s remove failed: %v\n", u.Username, err)
+					fmt.Fprintf(w, "%-12s remove failed: %v\n", u.Username, err)
 					continue
 				}
 				verdict = "REMOVED"
 				removed++
 			}
 		}
-		fmt.Printf("%-12s %-8s %-9d %-9d %-14s %s\n", u.Username, u.Method, info.PersonType, info.ClassID, klassen[info.ClassID], verdict)
+		fmt.Fprintf(w, "%-12s %-8s %-9d %-9d %-20s %-14s %s\n", u.Username, u.Method, info.PersonType, info.ClassID, userSchool, klassen[userSchool][info.ClassID], verdict)
 	}
 	if removed > 0 {
-		fmt.Printf("removed %d classless account(s)\n", removed)
+		fmt.Fprintf(w, "removed %d classless account(s)\n", removed)
 	}
+}
+
+// fetchKlassen parses one school's getKlassen result into an id -> name map.
+func fetchKlassen(uc userCheckAPI, school, cookie string) (map[int64]string, error) {
+	b, err := uc.GetKlassen(school, cookie)
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Result []struct {
+			ID   int64  `json:"id"`
+			Name string `json:"name"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(b, &res); err != nil {
+		return nil, err
+	}
+	names := make(map[int64]string, len(res.Result))
+	for _, c := range res.Result {
+		names[c.ID] = c.Name
+	}
+	return names, nil
 }
 
 // ---------------------------------------------------------------------------
