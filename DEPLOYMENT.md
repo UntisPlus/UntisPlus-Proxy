@@ -204,7 +204,7 @@ Three workflows live in `.github/workflows/`:
 
 Failures show on the pull request and in the repository's **Actions** tab. To
 make a red run block merging, enable branch protection for `main` and require
-the `CI / Test` and `CI / Race detector` checks.
+the `CI / Test` and both `CI / Race …` checks.
 
 ### Required secrets
 
@@ -242,9 +242,11 @@ That tag push runs the full CI gate, publishes
 the build as `VERSION`, so `/status` reports it (`-version` is the flag that
 sets the reported value).
 
-The Docker build is a multi-arch buildx build. The first `linux/arm64` build
-takes longer because it runs through QEMU; later builds reuse the GitHub Actions
-cache.
+The Docker build is a multi-arch buildx build. The `linux/arm64` binaries are
+cross-compiled on the native amd64 builder (CGO is disabled), so both
+architectures finish in roughly the same time instead of running the compiler
+under QEMU. Docker layer and Go module caches are stored in the GitHub Actions
+cache and reused on later runs.
 
 To retry a failed release, open **Actions → Release → the run → Re-run all
 jobs**. The Docker push is idempotent, and an existing GitHub release is left
