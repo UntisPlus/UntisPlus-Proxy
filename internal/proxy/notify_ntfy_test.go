@@ -156,12 +156,13 @@ func TestPublicURLFollowsConfig(t *testing.T) {
 	}
 }
 
-// TestPublishNtfyClickUsesPublicBase: the delivered payload must carry the
-// configured host.
-func TestPublishNtfyClickUsesPublicBase(t *testing.T) {
-	old := publicBase
-	t.Cleanup(func() { publicBase = old })
-	SetPublicBase("https://proxy.example.org")
+// TestPublishNtfyClickOpensApp: a notification tap must launch the mobile app,
+// not land on a JSON API response. The default is the scheme the app registers;
+// an operator can point it at a richer route with placeholders.
+func TestPublishNtfyClickOpensApp(t *testing.T) {
+	old := ntfyAppLink
+	t.Cleanup(func() { ntfyAppLink = old })
+	SetNtfyAppLink("")
 
 	rec := &recordingNtfy{}
 	rec.server(t)
@@ -176,15 +177,14 @@ func TestPublishNtfyClickUsesPublicBase(t *testing.T) {
 		t.Fatalf("bad json: %v", err)
 	}
 	click, _ := sent["click"].(string)
-	if !strings.HasPrefix(click, "https://proxy.example.org/") {
-		t.Errorf("click = %q, want it built from -public-base", click)
+	if click != "untis://setschool" {
+		t.Errorf("click = %q, want the app deep link", click)
 	}
-	// A prefix check is the whole assertion: anything derived from another host
-	// would not start with the configured public base. Naming a real host here
-	// would re-commit the very value this test exists to keep out of the
-	// source, so the check stays generic.
-	if strings.Contains(click, "webuntis.com") {
-		t.Errorf("click = %q points upstream instead of at the public base", click)
+
+	// Placeholders make the target configurable without another code change.
+	SetNtfyAppLink("untis://timetable?school={school}&class={classId}")
+	if got := ntfyClickURL("test school", 42); got != "untis://timetable?school=test+school&class=42" {
+		t.Errorf("placeholder expansion = %q", got)
 	}
 }
 
@@ -220,5 +220,37 @@ func TestAdminDashboardDefinesTestNtfy(t *testing.T) {
 	}
 	if !strings.Contains(html, "async function testNtfy(") {
 		t.Error("admin.html calls testNtfy() but never defines it: the button is dead")
+	}
+}
+
+// TestEnqueueChangeDeduplicatesNtfyDestination: two subscription rows that name
+// the same server and topic are one push destination. Publishing twice would
+// show the same change twice on the reader's phone.
+func TestEnqueueChangeDeduplicatesNtfyDestination(t *testing.T) {
+	p := &Proxy{}
+	var got []string
+	put := func(dest string, destID int64, payload []byte) error {
+		got = append(got, dest)
+		return nil
+	}
+	topics := []*store.NtfyTopic{
+		{ID: 1, Topic: "changes", BaseURL: "https://ntfy.example", Enabled: true},
+		{ID: 2, Topic: "changes", BaseURL: "https://ntfy.example/", Enabled: true},
+	}
+	if err := p.enqueueChange("testschool", "10b", 5000, 1, nil, nil, nil, topics, nil, put); err != nil {
+		t.Fatalf("enqueueChange: %v", err)
+	}
+	if len(got) != 1 || got[0] != "ntfy" {
+		t.Fatalf("queued %v, want exactly one ntfy delivery", got)
+	}
+
+	// A different topic on the same server is a different destination.
+	got = nil
+	topics = append(topics, &store.NtfyTopic{ID: 3, Topic: "other", BaseURL: "https://ntfy.example", Enabled: true})
+	if err := p.enqueueChange("testschool", "10b", 5000, 1, nil, nil, nil, topics, nil, put); err != nil {
+		t.Fatalf("enqueueChange: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("queued %v, want two distinct ntfy destinations", got)
 	}
 }

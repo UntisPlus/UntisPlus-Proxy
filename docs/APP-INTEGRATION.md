@@ -112,12 +112,12 @@ the session user and moves only when an admin edits *their* custom events (see
 
 Topics are configured server-side (admin dashboard, or self-service per-class
 for ordinary users). Each topic targets **any element** — class, student,
-teacher, room, subject — or is **school-wide**. On a change, the proxy POSTs to
-`ntfy.sh/{topic}` (or the topic's own `baseUrl` if a per-topic ntfy server is
-configured) only when the element is involved: the changed class id, the
-student's class, or the teacher/room/subject name in the changed rows. Change
-titles name the element, e.g. "Timetable change — room 01-Aula". The Android
-app:
+teacher, room, subject — or is **school-wide**. On a change, the proxy POSTs the
+JSON envelope to the ntfy server **root** with the topic in the body (or to the
+topic's own `baseUrl` if a per-topic ntfy server is configured), only when the
+element is involved: the changed class id, the student's class, or the
+teacher/room/subject name in the changed rows. Change titles name the element,
+e.g. "Timetable change — room 01-Aula". The Android app:
 
 1. On login, fetch the user's topics: `GET /api/ntfy?school=S` (session
    required) → `{topics:[{id,school,elementType,elementId,name,classId,topic,baseUrl,createdBy}]}`.
@@ -130,7 +130,15 @@ app:
 3. On a new message, reconcile with `/api/timetable/changes`.
 
 Topic payload: the message body is the human `X-Untis-Summary` text; the full
-JSON event is delivered alongside it.
+JSON event is delivered alongside it. The notification's `click` field is
+`-ntfy-app-link` (default `untis://setschool`, with `{school}` and `{classId}`
+substituted). **The app only needs to handle that intent for a tap to land in
+the right place:** the current manifest registers `untis://setschool` and opens
+the app, but there is no deeper timetable route yet. A tap therefore opens the
+app at its normal entry point; to deep-link to the changed class, register a
+route for the placeholder form (e.g. `untis://setschool?classId={classId}`) and
+have the proxy point `-ntfy-app-link` at it. No proxy change is needed for the
+app to handle its own scheme.
 
 ## Change row shape
 

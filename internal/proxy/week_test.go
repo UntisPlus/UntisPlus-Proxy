@@ -190,3 +190,111 @@ func TestWeekPageCoversRollingWeek(t *testing.T) {
 		t.Errorf("page renders %d day sections, want 7", got)
 	}
 }
+
+// weekCSVRequest serves GET /week/{token}.csv through the same handler the
+// router uses, so the suffix dispatch is exercised.
+func weekCSVRequest(t *testing.T, p *Proxy, token, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	target := "/week/" + token + ".csv"
+	if query != "" {
+		target += "?" + query
+	}
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.SetPathValue("token", token+".csv")
+	rec := httptest.NewRecorder()
+	p.handleWeekPage(rec, req)
+	return rec
+}
+
+// TestWeekPageMonthView: ?view=month renders the whole month as a grid, links
+// to the previous and next month, and keeps the .ics and CSV downloads visible.
+func TestWeekPageMonthView(t *testing.T) {
+	p, _, token := weekFixture(t)
+	req := httptest.NewRequest(http.MethodGet, "/week/"+token+"?view=month", nil)
+	req.SetPathValue("token", token)
+	rec := httptest.NewRecorder()
+	p.handleWeekPage(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`<table class="month">`,
+		"Mo</th>", "So</th>",
+		"Woche",
+		"?view=month&amp;month=",
+		"Mathematik 3",
+		"iCal-Datei herunterladen",
+		".csv?view=month",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("month view does not contain %q", want)
+		}
+	}
+	// The grid is always whole weeks of seven cells.
+	if n := strings.Count(body, "<tr>"); n < 5 {
+		t.Errorf("month grid has %d rows, want several weeks", n)
+	}
+}
+
+// TestWeekCSVExport: the CSV carries the visible columns, the same time window,
+// and a UTF-8 BOM so Excel reads German umlauts correctly.
+func TestWeekCSVExport(t *testing.T) {
+	p, _, token := weekFixture(t)
+	loc, _ := time.LoadLocation("Europe/Berlin")
+	from := time.Now().In(loc).Format("2006-01-02")
+	rec := weekCSVRequest(t, p, token, "from="+from)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+		t.Errorf("content type = %q, want text/csv", ct)
+	}
+	if disp := rec.Header().Get("Content-Disposition"); !strings.Contains(disp, "attachment") || !strings.Contains(disp, ".csv") {
+		t.Errorf("content-disposition = %q, want an attachment with a .csv name", disp)
+	}
+	body := rec.Body.String()
+	if !strings.HasPrefix(body, "\ufeff") {
+		t.Error("CSV is missing the UTF-8 BOM")
+	}
+	for _, want := range []string{
+		"Datum,Von,Bis,Fach,Lehrer,Raum,Klasse,Status,Notizen",
+		"Mathematik 3",
+		"08:00",
+		"entfällt",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("CSV does not contain %q: %s", want, body)
+		}
+	}
+}
+
+// TestWeekCSVSafeNeutralisesFormulas: exported cells are data, not formulas. An
+// upstream room or note beginning with = + - @ must not execute in Excel.
+func TestWeekCSVSafeNeutralisesFormulas(t *testing.T) {
+	cases := map[string]string{
+		"=SUM(A1:A2)": "'=SUM(A1:A2)",
+		"+123":        "'+123",
+		"-1+1":        "'-1+1",
+		"@SUM":        "'@SUM",
+		"\tformula":   "'\tformula",
+		"\rformula":   "'\rformula",
+		"Mathe":       "Mathe",
+		"08:00":       "08:00",
+		"":            "",
+	}
+	for in, want := range cases {
+		if got := csvSafe(in); got != want {
+			t.Errorf("csvSafe(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestWeekCSVRejectsUnknownToken: the export is exactly as protected as the page.
+func TestWeekCSVRejectsUnknownToken(t *testing.T) {
+	p, _ := newTestProxy(t)
+	rec := weekCSVRequest(t, p, "nope", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}

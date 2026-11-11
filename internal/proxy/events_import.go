@@ -173,6 +173,8 @@ func (p *Proxy) handleStudentEventImport(w http.ResponseWriter, r *http.Request)
 		}
 	}
 
+	p.audit(r, school, "event.import", school,
+		fmt.Sprintf("%d created, %d skipped, %d unknown", len(created), len(skipped), len(unknown)))
 	p.writeJSON(w, map[string]any{
 		"school":       school,
 		"created":      created,

@@ -199,7 +199,7 @@ func (p *Proxy) sendOutageNtfy(o *store.OutageNtfy, down bool, detail string) er
 		"message":  message,
 		"tags":     tags,
 		"priority": priority,
-		"click":    publicURL("/healthz"),
+		"click":    ntfyClickURL(o.School, 0),
 	})
 	if err != nil {
 		return fmt.Errorf("ntfy %s: %w", o.Topic, err)
@@ -223,6 +223,6 @@ func (p *Proxy) testOutageNtfy(o *store.OutageNtfy) (int, error) {
 		"message":  "This is a test outage notification from the untis-proxy admin dashboard. Real alerts use this topic when Untis polling fails.",
 		"tags":     []string{"white_check_mark", "rotating_light"},
 		"priority": 3,
-		"click":    publicURL("/healthz"),
+		"click":    ntfyClickURL(o.School, 0),
 	})
 }

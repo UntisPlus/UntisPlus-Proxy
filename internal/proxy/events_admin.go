@@ -186,6 +186,8 @@ func (p *Proxy) handleStudentEvents(w http.ResponseWriter, r *http.Request) {
 				firstEv = ev
 			}
 			created = append(created, map[string]any{"eventId": ev.ID, "username": ev.Username})
+			p.audit(r, school, "event.create", strconv.FormatInt(ev.ID, 10),
+				u+" "+req.Date+" "+req.StartTime+"-"+req.EndTime)
 			p.announceStudentEventChange(school, u, "created")
 		}
 		if len(targets) == 1 && len(created) == 1 {
@@ -246,6 +248,8 @@ func (p *Proxy) handleStudentEvents(w http.ResponseWriter, r *http.Request) {
 			writeJSONError(w, http.StatusNotFound, "no such event")
 			return
 		}
+		p.audit(r, school, "event.update", strconv.FormatInt(eventID, 10),
+			ev.Username+" "+ev.Date+" "+ev.StartTime+"-"+ev.EndTime)
 		p.announceStudentEventChange(school, ev.Username, "updated")
 		p.writeJSON(w, studentEventJSON(ev))
 
@@ -270,6 +274,8 @@ func (p *Proxy) handleStudentEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if deleted {
+			p.audit(r, school, "event.delete", strconv.FormatInt(eventID, 10),
+				existing.Username+" "+existing.Date+" "+existing.StartTime+"-"+existing.EndTime)
 			p.announceStudentEventChange(school, existing.Username, "deleted")
 		}
 		p.writeJSON(w, map[string]any{"deleted": deleted})
@@ -548,6 +554,7 @@ func (p *Proxy) handleEventAbsenceEdit(w http.ResponseWriter, r *http.Request) {
 		detail = p.displayNameFor(req.School, current.Username) + " → " + p.displayNameFor(req.School, target) + " (" + detail + ")"
 	}
 	_ = p.store.LogEventAbsenceChange(req.School, req.AppointmentKey, current.Date, target, store.EventAbsenceActionEdited, detail, user.Username)
+	p.audit(r, req.School, "absence.edit", req.AppointmentKey, detail)
 	p.writeJSON(w, map[string]any{"success": true, "appointmentKey": req.AppointmentKey})
 }
 

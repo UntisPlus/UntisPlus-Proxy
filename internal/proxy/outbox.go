@@ -39,7 +39,10 @@ const (
 	// inspection before it is pruned. Dead rows are never retried, so without a
 	// sweep the table would grow for the life of the deployment.
 	outboxDeadRetention = 7 * 24 * time.Hour
-	// outboxPruneInterval is how often the dead-row sweep runs.
+	// outboxSentRetention keeps a short history of successful deliveries so an
+	// operator can confirm a notification went out, then bounds the table again.
+	outboxSentRetention = 7 * 24 * time.Hour
+	// outboxPruneInterval is how often the dead/sent-row sweep runs.
 	outboxPruneInterval = time.Hour
 )
 
@@ -68,7 +71,7 @@ func (p *Proxy) StartOutboxWorker(interval time.Duration, done <-chan struct{}) 
 	if err := p.store.ReleaseOutboxStale(); err != nil {
 		log.Printf("[outbox] release stale: %v", err)
 	}
-	p.pruneDeadOutbox(time.Now())
+	p.pruneOutbox(time.Now())
 	p.drainOutbox()
 	t := time.NewTicker(interval)
 	defer t.Stop()
@@ -81,20 +84,24 @@ func (p *Proxy) StartOutboxWorker(interval time.Duration, done <-chan struct{}) 
 		case <-t.C:
 			p.drainOutbox()
 		case <-prune.C:
-			p.pruneDeadOutbox(time.Now())
+			p.pruneOutbox(time.Now())
 		}
 	}
 }
 
-// pruneDeadOutbox removes exhausted deliveries older than the retention window.
-func (p *Proxy) pruneDeadOutbox(now time.Time) {
-	n, err := p.store.PruneDeadOutbox(now.Add(-outboxDeadRetention))
-	if err != nil {
+// pruneOutbox removes exhausted deliveries and successful history older than
+// their retention windows. Both states are terminal, so this is the only sweep
+// that keeps notification_outbox bounded.
+func (p *Proxy) pruneOutbox(now time.Time) {
+	if n, err := p.store.PruneDeadOutbox(now.Add(-outboxDeadRetention)); err != nil {
 		log.Printf("[outbox] prune dead: %v", err)
-		return
-	}
-	if n > 0 {
+	} else if n > 0 {
 		log.Printf("[outbox] pruned %d dead deliveries", n)
+	}
+	if n, err := p.store.PruneSentOutbox(now.Add(-outboxSentRetention)); err != nil {
+		log.Printf("[outbox] prune sent: %v", err)
+	} else if n > 0 {
+		log.Printf("[outbox] pruned %d delivered notifications", n)
 	}
 }
 

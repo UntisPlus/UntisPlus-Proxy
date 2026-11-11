@@ -40,6 +40,19 @@
   .flag.custom { color:var(--accent); border-color:var(--accent); }
   tr.custom td { opacity:.9; }
   .free { padding:.6rem .8rem; color:var(--dim); font-size:.85rem; }
+  nav { display:flex; gap:.7rem; margin-top:.5rem; font-size:.82rem; align-items:center; }
+  nav a { color:var(--accent); text-decoration:none; }
+  nav .spacer { flex:1; }
+  table.month { width:100%; table-layout:fixed; background:var(--card); border-radius:12px; overflow:hidden; }
+  table.month th { font-size:.72rem; color:var(--dim); padding:.4rem .2rem; border:1px solid var(--line); font-weight:600; }
+  table.month td { border:1px solid var(--line); vertical-align:top; padding:.3rem .35rem; height:4.4rem; }
+  table.month td.other { opacity:.35; }
+  table.month td.today { border-color:var(--accent); }
+  .dnum { font-weight:600; color:var(--dim); font-size:.72rem; margin-bottom:.15rem; }
+  td.today .dnum { color:var(--accent); }
+  .mlesson { margin:.08rem 0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:.7rem; }
+  .mlesson .mt { color:var(--dim); font-variant-numeric:tabular-nums; }
+  .mlesson.cancelled { text-decoration:line-through; color:var(--dim); }
   footer { color:var(--dim); font-size:.76rem; padding-top:1rem; text-align:center; }
 </style>
 </head>
@@ -48,11 +61,40 @@
   <header>
     <h1>{{.Name}}</h1>
     <div class="sub">
-      {{.WeekLabel}} &middot; {{.Timezone}}
-      {{if .ICSURL}} &middot; <a href="{{.ICSURL}}">iCal-Feed</a>{{end}}
+      {{if eq .Mode "month"}}{{.MonthLabel}}{{else}}{{.WeekLabel}}{{end}} &middot; {{.Timezone}}
+      {{if .ICSURL}} &middot; <a href="{{.ICSURL}}" download>iCal-Datei herunterladen</a>{{end}}
+      {{if .CSVURL}} &middot; <a href="{{.CSVURL}}">CSV</a>{{end}}
     </div>
+    <nav>
+      <a href="{{.PrevURL}}" aria-label="zurück">←</a>
+      <a href="{{.TodayURL}}">heute</a>
+      <span class="spacer"></span>
+      {{if eq .Mode "month"}}<a href="{{.WeekURL}}">Woche</a>{{else}}<a href="{{.MonthURL}}">Monat</a>{{end}}
+      <a href="{{.NextURL}}" aria-label="weiter">→</a>
+    </nav>
   </header>
 
+  {{if eq .Mode "month"}}
+  <table class="month">
+    <thead><tr><th>Mo</th><th>Di</th><th>Mi</th><th>Do</th><th>Fr</th><th>Sa</th><th>So</th></tr></thead>
+    <tbody>
+      {{range .Weeks}}
+      <tr>
+        {{range .Days}}
+        <td class="{{if .OtherMonth}}other {{end}}{{if .Today}}today{{end}}">
+          <div class="dnum">{{.Day}}</div>
+          {{range .Lessons}}
+          <div class="mlesson{{if .Cancelled}} cancelled{{end}}" title="{{.TimeRange}} {{.Subject}}">
+            <span class="mt">{{.StartTime}}</span> {{.Subject}}
+          </div>
+          {{end}}
+        </td>
+        {{end}}
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{else}}
   {{range .Days}}
   <section class="day{{if .Today}} today{{end}}">
     <h2><span>{{.Label}}</span><span class="rel">{{if .Today}}heute{{else}}{{.Relative}}{{end}}</span></h2>
@@ -78,7 +120,8 @@
     {{end}}
   </section>
   {{else}}
-  <section class="day"><div class="free">Für diese Woche liegen keine Stunden vor.</div></section>
+  <section class="day"><div class="free">Für diesen Zeitraum liegen keine Stunden vor.</div></section>
+  {{end}}
   {{end}}
 
   <footer>

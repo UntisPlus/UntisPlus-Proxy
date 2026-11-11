@@ -94,10 +94,15 @@ func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request, school stri
 		p.writeJSONRPCError(w, id, "no username specified", -8502)
 		return
 	}
+	if p.loginRateLimited(w, r, school, params.User) {
+		p.writeJSONRPCError(w, id, "too many login attempts, try again later", -8504)
+		return
+	}
 
 	cookie, res, err := p.untis.PasswordLogin(school, params.User, params.Password, params.Client)
 	if err != nil {
 		if ue, ok := err.(*untis.UpstreamError); ok {
+			p.recordLoginFailure(r, school, params.User)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(ue.Raw)
 			return
@@ -105,6 +110,7 @@ func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request, school stri
 		p.writeJSONRPCError(w, id, "bad credentials", -8504)
 		return
 	}
+	p.recordLoginSuccess(school, params.User)
 
 	info, _ := p.untis.PersonInfo(school, cookie)
 	if info.ClassID == 0 {

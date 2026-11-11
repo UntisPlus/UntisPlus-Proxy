@@ -10,6 +10,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,11 +24,34 @@ import (
 // to point at a local httptest server.
 var ntfyBase = "https://ntfy.sh"
 
-// publicBase is the externally reachable base URL of this proxy. It is used to
-// build the click-through link on a notification and in untisctl's generated
-// .ics links. Deployments differ, so it is configuration, never a hardcoded
-// hostname.
+// publicBase is the externally reachable base URL of this proxy. It is used in
+// untisctl's generated .ics links and as a fallback for browser links.
+// Deployments differ, so it is configuration, never a hardcoded hostname.
 var publicBase = ""
+
+// ntfyAppLink is the click target attached to a notification. Tapping a push
+// should open the mobile app, not a JSON API response, so this defaults to the
+// only deep link the Android app registers today. It supports {school} and
+// {classId} placeholders for deployments that add a richer app route later.
+var ntfyAppLink = "untis://setschool"
+
+// SetNtfyAppLink overrides the notification click target. An empty value keeps
+// the built-in app-scheme default so a toggle cannot silently disable taps.
+func SetNtfyAppLink(link string) {
+	if link = strings.TrimSpace(link); link != "" {
+		ntfyAppLink = link
+	}
+}
+
+// ntfyClickURL expands the configured app link for one change. placeholders are
+// URL-escaped so a school name with spaces cannot break the intent, and an app
+// link without placeholders is returned unchanged.
+func ntfyClickURL(school string, classID int64) string {
+	link := ntfyAppLink
+	link = strings.ReplaceAll(link, "{school}", url.QueryEscape(school))
+	link = strings.ReplaceAll(link, "{classId}", strconv.FormatInt(classID, 10))
+	return link
+}
 
 // SetPublicBase sets the externally reachable base URL (scheme + host) used for
 // click-through links. Trailing slashes are trimmed; an empty value is ignored
@@ -613,6 +637,7 @@ func (p *Proxy) enqueueChange(school, className string, classID, version int64, 
 			return err
 		}
 	}
+	seenNtfy := make(map[string]struct{}, len(topics))
 	for _, t := range topics {
 		if !t.Enabled {
 			continue
@@ -621,6 +646,15 @@ func (p *Proxy) enqueueChange(school, className string, classID, version int64, 
 		if !p.elementMatches(school, et, eid, classID, rows, targets) {
 			continue
 		}
+		// Two subscriptions can name the same topic on the same server — for
+		// example one for the class and one for a teacher. They are one push
+		// destination, so publishing twice would show the reader the same change
+		// twice. Deduplicate on what ntfy actually receives, not on the row id.
+		key := ntfyDestinationKey(t)
+		if _, dup := seenNtfy[key]; dup {
+			continue
+		}
+		seenNtfy[key] = struct{}{}
 		if err := put("ntfy", t.ID, body); err != nil {
 			return err
 		}
@@ -722,7 +756,7 @@ func (p *Proxy) publishNtfyOnce(t *store.NtfyTopic, school string, classID int64
 		"title":   title,
 		"message": digest.Message(),
 		"tags":    []string{"calendar"},
-		"click":   publicURL(fmt.Sprintf("/api/timetable/changes?school=%s&classId=%d", school, classID)),
+		"click":   ntfyClickURL(school, classID),
 	})
 	if err != nil {
 		return fmt.Errorf("ntfy %s: %w", t.Topic, err)
@@ -741,13 +775,16 @@ func (p *Proxy) publishNtfyOnce(t *store.NtfyTopic, school string, classID int64
 // real delivery would (same headers, same HMAC signature) and returns the
 // receiver HTTP status (0 with the error if the request itself failed).
 func (p *Proxy) testWebhook(h *store.Webhook) (int, error) {
+	digest := sampleTestDigest()
 	payload := map[string]any{
 		"event":    "test",
 		"school":   h.School,
 		"classId":  h.ClassID,
 		"version":  0,
-		"changes":  []store.PeriodRow{},
-		"testNote": "This is a test webhook from the untis-proxy admin dashboard.",
+		"summary":  digest.Summary,
+		"digest":   digest,
+		"changes":  []store.PeriodRow{{PeriodID: 1, Kind: "CHANGED", Start: "2026-01-12T08:00:00+01:00", End: "2026-01-12T08:45:00+01:00", Subject: "Mathe", Room: "R204", Teacher: "A. Hartley"}},
+		"testNote": "This is a test webhook from the untis-proxy admin dashboard. The digest below is shaped exactly like a real change notification.",
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -766,7 +803,7 @@ func (p *Proxy) testWebhook(h *store.Webhook) (int, error) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "untis-proxy/1.0")
 	req.Header.Set("X-Untis-Event", "test")
-	req.Header.Set("X-Untis-Summary", "test notification")
+	req.Header.Set("X-Untis-Summary", digest.Summary)
 	if sig != "" {
 		req.Header.Set("X-Untis-Signature", sig)
 	}
@@ -788,6 +825,7 @@ func (p *Proxy) testWebhook(h *store.Webhook) (int, error) {
 // the socket is open. A test that only sent a bare string would still look fine
 // on the server while the notification itself came out as raw JSON.
 func (p *Proxy) testNtfy(t *store.NtfyTopic) (int, error) {
+	digest := sampleTestDigest()
 	title := "untis-proxy test — " + t.Topic
 	et, eid := t.Target()
 	if name := p.store.ElementName(t.School, et, eid); et != "" && name != "" {
@@ -796,10 +834,10 @@ func (p *Proxy) testNtfy(t *store.NtfyTopic) (int, error) {
 	return ntfyPost(t, map[string]any{
 		"topic":    t.Topic,
 		"title":    title,
-		"message":  "This is a test notification from the untis-proxy admin dashboard. If you can read this title and these tags, publishing is working.",
+		"message":  "Test notification. This is exactly how a real change digest is rendered:\n\n" + digest.Message(),
 		"tags":     []string{"white_check_mark", "calendar"},
 		"priority": 3,
-		"click":    publicURL("/"),
+		"click":    ntfyClickURL(t.School, t.ClassID),
 	})
 }
 
@@ -811,6 +849,12 @@ func ntfyBaseURL(t *store.NtfyTopic) string {
 		return strings.TrimRight(t.BaseURL, "/")
 	}
 	return ntfyBase
+}
+
+// ntfyDestinationKey identifies the server+topic pair a notification actually
+// reaches. Two subscription rows with the same key are one push destination.
+func ntfyDestinationKey(t *store.NtfyTopic) string {
+	return ntfyBaseURL(t) + "\x00" + t.Topic
 }
 
 // cleanNtfyBase trims a user-supplied server override before it is stored.

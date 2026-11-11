@@ -7,6 +7,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -269,5 +270,53 @@ func TestBoostedSelfTimetableStillCarriesOwnEvents(t *testing.T) {
 	}
 	if custom != 1 {
 		t.Errorf("the boosted user's own timetable carried %d events, want 1: %s", custom, rec.Body.String())
+	}
+}
+
+// TestTechnikFullHistoryIgnoresRequestRange: the opt-in mode returns every
+// stored event even when the app asks for one week, and widens the advertised
+// display window so the app does not filter the older rows away again.
+func TestTechnikFullHistoryIgnoresRequestRange(t *testing.T) {
+	p, st := eventProxy(t)
+	if err := st.SetPerm("dee", store.FeatureTechniker, true); err != nil {
+		t.Fatalf("grant techniker: %v", err)
+	}
+	inside := testEvent()
+	inside.Date = "2026-10-05"
+	outside := testEvent()
+	outside.Date = "2026-11-05"
+	outside.Title = "Später Termin"
+	seedEvent(t, st, "dee", inside)
+	seedEvent(t, st, "dee", outside)
+
+	req := func() *httptest.ResponseRecorder {
+		return internReq(t, p, "getTimetable2017", "dee",
+			internBody("getTimetable2017", ttParam(technikClassID, "CLASS", "2026-10-01", "2026-10-07", "dee")))
+	}
+	// Default: the range is respected.
+	if got := len(periodsOfResponse(t, req())); got != 1 {
+		t.Fatalf("range mode returned %d periods, want only the in-range event", got)
+	}
+
+	p.opts.TechnikFullHistory = true
+	rec := req()
+	periods := periodsOfResponse(t, rec)
+	if len(periods) != 2 {
+		t.Fatalf("full-history mode returned %d periods, want both events: %s", len(periods), rec.Body.String())
+	}
+	var parsed struct {
+		Result struct {
+			Timetable struct {
+				Start string `json:"displayableStartDate"`
+				End   string `json:"displayableEndDate"`
+			} `json:"timetable"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if parsed.Result.Timetable.End < "2026-11-05" {
+		t.Errorf("displayableEndDate = %q, want it widened past the requested range",
+			parsed.Result.Timetable.End)
 	}
 }

@@ -171,9 +171,10 @@ func TestFailedDeliveryBacksOffThenDies(t *testing.T) {
 	}
 }
 
-// TestFinishOutboxRemovesTheRow: a delivered row is removed rather than kept
-// forever, and finishing an already-finished row is a no-op.
-func TestFinishOutboxRemovesTheRow(t *testing.T) {
+// TestFinishOutboxKeepsDeliveryHistory: a delivered row is retained as history
+// (so an operator can confirm it went out), is no longer due, and can be pruned
+// by age later.
+func TestFinishOutboxKeepsDeliveryHistory(t *testing.T) {
 	st := openOutboxStore(t)
 	if err := st.EnqueueOutbox("s", 1, 1, "webhook", 5, []byte(`{}`)); err != nil {
 		t.Fatal(err)
@@ -190,8 +191,23 @@ func TestFinishOutboxRemovesTheRow(t *testing.T) {
 	if len(due) != 0 {
 		t.Errorf("queue after delivery = %d rows, want 0", len(due))
 	}
+	stats, err := st.OutboxStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Sent != 1 || stats.Pending != 0 {
+		t.Errorf("stats = %+v, want 1 sent / 0 pending", stats)
+	}
+	sent, err := st.RecentSentOutbox(10)
+	if err != nil || len(sent) != 1 || sent[0].ID != id {
+		t.Fatalf("RecentSentOutbox = %+v, %v; want the finished row", sent, err)
+	}
+	// Finishing again must not resurrect or duplicate it.
 	if err := st.FinishOutbox(id); err != nil {
 		t.Errorf("finishing an already-finished row: %v", err)
+	}
+	if n, err := st.PruneSentOutbox(time.Now().Add(time.Hour)); err != nil || n != 1 {
+		t.Errorf("PruneSentOutbox = %d, %v; want 1", n, err)
 	}
 }
 

@@ -156,6 +156,15 @@ func (p *Proxy) serveTechnikClass(w http.ResponseWriter, id json.RawMessage, sch
 	// the event's description on the lesson line and every assigned student on the
 	// substitution line, so a class full of appointments reads at a glance.
 	periods := p.technikClassPeriods(school, start, end, loc, md)
+	displayStart, displayEnd := start, end
+	if p.opts.TechnikFullHistory {
+		// The app filters the class view to the advertised window. When the
+		// aggregate is asked for its whole history, the window must cover the
+		// events returned or they arrive and are never displayed.
+		if lo, hi, ok := periodBounds(periods); ok {
+			displayStart, displayEnd = lo, hi
+		}
+	}
 	for _, pd := range periods {
 		// A home-grown period arrives with an empty `can` list; the app's UI keys
 		// on it and hides the lesson topic without READ_LESSONTOPIC. Stamping the
@@ -171,8 +180,8 @@ func (p *Proxy) serveTechnikClass(w http.ResponseWriter, id json.RawMessage, sch
 		"id":      idVal(id),
 		"result": map[string]any{
 			"timetable": map[string]any{
-				"displayableStartDate": start,
-				"displayableEndDate":   end,
+				"displayableStartDate": displayStart,
+				"displayableEndDate":   displayEnd,
 				"periods":              periods,
 			},
 		},
@@ -190,7 +199,13 @@ func (p *Proxy) serveTechnikClass(w http.ResponseWriter, id json.RawMessage, sch
 // list readable: without it a class full of "Technik" lessons says nothing about
 // whose appointment each one is.
 func (p *Proxy) technikClassPeriods(school, from, to string, loc *time.Location, md jsonObject) []map[string]any {
-	events, err := p.store.AllStudentEventsForRange(school, from, to)
+	var events []store.StudentEvent
+	var err error
+	if p.opts.TechnikFullHistory {
+		events, err = p.store.AllStudentEvents(school)
+	} else {
+		events, err = p.store.AllStudentEventsForRange(school, from, to)
+	}
 	if err != nil {
 		enrichmentFailed("technik events "+school, err)
 		return nil
@@ -238,4 +253,24 @@ func (p *Proxy) schoolLocation(_ string) *time.Location {
 		return loc
 	}
 	return time.UTC
+}
+
+// periodBounds returns the earliest and latest calendar date mentioned by a set
+// of periods. It is used to widen the advertised window when the Technik
+// aggregate is asked for its full history.
+func periodBounds(periods []map[string]any) (string, string, bool) {
+	dates := periodDates(periods)
+	if len(dates) == 0 {
+		return "", "", false
+	}
+	lo, hi := "", ""
+	for d := range dates {
+		if lo == "" || d < lo {
+			lo = d
+		}
+		if hi == "" || d > hi {
+			hi = d
+		}
+	}
+	return lo, hi, true
 }

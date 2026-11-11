@@ -349,6 +349,25 @@ func Open(path string) (*Store, error) {
 		ON notification_outbox (state, next_attempt_at, id)`); err != nil {
 		return nil, err
 	}
+	// admin_audit is the append-only trail of administrative mutations. It is
+	// separate from the event-register log because it covers the dashboard as a
+	// whole: users, permissions, subscriptions, tokens and events.
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS admin_audit (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		at INTEGER NOT NULL DEFAULT 0,
+		actor TEXT NOT NULL DEFAULT '',
+		school TEXT NOT NULL DEFAULT '',
+		action TEXT NOT NULL DEFAULT '',
+		target TEXT NOT NULL DEFAULT '',
+		detail TEXT NOT NULL DEFAULT ''
+	)`)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = db.Exec(`CREATE INDEX IF NOT EXISTS admin_audit_recent
+		ON admin_audit (id DESC)`); err != nil {
+		return nil, err
+	}
 	// homework_done is the student's own "I finished this" flag, kept by the
 	// proxy rather than upstream on purpose: Untis' own `completed` field is
 	// the teacher's decision for the whole class, so writing it would either
@@ -2242,6 +2261,39 @@ func (s *Store) ListClassTokens() ([]*ClassToken, error) {
 	return out, rows.Err()
 }
 
+// RotateClassToken replaces a calendar token with a freshly generated one while
+// keeping its school, element, timezone, lookahead and owner. The old value is
+// deleted in the same transaction, so a rotation can never leave two live
+// credentials for one subscription.
+func (s *Store) RotateClassToken(oldToken, newToken string, now int64) (*ClassToken, error) {
+	old, err := s.ClassTokenByToken(oldToken)
+	if err != nil || old == nil {
+		return nil, err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`INSERT INTO class_tokens (token, school, class_id, person_id, element_type, element_id, timezone, days, created_at, last_access, created_by)
+		VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		newToken, old.School, old.ClassID, old.PersonID, old.ElementType, old.ElementID,
+		old.Timezone, old.Days, now, now, old.CreatedBy); err != nil {
+		return nil, err
+	}
+	if _, err := tx.Exec(`DELETE FROM class_tokens WHERE token=?`, oldToken); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	rotated := *old
+	rotated.Token = newToken
+	rotated.CreatedAt = now
+	rotated.LastAccess = now
+	return &rotated, nil
+}
+
 // DeleteClassToken removes a calendar subscription token by its value.
 func (s *Store) DeleteClassToken(token string) (int64, error) {
 	res, err := s.db.Exec(`DELETE FROM class_tokens WHERE token=?`, token)
@@ -2839,6 +2891,7 @@ type OutboxStats struct {
 	Pending int
 	Sending int
 	Dead    int
+	Sent    int
 }
 
 // DueOutbox returns up to limit deliveries that are ready to attempt: state
@@ -2881,11 +2934,14 @@ func (s *Store) ClaimOutbox(id int64) (bool, error) {
 	return n == 1, err
 }
 
-// FinishOutbox records a successful delivery and prunes the row, so the table
-// stays bounded. Keeping sent rows would grow without limit and nothing reads
-// them.
+// FinishOutbox records a successful delivery. The row is kept in the 'sent'
+// state as delivery history and pruned by age, rather than deleted: an operator
+// needs to be able to answer "did the notification actually go out?" without
+// reading application logs. next_attempt_at doubles as the completion time.
 func (s *Store) FinishOutbox(id int64) error {
-	_, err := s.db.Exec(`DELETE FROM notification_outbox WHERE id=? AND state='sending'`, id)
+	_, err := s.db.Exec(`UPDATE notification_outbox
+		SET state='sent', last_error='', next_attempt_at=? WHERE id=? AND state='sending'`,
+		time.Now().Unix(), id)
 	return err
 }
 
@@ -2946,6 +3002,8 @@ func (s *Store) OutboxStats() (OutboxStats, error) {
 			st.Sending = n
 		case "dead":
 			st.Dead = n
+		case "sent":
+			st.Sent = n
 		}
 	}
 	return st, rows.Err()
@@ -2988,6 +3046,44 @@ func (s *Store) RecentDeadOutbox(limit int) ([]OutboxRow, error) {
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// RecentSentOutbox returns the most recent successful deliveries, newest first.
+// It is the audit answer to "was this notification sent?", which used to require
+// grepping the process log because FinishOutbox deleted the row.
+func (s *Store) RecentSentOutbox(limit int) ([]OutboxRow, error) {
+	rows, err := s.db.Query(`SELECT id, school, class_id, version, dest, dest_id, payload,
+		attempts, last_error, created_at
+		FROM notification_outbox WHERE state='sent' ORDER BY id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []OutboxRow
+	for rows.Next() {
+		var r OutboxRow
+		var created int64
+		if err := rows.Scan(&r.ID, &r.School, &r.ClassID, &r.Version, &r.Dest, &r.DestID,
+			&r.Payload, &r.Attempts, &r.LastErr, &created); err != nil {
+			return nil, err
+		}
+		r.Created = time.Unix(created, 0)
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// PruneSentOutbox deletes successful delivery history older than the cutoff.
+// Sent rows are retained for a while so the dashboard can show recent deliveries,
+// then swept so the table cannot grow for the life of the deployment.
+func (s *Store) PruneSentOutbox(olderThan time.Time) (int64, error) {
+	res, err := s.db.Exec(
+		`DELETE FROM notification_outbox WHERE state='sent' AND next_attempt_at < ?`,
+		olderThan.Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // SetHomeworkDone records that a student marked a piece of homework done, and
@@ -3049,6 +3145,18 @@ func (s *Store) HomeworkDoneCount(school, username string) (int, error) {
 	return n, err
 }
 
+// PruneHomeworkDone deletes done flags last set before cutoff. It is opt-in
+// housekeeping: a flag only matters while its assignment is still visible, but
+// the proxy cannot know the upstream retention policy, so an operator decides
+// how long to keep them.
+func (s *Store) PruneHomeworkDone(cutoff time.Time) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM homework_done WHERE done_at < ?`, cutoff.Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 // SetAbsenceNote records a student's private note on one absence and returns when
 // it was written.
 //
@@ -3101,6 +3209,17 @@ func (s *Store) AbsenceNotes(school, username string) (map[int64]AbsenceNote, er
 		out[key] = AbsenceNote{Key: key, Note: note, UpdatedAt: time.Unix(at, 0)}
 	}
 	return out, rows.Err()
+}
+
+// PruneAbsenceNotes deletes notes last updated before cutoff. It is opt-in
+// housekeeping: a note is private to the student, but nothing in the proxy knows
+// whether they still want a note for an absence from a previous term.
+func (s *Store) PruneAbsenceNotes(cutoff time.Time) (int64, error) {
+	res, err := s.db.Exec(`DELETE FROM absence_notes WHERE updated_at < ?`, cutoff.Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // StudentEvent is one hand-authored event on a student's own schedule.
@@ -3388,6 +3507,19 @@ func (s *Store) AllStudentEventsForRange(school, from, to string) ([]StudentEven
 	rows, err := s.db.Query(`SELECT `+studentEventCols+` FROM student_events
 		WHERE school=? AND date>=? AND date<=?
 		ORDER BY date, start_time, event_id`, school, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanStudentEvents(rows)
+}
+
+// AllStudentEvents returns every stored event for a school, across all dates.
+// It backs the opt-in full-history mode of the synthetic Technik aggregate; the
+// range read remains the default so a normal request stays bounded.
+func (s *Store) AllStudentEvents(school string) ([]StudentEvent, error) {
+	rows, err := s.db.Query(`SELECT `+studentEventCols+` FROM student_events
+		WHERE school=? ORDER BY date, start_time, event_id`, school)
 	if err != nil {
 		return nil, err
 	}

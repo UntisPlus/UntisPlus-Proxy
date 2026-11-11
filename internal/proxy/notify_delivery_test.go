@@ -189,16 +189,43 @@ func TestTestWebhookAndTestNtfyReportReceiverStatus(t *testing.T) {
 	if err != nil || code != 200 {
 		t.Fatalf("testWebhook = (%d, %v), want (200, nil)", code, err)
 	}
-	if got := awaitRecv(t, ch).Header.Get("X-Untis-Event"); got != "test" {
+	hook := awaitRecv(t, ch)
+	if got := hook.Header.Get("X-Untis-Event"); got != "test" {
 		t.Errorf("test delivery event header = %q, want test", got)
+	}
+	// The button must prove what a real notification looks like, so the body
+	// carries the sample digest rather than a placeholder string.
+	want := sampleTestDigest()
+	var payload struct {
+		Summary string       `json:"summary"`
+		Digest  changeDigest `json:"digest"`
+	}
+	if err := json.Unmarshal(hook.Body, &payload); err != nil {
+		t.Fatalf("bad test webhook json: %v (%s)", err, hook.Body)
+	}
+	if payload.Summary != want.Summary {
+		t.Errorf("test webhook summary = %q, want %q", payload.Summary, want.Summary)
+	}
+	if len(payload.Digest.Lines) != len(want.Lines) || payload.Digest.Lines[0] != want.Lines[0] {
+		t.Errorf("test webhook digest = %+v, want the sample digest %+v", payload.Digest, want)
 	}
 
 	code, err = p.testNtfy(&store.NtfyTopic{Topic: "probe", BaseURL: srv.URL})
 	if err != nil || code != 200 {
 		t.Fatalf("testNtfy = (%d, %v), want (200, nil)", code, err)
 	}
-	if got := awaitRecv(t, ch).Path; got != "/" {
+	ntfy := awaitRecv(t, ch)
+	if got := ntfy.Path; got != "/" {
 		t.Errorf("test ntfy path = %q, want the server root \"/\" with the topic in the body", got)
+	}
+	var envelope struct {
+		Message string `json:"message"`
+	}
+	if err := json.Unmarshal(ntfy.Body, &envelope); err != nil {
+		t.Fatalf("bad test ntfy json: %v (%s)", err, ntfy.Body)
+	}
+	if !strings.Contains(envelope.Message, want.Lines[0]) {
+		t.Errorf("test ntfy message does not carry the sample digest:\n%s", envelope.Message)
 	}
 }
 

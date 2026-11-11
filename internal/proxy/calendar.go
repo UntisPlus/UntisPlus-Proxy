@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sort"
 	"strings"
@@ -35,6 +36,15 @@ var calendarTokenMaxAge time.Duration
 // SetCalendarTokenMaxAge sets the maximum age of a calendar subscription token.
 // A non-positive value disables expiry.
 func SetCalendarTokenMaxAge(d time.Duration) { calendarTokenMaxAge = d }
+
+// calendarTokenRotateAge is the optional automatic rotation age. Rotation
+// changes the subscription URL, so it is off by default: a subscribed calendar
+// cannot discover the new URL, only the app's token list can.
+var calendarTokenRotateAge time.Duration
+
+// SetCalendarTokenRotateAge sets the age after which tokens are replaced
+// automatically. A non-positive value disables rotation.
+func SetCalendarTokenRotateAge(d time.Duration) { calendarTokenRotateAge = d }
 
 // tokenExpired reports whether a token has outlived the configured max age.
 // With expiry disabled every token is valid.
@@ -551,6 +561,88 @@ func (p *Proxy) handleCalendarUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	tok.Days = days
 	p.writeCalendarResponse(w, r, tok)
+}
+
+// handleCalendarRotate replaces one of the caller's own calendar tokens. The old
+// value stops working immediately; the response carries the new URL, which is
+// the only way a subscriber learns it.
+func (p *Proxy) handleCalendarRotate(w http.ResponseWriter, r *http.Request) {
+	u := p.sessionUser(r)
+	if u == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+		return
+	}
+	tok, ok := p.calendarOwnedToken(r, u)
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"not found"}`))
+		return
+	}
+	rotated, err := p.rotateCalendarToken(tok)
+	if err != nil {
+		p.writeJSON(w, map[string]any{"error": "store error"})
+		return
+	}
+	p.writeCalendarResponse(w, r, rotated)
+}
+
+// rotateCalendarToken mints a replacement for one token and returns it. It is
+// shared by the self-service endpoint, the admin API and the automatic sweep.
+func (p *Proxy) rotateCalendarToken(tok *store.ClassToken) (*store.ClassToken, error) {
+	return p.store.RotateClassToken(tok.Token, newCalendarToken(), time.Now().Unix())
+}
+
+// StartCalendarRotationLoop replaces tokens older than the configured age on a
+// timer. It is only started when rotation is enabled.
+func (p *Proxy) StartCalendarRotationLoop(interval time.Duration, done <-chan struct{}) {
+	if calendarTokenRotateAge <= 0 {
+		return
+	}
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	p.rotateOldCalendarTokens(time.Now())
+	t := time.NewTicker(interval)
+	defer t.Stop()
+	for {
+		select {
+		case <-done:
+			return
+		case <-t.C:
+			p.rotateOldCalendarTokens(time.Now())
+		}
+	}
+}
+
+// rotateOldCalendarTokens rotates every token older than the configured age and
+// returns how many were replaced. Only token metadata is logged; the values are
+// credentials and must not end up in logs.
+func (p *Proxy) rotateOldCalendarTokens(now time.Time) int {
+	if calendarTokenRotateAge <= 0 {
+		return 0
+	}
+	tokens, err := p.store.ListClassTokens()
+	if err != nil {
+		log.Printf("[calendar] rotate: %v", err)
+		return 0
+	}
+	cutoff := now.Add(-calendarTokenRotateAge).Unix()
+	rotated := 0
+	for _, tok := range tokens {
+		if tok.CreatedAt >= cutoff {
+			continue
+		}
+		if _, err := p.rotateCalendarToken(tok); err != nil {
+			log.Printf("[calendar] rotate %s/%s: %v", tok.School, tok.ElementType, err)
+			continue
+		}
+		rotated++
+	}
+	if rotated > 0 {
+		log.Printf("[calendar] rotated %d subscription tokens older than %s", rotated, calendarTokenRotateAge)
+	}
+	return rotated
 }
 
 // handleCalendarICS serves the .ics subscription feed for a token. It is public

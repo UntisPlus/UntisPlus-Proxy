@@ -873,3 +873,117 @@ func TestCalendarRoutes_Precedence(t *testing.T) {
 		}
 	}
 }
+
+// calendarRotateRequest fires the self-service rotation endpoint.
+func calendarRotateRequest(t *testing.T, p *Proxy, user, token string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/calendar/"+token+"/rotate", nil)
+	req.SetPathValue("token", token)
+	if user != "" {
+		sess := p.sessions.New(user, 0)
+		req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: sess.ID})
+	}
+	rec := httptest.NewRecorder()
+	p.handleCalendarRotate(rec, req)
+	return rec
+}
+
+// TestCalendarRotateReplacesTheCredential: rotation mints a new token, deletes
+// the old one in the same operation, and preserves the subscription's element
+// and window. The old URL must stop working immediately.
+func TestCalendarRotateReplacesTheCredential(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertUser(&store.User{Username: "dee", Method: "key", PersonType: 5, PersonID: 1, School: "testschool"}); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	created := time.Now().AddDate(0, 0, -40).Unix()
+	if err := st.CreateClassToken(&store.ClassToken{
+		Token: "old", School: "testschool", ElementType: "CLASS", ElementID: 5000,
+		Days: 14, CreatedBy: "dee", CreatedAt: created,
+	}); err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+
+	rec := calendarRotateRequest(t, p, "dee", "old")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("rotate = %d: %s", rec.Code, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	newToken, _ := out["token"].(string)
+	if newToken == "" || newToken == "old" {
+		t.Fatalf("rotated token = %q, want a fresh value", newToken)
+	}
+	if old, _ := st.ClassTokenByToken("old"); old != nil {
+		t.Error("the old token still resolves after rotation")
+	}
+	rotated, err := st.ClassTokenByToken(newToken)
+	if err != nil || rotated == nil {
+		t.Fatalf("new token does not resolve: %v", err)
+	}
+	if rotated.ElementType != "CLASS" || rotated.ElementID != 5000 || rotated.Days != 14 || rotated.CreatedBy != "dee" {
+		t.Errorf("rotation lost subscription metadata: %+v", rotated)
+	}
+}
+
+// TestCalendarRotateOnlyForOwner: a token is a credential, so a logged-in
+// stranger must not be able to rotate it and lock the owner out.
+func TestCalendarRotateOnlyForOwner(t *testing.T) {
+	p, st := newTestProxy(t)
+	for _, u := range []string{"dee", "other"} {
+		if err := st.UpsertUser(&store.User{Username: u, Method: "key", PersonType: 5, PersonID: 1, School: "testschool"}); err != nil {
+			t.Fatalf("seed %s: %v", u, err)
+		}
+	}
+	if err := st.CreateClassToken(&store.ClassToken{
+		Token: "mine", School: "testschool", ElementType: "CLASS", ElementID: 5000,
+		Days: 7, CreatedBy: "dee",
+	}); err != nil {
+		t.Fatalf("seed token: %v", err)
+	}
+	if rec := calendarRotateRequest(t, p, "other", "mine"); rec.Code != http.StatusNotFound {
+		t.Errorf("foreign rotate = %d, want 404", rec.Code)
+	}
+	if tok, _ := st.ClassTokenByToken("mine"); tok == nil {
+		t.Error("a foreign rotation attempt changed the owner's token")
+	}
+}
+
+// TestRotateOldCalendarTokensHonoursAge: the automatic sweep only touches
+// tokens older than the configured age, and does nothing when disabled.
+func TestRotateOldCalendarTokensHonoursAge(t *testing.T) {
+	old := calendarTokenRotateAge
+	t.Cleanup(func() { calendarTokenRotateAge = old })
+
+	p, st := newTestProxy(t)
+	now := time.Now()
+	if err := st.CreateClassToken(&store.ClassToken{
+		Token: "stale", School: "testschool", ElementType: "CLASS", ElementID: 5000,
+		CreatedAt: now.Add(-48 * time.Hour).Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CreateClassToken(&store.ClassToken{
+		Token: "fresh", School: "testschool", ElementType: "CLASS", ElementID: 5001,
+		CreatedAt: now.Unix(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	SetCalendarTokenRotateAge(0)
+	if n := p.rotateOldCalendarTokens(now); n != 0 {
+		t.Errorf("disabled rotation replaced %d tokens", n)
+	}
+	SetCalendarTokenRotateAge(24 * time.Hour)
+	if n := p.rotateOldCalendarTokens(now); n != 1 {
+		t.Errorf("rotation replaced %d tokens, want only the stale one", n)
+	}
+	if tok, _ := st.ClassTokenByToken("stale"); tok != nil {
+		t.Error("the stale token survived rotation")
+	}
+	if tok, _ := st.ClassTokenByToken("fresh"); tok == nil {
+		t.Error("the fresh token was rotated before its time")
+	}
+}

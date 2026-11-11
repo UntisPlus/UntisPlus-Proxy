@@ -55,11 +55,17 @@ func main() {
 	ntfyBase := flag.String("ntfy-base", "https://ntfy.sh", "base URL for ntfy push delivery (self-hosted ntfy server)")
 	allowPrivate := flag.Bool("allow-private-targets", false, "allow webhook/ntfy targets on private, loopback or link-local addresses (off by default as an SSRF guard)")
 	calTokMaxDays := flag.Int("calendar-token-max-days", 0, "maximum age in days of a calendar subscription token (0 = never expires)")
+	calTokRotateDays := flag.Int("calendar-token-rotate-days", 0, "replace calendar subscription tokens older than this many days (0 = manual only; changes the subscription URL)")
+	retentionDays := flag.Int("retention-days", 0, "delete homework flags and absence notes older than this many days (0 = keep forever)")
 	publicBase := flag.String("public-base", "", "externally reachable base URL (scheme+host) for click-through links in notifications")
+	ntfyAppLink := flag.String("ntfy-app-link", "untis://setschool", "click target for ntfy notifications (supports {school} and {classId}; defaults to the mobile app scheme)")
 	admin := flag.String("admin", "", "comma-separated usernames to bootstrap as admins (once)")
 	metricsAddr := flag.String("metrics-addr", "", "bind address for the Prometheus endpoint, e.g. 127.0.0.1:9109; empty disables /metrics entirely, which is the default because the metrics name the school")
 	reconRefresh := flag.Int("recon-refresh", 21, "days a class's recon scan horizon may lag before it is re-enumerated")
 	reconRescan := flag.Bool("recon-rescan", false, "re-enumerate every pooled class from the year start on boot instead of resuming")
+	loginMax := flag.Int("login-max-attempts", 5, "failed logins per account/IP inside the window before lockout (0 disables)")
+	loginWindow := flag.Duration("login-window", 15*time.Minute, "login failure counting window and lockout duration")
+	technikFull := flag.Bool("technik-full-history", false, "make the Technik aggregate return the entire event history instead of the requested range")
 
 	// Every flag is also settable as UNTIS_<FLAG>, so a compose file or a
 	// container runtime can configure the proxy without rewriting its command
@@ -129,10 +135,14 @@ func main() {
 	sm := session.NewManager(24 * time.Hour)
 
 	p := proxy.New(st, uc, sm, proxy.Options{
-		School:           *school,
-		TTL:              *ttl,
-		ReconRefreshDays: *reconRefresh,
-		ForceRescan:      *reconRescan,
+		School:             *school,
+		TTL:                *ttl,
+		ReconRefreshDays:   *reconRefresh,
+		ForceRescan:        *reconRescan,
+		LoginMaxAttempts:   *loginMax,
+		LoginWindow:        *loginWindow,
+		LoginRateLimitOff:  *loginMax == 0,
+		TechnikFullHistory: *technikFull,
 	})
 	p.LoadRecon(*school)
 	p.StartRecon(*school, ys, ye)
@@ -142,10 +152,29 @@ func main() {
 
 	proxy.SetNtfyBase(*ntfyBase)
 	proxy.SetPublicBase(*publicBase)
+	proxy.SetNtfyAppLink(*ntfyAppLink)
 	proxy.SetAllowPrivateTargets(*allowPrivate)
 	proxy.SetCalendarTokenMaxAge(time.Duration(*calTokMaxDays) * 24 * time.Hour)
+	proxy.SetCalendarTokenRotateAge(time.Duration(*calTokRotateDays) * 24 * time.Hour)
 	pollDone := make(chan struct{})
 	go p.StartPollLoop(*school, *poll, pollDone)
+
+	// Optional automatic calendar-token rotation. Off by default because a new
+	// token changes the subscription URL and a subscribed calendar cannot
+	// discover it; the app's token list is where a user picks up the new one.
+	if *calTokRotateDays > 0 {
+		rotateDone := make(chan struct{})
+		go p.StartCalendarRotationLoop(time.Hour, rotateDone)
+	}
+
+	// Optional retention of student-authored state. Off by default: deleting a
+	// done flag or a private note is destructive and the right age depends on the
+	// school's term, not on anything the proxy can observe.
+	proxy.SetRetentionAge(time.Duration(*retentionDays) * 24 * time.Hour)
+	if *retentionDays > 0 {
+		retentionDone := make(chan struct{})
+		go p.StartRetentionLoop(24*time.Hour, retentionDone)
+	}
 
 	// Outage alerts watch the same poll health and post to ntfy. They are
 	// independent of the change poll cadence: a minute is fine even when the

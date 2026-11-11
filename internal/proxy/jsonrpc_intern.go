@@ -299,6 +299,10 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 		p.writeJSONRPCError(w, req.ID, "no username specified", -8502)
 		return
 	}
+	if p.loginRateLimited(w, r, school, auth.User) {
+		p.writeJSONRPCError(w, req.ID, "too many login attempts, try again later", -8504)
+		return
+	}
 	otp := strings.TrimSpace(string(auth.OTP))
 	if strings.HasPrefix(otp, "\"") {
 		if s, err := strconv.Unquote(otp); err == nil {
@@ -332,6 +336,9 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	cookie, realBody, err := p.untis.KeyLogin(school, auth.User, loginOTP, auth.ClientTime, extra)
 	if err != nil {
 		if ue, ok := err.(*untis.UpstreamError); ok {
+			// Only an upstream rejection is a credential failure worth counting.
+			// A network error must not lock an account out during an outage.
+			p.recordLoginFailure(r, school, auth.User)
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write(ue.Raw)
 			return
@@ -339,6 +346,7 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 		p.writeJSONRPCError(w, req.ID, "bad credentials", -8504)
 		return
 	}
+	p.recordLoginSuccess(school, auth.User)
 
 	// A login the upstream accepted is the strongest proof the presented replay
 	// key (stored secret or pasted base32 secret) is valid, so record it for

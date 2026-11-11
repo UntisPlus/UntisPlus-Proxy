@@ -92,7 +92,14 @@ process down at boot.
 | `-ttl` | `5m` | timetable cache TTL |
 | `-poll-interval` | `60s` | how often the change-detector polls each class |
 | `-ntfy-base` | `https://ntfy.sh` | ntfy server for push delivery (any ntfy, incl. self-hosted) |
-| `-public-base` | — | externally reachable base URL (scheme+host) for the click-through link on notifications |
+| `-ntfy-app-link` | `untis://setschool` | where an ntfy tap opens; `{school}` and `{classId}` are substituted, so the default launches the mobile app |
+| `-public-base` | — | externally reachable base URL (scheme+host) used for click-through links where a web page is wanted instead of the app |
+| `-login-max-attempts` | `5` | rejected logins per account or client address inside `-login-window` before lockout; `0` disables the limiter |
+| `-login-window` | `15m` | login counting window *and* lockout duration |
+| `-technik-full-history` | off | serve the synthetic Technik class its entire stored history instead of the requested range |
+| `-calendar-token-max-days` | `0` | hard maximum token age; `0` means never expires |
+| `-calendar-token-rotate-days` | `0` | replace calendar tokens older than this many days (changes the subscription URL); `0` means manual rotation only |
+| `-retention-days` | `0` | delete finished-homework flags and private absence notes older than this many days; `0` keeps them forever |
 | `-metrics-addr` | *(empty)* | bind address for the Prometheus endpoint; empty means `/metrics` is not served at all |
 | `-admin` | — | comma-separated usernames bootstrapped as admins once |
 | `-year-start` / `-year-end` | auto | school-year bounds |
@@ -197,14 +204,20 @@ plus the most recent destinations that gave up, with their error. `/admin/status
 carries the same counts as an `outbox` object. The public `/healthz` and
 `/status` never include this detail.
 
+`GET /admin/audit?school=&limit=` returns the append-only admin audit trail that
+the dashboard's **Audit trail** section renders: who changed what, when, for
+which school. Token actions name the subscribed element instead of the token, so
+reading the trail never hands out a live credential.
+
 - All element pickers (class / **student** / teacher / room / subject) are
   fuzzy-searchable — no raw ids in the UI.
 - Bootstrap the first admin with `untisctl users admin --user evan` (or
   `-admin evan` at boot).
 - The ntfy table has a **test** button per topic that publishes a real test
   notification and reports the receiver's HTTP status. The test carries the same
-  `title` / `tags` / `click` fields a real change does, so a green test means the
-  notification will actually *render* — not just that the socket is open.
+  `title` / `tags` / `click` fields a real change does — including the sample
+  digest — so a green test means the notification will actually *render*, not
+  just that the socket is open.
 
 Users can self-service subscriptions at `/api/webhooks` and `/api/ntfy`. The
 target vocabulary is the calendar mint's — own class, personal, teacher, room,
@@ -325,7 +338,7 @@ notification render. See [the ntfy docs](https://docs.ntfy.sh/publish/#publish-a
 | `title` | names the target element |
 | `message` | the human-readable digest |
 | `tags` | `calendar` (and `white_check_mark` on tests) |
-| `click` | the change-details page for that class — from `-public-base` |
+| `click` | `-ntfy-app-link` (default `untis://setschool`), with `{school}` / `{classId}` substituted — a tap opens the app |
 | `priority` | default |
 
 The default server is `-ntfy-base` (`https://ntfy.sh`); any topic can override it
@@ -333,11 +346,27 @@ with its own `baseUrl` for a self-hosted ntfy. Overrides are stored with trailin
 slashes trimmed, so the dashboard cannot list two rows that are the same
 subscription.
 
-> **Two different matching subscriptions produce two notifications.** Identical
-> rows for the same destination are collapsed (see above), but rows for different
-> targets are not: a class-wide change that matches both a `CLASS` row and a
-> `STUDENT` row pointing at the same server and topic delivers twice, with the
-> same title. Keep one row per (element, server, topic) you actually want.
+> **One push per destination.** Rows that resolve to the same server+topic are
+> collapsed, so a class-wide change that matches both a `CLASS` row and a
+> `STUDENT` row for that topic still produces one notification. Rows with a
+> different topic or server are separate destinations, and each one delivers.
+
+Tapping a notification opens `-ntfy-app-link`, which defaults to the mobile
+app's own scheme (`untis://setschool`). `{school}` and `{classId}` are
+URL-escaped and substituted before publishing. Set it to an `https://` URL if you
+would rather land on a web page. An empty value keeps the built-in app-scheme
+default, so a blank flag cannot silently disable taps.
+
+### Login rate limiting
+
+The key/password and OTP login endpoints count rejected attempts per account and
+per client address. Five failures inside `-login-window` (15 minutes by default)
+lock that key out for the rest of the window; the response is the usual
+authentication error plus `Retry-After`. Successful logins clear the account
+counter but not the address counter, so one valid account cannot whitewash a
+spray from the same host. The counter is in-process and per-key — a brute-force
+brake, not a distributed quota. Set `-login-max-attempts 0` to turn it off; only
+upstream rejections count, so an Untis outage does not lock anyone out.
 
 ### Outage alerts
 
@@ -492,8 +521,10 @@ GET    /api/calendar/options       # what you can subscribe to (mirrors the app)
 GET    /api/calendar/tokens        # the tokens you created
 PATCH  /api/calendar/{token}       # change a token's lookahead window (days)
 DELETE /api/calendar/{token}       # revoke one of your tokens
+POST   /api/calendar/{token}/rotate # replace one of your tokens (new URL)
 GET    /api/calendar/{token}.ics   # the iCal feed (Outlook/Google subscribe)
-GET    /week/{token}               # mobile week page for the same token (no app needed)
+GET    /week/{token}               # mobile week/month page for the same token (no app needed)
+GET    /week/{token}.csv            # the same window as CSV (?view=month&month=YYYY-MM or ?from=YYYY-MM-DD)
 ```
 
 **Admin** — `/admin` (UI), `/admin/login`, and the `/admin/*` JSON API
@@ -533,11 +564,23 @@ https://<host>/api/calendar/7aff8e9dd4707fde8c992c3902be0c96.ics
 ```
 
 Paste that into **Outlook → Add calendar → From internet** (or iCloud/Google).
-`/week/{token}` renders the coming seven days server-side — no JavaScript, no
+`/week/{token}` renders a rolling seven days server-side — no JavaScript, no
 app, no subscription — resolving names the same way the feed does and marking
 `entfällt`, `Vertretung` and `Klausur` when the school server reports them, so a
-parent can just bookmark the URL. The token is the credential, exactly like the
-`.ics` feed.
+parent can just bookmark the URL. Prev/next arrows move a week at a time;
+`?view=month` swaps to a month grid (with `?month=YYYY-MM` navigation), and the
+same window downloads as CSV from the visible `CSV` link. The `iCal-Datei
+herunterladen` link is a one-shot `.ics` download, distinct from the subscription
+URL. The token is the credential, exactly like the `.ics` feed.
+
+**Token rotation.** `POST /api/calendar/{token}/rotate` (owner only) mints a new
+token and deletes the old one atomically; the subscription URL changes, so the
+old link stops working immediately. The dashboard exposes the same action as
+`POST /admin/tokens/{token}/rotate`. Auto-rotation is opt-in:
+`-calendar-token-rotate-days N` replaces tokens older than N days on a daily
+sweep, and `-calendar-token-max-days N` is a separate hard expiry. Both default
+to off, because rotation silently breaks every calendar client that still holds
+the old URL.
 
 **Timing:** the server re-fetches at most `-ttl` (5 min) stale. Calendar
 providers re-subscribe on their own schedule (often hours), so expect calendar

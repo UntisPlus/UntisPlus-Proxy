@@ -29,6 +29,19 @@ type Options struct {
 	// ForceRescan re-enumerates every pooled class from the year start on the
 	// next scan instead of resuming from the stored horizon.
 	ForceRescan bool
+	// LoginMaxAttempts is how many rejected logins a key may accumulate inside
+	// LoginWindow before it is locked out. Zero means the default; set
+	// LoginRateLimitOff to disable limiting entirely.
+	LoginMaxAttempts int
+	// LoginRateLimitOff disables login throttling even if LoginMaxAttempts is
+	// set, so an operator can explicitly pass 0 without it meaning "default".
+	LoginRateLimitOff bool
+	// LoginWindow is the failure-counting window and the lockout duration.
+	LoginWindow time.Duration
+	// TechnikFullHistory makes the synthetic Technik aggregate ignore the
+	// request range and return every stored event. Off by default because the
+	// response grows with the whole event history.
+	TechnikFullHistory bool
 }
 
 type Proxy struct {
@@ -62,6 +75,12 @@ type Proxy struct {
 	// absenceDiag throttles the "found no absence list" log, so an unexpected
 	// response shape is reported occasionally instead of on every request.
 	absenceDiag *absenceDiagnostics
+
+	// loginAccountLimit and loginIPLimit blunt online credential guessing. They
+	// are per-process because the deployment is one process; a successful login
+	// clears only the account counter.
+	loginAccountLimit *attemptLimiter
+	loginIPLimit      *attemptLimiter
 }
 
 // RequestRescan makes the next recon sweep re-enumerate every pooled class
@@ -110,6 +129,17 @@ func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *
 	if opts.TTL <= 0 {
 		opts.TTL = 5 * time.Minute
 	}
+	loginMax := opts.LoginMaxAttempts
+	if loginMax <= 0 {
+		loginMax = defaultLoginMaxAttempts
+	}
+	loginWindow := opts.LoginWindow
+	if loginWindow <= 0 {
+		loginWindow = defaultLoginWindow
+	}
+	if opts.LoginRateLimitOff {
+		loginMax = 0
+	}
 	p := &Proxy{
 		store:       st,
 		untis:       uc,
@@ -120,6 +150,9 @@ func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *
 		hub:         newNotifyHub(),
 		schools:     map[string]*schoolState{},
 		absenceDiag: &absenceDiagnostics{},
+
+		loginAccountLimit: newAttemptLimiter(loginMax, loginWindow),
+		loginIPLimit:      newAttemptLimiter(loginMax*3, loginWindow),
 	}
 	// The raw masterData of every known school survives a restart, so the first
 	// timetable request after a restart (before a fresh login) still resolves
@@ -420,6 +453,7 @@ func (p *Proxy) Handler() http.Handler {
 	mux.HandleFunc("GET /api/calendar/{token}", p.handleCalendarICS)
 	mux.HandleFunc("DELETE /api/calendar/{token}", p.handleCalendarDelete)
 	mux.HandleFunc("PATCH /api/calendar/{token}", p.handleCalendarUpdate)
+	mux.HandleFunc("POST /api/calendar/{token}/rotate", p.handleCalendarRotate)
 	mux.HandleFunc("GET /week/{token}", p.handleWeekPage)
 	mux.HandleFunc("GET /api/timetable/changes", p.handleTimetableChanges)
 	mux.HandleFunc("GET /api/timetable/stream", p.handleTimetableStream)

@@ -44,6 +44,7 @@ An admin can do everything `untisctl` can, from the dashboard:
 | `/admin/pool[/{school}]` | GET | pooled classes + owners |
 | `/admin/tokens[/{school}]` | GET | calendar tokens |
 | `/admin/tokens/{token}` | DELETE | revoke a token |
+| `/admin/tokens/{token}/rotate` | POST | replace a token, returning the new subscription URL |
 | `/admin/schools` | GET | registered schools, their `blocked` flag, and `allowNew` |
 | `/admin/schools/{school}` | POST | register a school |
 | `/admin/schools/{school}/block` | POST | refuse every public request for that school |
@@ -61,9 +62,21 @@ An admin can do everything `untisctl` can, from the dashboard:
 | `/admin/outage-ntfy/{id}/test` | POST | publish a test outage alert to one subscription |
 | `/admin/recon[/{school}]` | GET | recon snapshot stats |
 | `/admin/rooms[/{school}]` | GET/POST | event-room-text → Untis room-id map (overrides the school catalogue) |
-| `/admin/outbox` | GET | notification-delivery backlog (`?state=dead` for exhausted deliveries) |
+| `/admin/outbox` | GET | notification-delivery backlog (`?state=dead` for exhausted deliveries, `?state=sent` for delivered history) |
+| `/admin/audit` | GET | append-only admin audit trail (`?school=` to scope, `?limit=` to cap) |
 | `/admin/events/absences[/{school}]` | GET | event-absence register, one row per recorded absence |
 | `/admin/events/absences` | PATCH | correct an event absence (append-only changelog) |
+
+### Audit trail
+
+Every admin mutation listed above writes an `admin_audit` row after it succeeds:
+timestamp, authenticated actor, school (or empty for global settings), action
+(`token.rotate`, `user.perm`, `event.delete`, …), target and a short detail. The
+trail is append-only and readable at `GET /admin/audit`, or from the dashboard's
+**Audit trail** section. It never stores a credential: calendar actions name the
+element (`CLASS 5000`) instead of the token value, and subscription rows name the
+destination without its secret. Unauthenticated actions cannot reach these
+handlers, so the actor is always a real session user — never a request field.
 
 ## Webhooks (change subscriptions)
 
@@ -156,13 +169,19 @@ second hook that delivers twice. The admin route behaves the same way.
 Change events are also fanned out to ntfy topics. Topics use exactly the same
 element targeting as webhooks: **school-wide**, or any of **class / student /
 teacher / room / subject** (the dashboard ntfy section has the same type
-dropdown + picker). A matched topic is posted via `POST https://ntfy.sh/{topic}`
-or its own `baseUrl` when a per-topic ntfy server is configured; the Android app
-(BetterPlus-Android) subscribes to the topic(s) the user has access to.
+dropdown + picker). A matched topic is published by POSTing the JSON envelope to
+the ntfy server root (or its own `baseUrl` when a per-topic ntfy server is
+configured), with the topic in the body. The Android app subscribes to the
+topic(s) the user has access to.
 
 The pushed message body is the same human-readable digest that webhooks carry in
 their summary header; element-scoped topics prepend the element name to the
 title. The full JSON change payload is available in the message.
+
+The `click` field is `-ntfy-app-link`, default `untis://setschool`, with
+`{school}` and `{classId}` substituted. Tapping the notification therefore opens
+the app instead of a browser. Point it at an `https://` URL to land on a web
+page; an empty value keeps the app-scheme default.
 
 `POST /admin/ntfy` (or dashboard "ntfy topics" section) manages topics.
 Self-service `POST /api/ntfy` takes the same target keys as `/api/webhooks`

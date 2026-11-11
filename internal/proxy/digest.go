@@ -19,6 +19,23 @@ import (
 // digestMaxLines caps how many lessons a single notification spells out.
 const digestMaxLines = 8
 
+// sampleTestDigest is the digest-shaped body both test buttons send. It uses the
+// same fields a real change does so an admin can see how the notification
+// actually renders, instead of a generic string that proves only the socket is
+// open.
+func sampleTestDigest() changeDigest {
+	return changeDigest{
+		Title:   "10b",
+		Summary: "2 change(s): 1 changed · 1 added",
+		Lines: []string{
+			"Mon 12.01. 08:00–08:45 · Mathe · R204 (was R112)",
+			"Tue 13.01. 09:50–10:35 · Sport · TH1 (new)",
+		},
+		Changed: 1,
+		Added:   1,
+	}
+}
+
 // changeDigest is the rendered form of one change event.
 type changeDigest struct {
 	Title   string   `json:"title"`

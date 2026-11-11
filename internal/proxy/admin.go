@@ -107,6 +107,8 @@ func (p *Proxy) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		p.adminOutageNtfy(w, r, parts[1:])
 	case parts[0] == "outbox" && r.Method == http.MethodGet:
 		p.adminOutbox(w, r)
+	case parts[0] == "audit" && r.Method == http.MethodGet:
+		p.adminAudit(w, r)
 	case parts[0] == "recon":
 		p.adminRecon(w, r, parts[1:])
 	case parts[0] == "rooms":
@@ -171,6 +173,7 @@ func (p *Proxy) adminStatus(w http.ResponseWriter) {
 			"pending": outbox.Pending,
 			"sending": outbox.Sending,
 			"dead":    outbox.Dead,
+			"sent":    outbox.Sent,
 		},
 		"global": global,
 	})
@@ -373,8 +376,28 @@ func (p *Proxy) adminTokens(w http.ResponseWriter, r *http.Request, parts []stri
 				p.writeJSON(w, map[string]any{"error": "store error"})
 				return
 			}
+			p.audit(r, school, "token.create", tokenAuditTarget(elType, req.ElementID), "")
 		}
 		p.writeCalendarResponse(w, r, tok)
+		return
+	}
+	if r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "rotate" {
+		tok, err := p.store.ClassTokenByToken(parts[0])
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		if tok == nil {
+			p.writeJSON(w, map[string]any{"error": "not found"})
+			return
+		}
+		rotated, err := p.rotateCalendarToken(tok)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.audit(r, tok.School, "token.rotate", tokenAuditTarget(tok.ElementType, tok.ElementID), "rotated")
+		p.writeCalendarResponse(w, r, rotated)
 		return
 	}
 	if r.Method == http.MethodPost && len(parts) == 1 {
@@ -399,14 +422,19 @@ func (p *Proxy) adminTokens(w http.ResponseWriter, r *http.Request, parts []stri
 			p.writeJSON(w, map[string]any{"error": "not found"})
 			return
 		}
+		p.audit(r, "", "token.edit", p.tokenAuditKey(parts[0]), "days="+strconv.Itoa(req.Days))
 		p.writeJSON(w, map[string]any{"updated": true, "days": req.Days})
 		return
 	}
 	if r.Method == http.MethodDelete && len(parts) == 1 {
+		key := p.tokenAuditKey(parts[0])
 		n, err := p.store.DeleteClassToken(parts[0])
 		if err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
+		}
+		if n > 0 {
+			p.audit(r, "", "token.delete", key, "")
 		}
 		p.writeJSON(w, map[string]any{"revoked": n > 0})
 		return
@@ -472,6 +500,7 @@ func (p *Proxy) adminSchools(w http.ResponseWriter, r *http.Request, parts []str
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
 		}
+		p.audit(r, "", "school.allowNew", "settings", "allowNew="+strconv.FormatBool(*req.AllowNew))
 		p.writeJSON(w, map[string]any{"allowNew": *req.AllowNew})
 		return
 	case r.Method == http.MethodPost && len(parts) == 2 && (parts[1] == "block" || parts[1] == "unblock"):
@@ -489,6 +518,7 @@ func (p *Proxy) adminSchools(w http.ResponseWriter, r *http.Request, parts []str
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
 		}
+		p.audit(r, name, "school.block", name, "blocked="+strconv.FormatBool(blocked))
 		p.writeJSON(w, map[string]any{"school": name, "blocked": blocked})
 		return
 	case r.Method == http.MethodDelete && len(parts) == 1:
@@ -506,11 +536,13 @@ func (p *Proxy) adminSchools(w http.ResponseWriter, r *http.Request, parts []str
 			return
 		}
 		p.forgetSchool(name)
+		p.audit(r, name, "school.delete", name, "")
 		p.writeJSON(w, map[string]any{"school": name, "deleted": true})
 		return
 	case r.Method == http.MethodPost && len(parts) == 1:
 		_ = p.store.UpsertSchool(parts[0])
 		p.stateFor(parts[0])
+		p.audit(r, parts[0], "school.register", parts[0], "")
 		p.writeJSON(w, map[string]any{"school": parts[0], "registered": true})
 		return
 	}
@@ -559,6 +591,7 @@ func (p *Proxy) adminWebhooks(w http.ResponseWriter, r *http.Request, parts []st
 				p.writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
 				return
 			}
+			p.audit(r, h.School, "webhook.test", strconv.FormatInt(id, 10), "")
 			p.writeJSON(w, map[string]any{"ok": true, "status": status})
 			return
 		}
@@ -603,6 +636,7 @@ func (p *Proxy) adminWebhooks(w http.ResponseWriter, r *http.Request, parts []st
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
 		}
+		p.audit(r, wh.School, "webhook.create", strconv.FormatInt(id, 10), auditURLHost(wh.URL))
 		p.writeJSON(w, map[string]any{"id": id})
 		return
 	}
@@ -616,6 +650,9 @@ func (p *Proxy) adminWebhooks(w http.ResponseWriter, r *http.Request, parts []st
 		if err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
+		}
+		if n > 0 {
+			p.audit(r, "", "webhook.delete", strconv.FormatInt(id, 10), "")
 		}
 		p.writeJSON(w, map[string]any{"deleted": n > 0})
 		return
@@ -667,29 +704,43 @@ func (p *Proxy) adminOutbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	state := r.URL.Query().Get("state")
-
 	limit := 25
-	if onlyDead := state == "dead"; !onlyDead {
+
+	switch state {
+	case "dead":
 		dead, err := p.store.RecentDeadOutbox(limit)
 		if err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
 		}
+		p.writeJSON(w, map[string]any{"dead": stats.Dead, "failed": deadSummaries(dead)})
+	case "sent":
+		sent, err := p.store.RecentSentOutbox(limit)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.writeJSON(w, map[string]any{"sent": stats.Sent, "delivered": deadSummaries(sent)})
+	default:
+		dead, err := p.store.RecentDeadOutbox(limit)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		sent, err := p.store.RecentSentOutbox(limit)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
 		p.writeJSON(w, map[string]any{
-			"pending": stats.Pending,
-			"sending": stats.Sending,
-			"dead":    stats.Dead,
-			"failed":  deadSummaries(dead),
+			"pending":   stats.Pending,
+			"sending":   stats.Sending,
+			"dead":      stats.Dead,
+			"sent":      stats.Sent,
+			"failed":    deadSummaries(dead),
+			"delivered": deadSummaries(sent),
 		})
-		return
 	}
-
-	dead, err := p.store.RecentDeadOutbox(limit)
-	if err != nil {
-		p.writeJSON(w, map[string]any{"error": "store error"})
-		return
-	}
-	p.writeJSON(w, map[string]any{"dead": stats.Dead, "failed": deadSummaries(dead)})
 }
 
 // deadSummary describes one exhausted delivery without its payload, which would
@@ -739,6 +790,7 @@ func (p *Proxy) adminNtfy(w http.ResponseWriter, r *http.Request, parts []string
 				p.writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
 				return
 			}
+			p.audit(r, t.School, "ntfy.test", strconv.FormatInt(id, 10), "")
 			p.writeJSON(w, map[string]any{
 				"ok": true, "status": status,
 				"topic": t.Topic, "server": ntfyBaseURL(t),
@@ -789,6 +841,7 @@ func (p *Proxy) adminNtfy(w http.ResponseWriter, r *http.Request, parts []string
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
 		}
+		p.audit(r, n.School, "ntfy.create", strconv.FormatInt(id, 10), ntfyBaseURL(n))
 		p.writeJSON(w, map[string]any{"id": id})
 		return
 	}
@@ -802,6 +855,9 @@ func (p *Proxy) adminNtfy(w http.ResponseWriter, r *http.Request, parts []string
 		if err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
+		}
+		if n > 0 {
+			p.audit(r, "", "ntfy.delete", strconv.FormatInt(id, 10), "")
 		}
 		p.writeJSON(w, map[string]any{"deleted": n > 0})
 		return
@@ -862,6 +918,7 @@ func (p *Proxy) adminOutageNtfy(w http.ResponseWriter, r *http.Request, parts []
 			p.writeJSON(w, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
+		p.audit(r, o.School, "outageNtfy.test", strconv.FormatInt(id, 10), "")
 		p.writeJSON(w, map[string]any{
 			"ok": true, "status": status,
 			"topic": o.Topic, "server": ntfyBaseURL(&store.NtfyTopic{BaseURL: o.BaseURL}),
@@ -900,6 +957,7 @@ func (p *Proxy) adminOutageNtfy(w http.ResponseWriter, r *http.Request, parts []
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
 		}
+		p.audit(r, req.School, "outageNtfy.create", strconv.FormatInt(id, 10), scopeLabel(req.School))
 		p.writeJSON(w, map[string]any{"id": id, "scope": scopeLabel(req.School)})
 		return
 	}
@@ -913,6 +971,9 @@ func (p *Proxy) adminOutageNtfy(w http.ResponseWriter, r *http.Request, parts []
 		if err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
+		}
+		if n > 0 {
+			p.audit(r, "", "outageNtfy.delete", strconv.FormatInt(id, 10), "")
 		}
 		p.writeJSON(w, map[string]any{"deleted": n > 0})
 		return
@@ -1012,6 +1073,7 @@ func (p *Proxy) adminRecon(w http.ResponseWriter, r *http.Request, parts []strin
 		p.RequestRescan()
 		ys, ye := schoolYearRange(time.Now())
 		go p.StartRecon(school, ys, ye)
+		p.audit(r, school, "recon.rescan", school, ys+".."+ye)
 		p.writeJSON(w, map[string]any{"rescan": "started", "school": school})
 		return
 	}
@@ -1121,6 +1183,11 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 		if req.Admin {
 			_ = p.store.SetPerm(req.Username, store.FeatureBoosted, true)
 		}
+		school := existing.School
+		if school == "" {
+			school = p.opts.School
+		}
+		p.audit(r, school, "user.upsert", existing.Username, "admin="+strconv.FormatBool(req.Admin))
 		p.writeJSON(w, map[string]any{"ok": true})
 		return
 	}
@@ -1134,6 +1201,7 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 				p.writeJSON(w, map[string]any{"error": "store error"})
 				return
 			}
+			p.audit(r, p.opts.School, "user.delete", username, "")
 			p.writeJSON(w, map[string]any{"deleted": n > 0})
 			return
 		case r.Method == http.MethodPost:
@@ -1162,6 +1230,7 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 					p.writeJSON(w, map[string]any{"error": "store error"})
 					return
 				}
+				p.audit(r, p.opts.School, "user.perm", username, feature+"="+strconv.FormatBool(allowed))
 				p.writeJSON(w, map[string]any{"ok": true})
 				return
 			}
@@ -1170,6 +1239,7 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 					p.writeJSON(w, map[string]any{"error": "store error"})
 					return
 				}
+				p.audit(r, p.opts.School, "user.admin", username, "admin="+strconv.FormatBool(v))
 				p.writeJSON(w, map[string]any{"ok": true})
 				return
 			}
@@ -1214,6 +1284,7 @@ func (p *Proxy) adminRooms(w http.ResponseWriter, r *http.Request, parts []strin
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
 		}
+		p.audit(r, school, "rooms.save", school, strconv.Itoa(len(req.Rooms))+" overrides")
 		m := p.roomOverrides(school)
 		if m == nil {
 			m = map[string]int64{}

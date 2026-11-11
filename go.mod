@@ -1,6 +1,6 @@
 module untis-proxy
 
-go 1.26.6
+go 1.26.11
 
 require modernc.org/sqlite v1.56.0
 

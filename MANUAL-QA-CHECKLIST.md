@@ -81,6 +81,8 @@ was being published on whatever address a tunnel exposes.
 - [ ] `GET /admin/perms` → rows match `untisctl perms list`
 - [ ] `GET /admin/pool` and `GET /admin/pool/testschool` → `{school, pool:[{id,name,owner}]}`; compare with `untisctl pool list`
 - [ ] `GET /admin/tokens` → all tokens; `DELETE /admin/tokens/<throwaway>` revokes (see §5 for 404 after)
+- [ ] `GET /admin/audit` → recent mutations with actor/action/target; `?school=` scopes it
+- [ ] Perform one token/user/webhook change, then confirm a new audit row names *you* and the element — never the token or secret
 - [ ] `GET /admin/schools` → list; `POST /admin/schools/<newscho>` → `{"registered":true}`
 - [ ] `GET /admin/search?q=<partial name>` → hits; add `&type=TEACHER` (CLASS/TEACHER/ROOM/SUBJECT/STUDENT) to filter
 - [ ] `GET /admin/recon` → counts; `scan.target` set; `scan.perClass` has one row per pooled class
@@ -106,6 +108,8 @@ was being published on whatever address a tunnel exposes.
 - [ ] `GET /api/calendar/tokens` → only the caller's own tokens
 - [ ] `DELETE /api/calendar/$TOK` as its creator → 204, then the feed → 404; as another user → 404
 - [ ] `PATCH /api/calendar/$TOK` `{"days":90}` → 200, `days=90`; `{"days":9999}` → clamped to 365
+- [ ] `POST /api/calendar/$TOK/rotate` as its creator → 200, new token, old `/week` and `.ics` URLs → 404; as another user → 404
+- [ ] `POST /admin/tokens/$TOK/rotate` → same, from the dashboard side
 - [ ] `{"timezone":"Asia/Tokyo"}` honoured: `DTSTART;TZID=Asia/Tokyo` in the feed and shifted wall-clock times
 - [ ] `{"classId":0}` / two targets in one body → 400
 - [ ] `POST /api/calendar/token` without cookie → 401
@@ -138,6 +142,11 @@ was being published on whatever address a tunnel exposes.
 - [ ] `GET /week/does-not-exist` → 404 plain text, no HTML
 - [ ] Page is readable in dark **and** light mode, and usable at 360px width
 - [ ] `/week/$TOK.ics`-style suffix is tolerated (`/week/$TOK.html` also renders)
+- [ ] Prev/next arrows move exactly one week; `heute` returns to the current week
+- [ ] `?view=month` shows a whole-month grid with leading/trailing greyed days; `?month=YYYY-MM` and the prev/next arrows move one month
+- [ ] The **CSV** link downloads the same window as an attachment with a UTF-8 BOM; `?view=month` exports the month
+- [ ] `iCal-Datei herunterladen` downloads a `.ics` file (distinct from the subscription URL)
+- [ ] `/week/does-not-exist.csv` → 404, exactly like the page
 
 ## 7. Change detection, diff API and digest
 
@@ -186,6 +195,8 @@ the fast way to inspect the digest.
 - [ ] `POST /admin/ntfy` `{school, topic:"<scratch topic>"}` (per-topic `baseUrl` honoured)
 - [ ] `POST /admin/ntfy/<id>/test` → `{"ok":true,"status":200,...}`; the phone receives the test push
 - [ ] Real change → push with a parent-readable body (the full multi-line digest) and a title naming the element
+- [ ] Tapping the push opens the app (`-ntfy-app-link` default `untis://setschool`); with `{classId}` in the link the tap carries the change's class
+- [ ] Two subscription rows for the same server+topic produce **one** push per change; different topics still produce two
 - [ ] Element-scoped topic fires only for its element; school-wide fires for everything
 - [ ] Wrong `baseUrl` → error reported, no crash, other topics still work
 - [ ] `GET /api/ntfy` lists only the caller's own topics (with `elementType`/`elementId`/`name`)
@@ -276,20 +287,21 @@ the fast way to inspect the digest.
       (week page, ICS escaping, admin UI, ntfy/webhook payloads)
 - [ ] A revoked token stops working immediately for ICS, week page and app
 - [ ] A user cannot read another user's personal timetable, tokens, or hooks
-- [ ] Logins are not rate-limited (known gap, §16) — confirm at least that failures are logged
+- [ ] Six wrong passwords in a row from one client → lockout + `Retry-After`; a correct login from another account on the same address stays blocked until the window passes; `-login-max-attempts 0` disables it
+- [ ] An Untis outage (upstream timeouts) does **not** consume login attempts
 
 ---
 
 ## 16. Known gaps — do not spend time looking for these
 
-- No login rate limiting / lockout (brute force is only slowed by upstream).
-- No delivery log: a failed webhook/ntfy push is not recorded, only logged.
-- The admin **test** buttons send a synthetic payload **without** the digest
-  (`X-Untis-Summary: test notification`), so they do not exercise §7/§8 digest rendering.
-- No audit log of admin actions.
-- Calendar tokens have no expiry and no rotation (revoke + re-create is the only way).
-- No push (APNs/FCM) from the proxy itself — ntfy is the push path.
-- `/week` shows one rolling week; there is no month view, no export, no ICS file download link in the UI.
+- No push (APNs/FCM) from the proxy itself — ntfy is the push path and the app
+  does not register a device token with the proxy.
+- Calendar-token rotation and retention are opt-in: with the default flags a
+  token never rotates and no homework flag or absence note is deleted.
+- The login limiter is in-process and per-key. It does not coordinate across
+  replicas and does not throttle other endpoints.
+- Technik full history is opt-in (`-technik-full-history`); the default still
+  honours the app's requested window.
 
 ## 17. Recommended additional automated tests
 
@@ -326,12 +338,12 @@ Ranked by value; each is cheap to add and covers a real gap.
 14. **Property test for the digest** — random period sets produce a digest whose counted kinds
     always match the changes array.
 
-## 18. Today's changes — regression focus
+## 18. This batch — regression focus
 
-- [ ] ICS `DTSTAMP` + `SEQUENCE` (feed imported by a real calendar app)
-- [ ] `/week` page renders with real data and correct timezone
-- [ ] Subject long names (`longName`, e.g. "Mathematik 3") show in ICS, week page, admin pickers
-- [ ] Upstream outage no longer wipes a class snapshot or fires mass "removed" notifications
-- [ ] Recon resumes instead of restarting; `/admin/recon` progress is accurate; `rescan` still forces a full sweep
-- [ ] `/healthz` + `/metrics` reflect successful polls only
-- [ ] `untisctl backup` produces a restorable copy; `scripts/release.sh` gate still green
+- [ ] ntfy tap opens the app (`-ntfy-app-link`), including `{classId}` substitution
+- [ ] Login lockout + `Retry-After`, and `0` disables it
+- [ ] `/week` month view, prev/next navigation, CSV and `.ics` download
+- [ ] Token rotate (self-service + admin) invalidates the old URL immediately
+- [ ] Audit trail records the actor and never a token/secret
+- [ ] Technik full history opt-in; default still honours the requested window
+- [ ] Outbox shows delivered history (`state=sent`) and still prunes dead rows

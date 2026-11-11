@@ -148,6 +148,18 @@
   <table id="outageNtfy"><thead><tr><th>scope</th><th>topic</th><th>server</th><th>by</th><th></th></tr></thead><tbody></tbody></table>
 </section>
 
+<section>
+  <h2>Audit trail <button class="mini" onclick="loadAudit()">refresh</button></h2>
+  <div class="hint" style="font-size:.75rem;color:#9aa0ae;margin-bottom:.4rem">
+    Append-only record of administrative actions. Leave the school box empty to see every school.
+  </div>
+  <div class="row" style="margin-bottom:.5rem">
+    <input id="auditSchool" placeholder="school (empty = all)" style="width:16rem">
+    <button onclick="loadAudit()">load</button>
+  </div>
+  <table id="audit"><thead><tr><th>when</th><th>actor</th><th>school</th><th>action</th><th>target</th><th>detail</th></tr></thead><tbody></tbody></table>
+</section>
+
 <section id="tokensSection">
   <h2>Calendar tokens <button class="mini" onclick="loadTokens()">refresh</button></h2>
   <div class="row" style="margin-bottom:.5rem">
@@ -300,9 +312,10 @@ async function renderCards(){
   c.insertAdjacentHTML('beforeend', card('outage alerts', status.outageNtfy || 0));
   // Notification delivery backlog. Pending means retrying; dead means a
   // destination gave up and someone has to look at /admin/outbox.
-  const ob = status.outbox || {pending:0, sending:0, dead:0};
+  const ob = status.outbox || {pending:0, sending:0, dead:0, sent:0};
   c.insertAdjacentHTML('beforeend', card('notifications queued', ob.pending));
   c.insertAdjacentHTML('beforeend', card('notifications failed', ob.dead, ob.dead ? 'warn' : ''));
+  c.insertAdjacentHTML('beforeend', card('notifications delivered', ob.sent));
   c.insertAdjacentHTML('beforeend', card('recon', status.recon));
   c.insertAdjacentHTML('beforeend', card('boosted', status.boosted));
   c.insertAdjacentHTML('beforeend', card('editors', status.editors));
@@ -1050,6 +1063,21 @@ async function editToken(tk,name){
   loadTokens();
 }
 
+async function loadAudit(){
+  const school = ($('auditSchool').value||'').trim();
+  const d = await api('GET','audit?limit=100&school='+encodeURIComponent(school));
+  if(d.error){ log('audit load failed: '+d.error); return; }
+  const tb=$('audit').querySelector('tbody'); tb.innerHTML='';
+  for(const e of (d.entries||[])){
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+esc(new Date(e.at*1000).toLocaleString())+'</td>'+
+      '<td>'+esc(e.actor||'')+'</td><td>'+esc(e.school||'')+'</td>'+
+      '<td>'+esc(e.action||'')+'</td><td>'+esc(e.target||'')+'</td><td>'+esc(e.detail||'')+'</td>';
+    tb.appendChild(tr);
+  }
+  if(!(d.entries||[]).length) log('audit: no entries'+(school?(' for '+school):''));
+}
+
 async function loadPool(){
   const sc=$('poolSchool').value || defaultSchool();
   loadPool._school=sc;
@@ -1064,7 +1092,7 @@ async function refreshAll(){
   const mark = new Date().toTimeString().slice(0,8);
   const hint = $('refreshHint'); if(hint) hint.textContent = 'last refresh '+mark;
   const jobs = {users:loadUsers, webhooks:loadWebhooks,
-                ntfy:loadNtfy, outage:loadOutageNtfy, tokens:loadTokens, pool:loadPool, roommap:loadRoomMap};
+                ntfy:loadNtfy, outage:loadOutageNtfy, tokens:loadTokens, pool:loadPool, roommap:loadRoomMap, audit:loadAudit};
   // The school list has to land before the cards render, because rendering the
   // cards is what fills the school selectors.
   try { await loadSchools(); } catch(e){ log('schools: '+e); }
