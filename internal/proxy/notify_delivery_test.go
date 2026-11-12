@@ -595,8 +595,8 @@ func TestCheckClassWithoutOwnerSkips(t *testing.T) {
 }
 
 // TestCheckClassRecordsObservedWindowEnd is the wiring half of the daily-horizon
-// fix: the poller must pass the end of its [today-1, today+4] window to the
-// snapshot so the next poll can tell a newly visible day from a real change.
+// fix: the poller must pass the end of its fetch window to the snapshot so the
+// next poll can tell a newly visible day from a real change.
 func TestCheckClassRecordsObservedWindowEnd(t *testing.T) {
 	f := &fakeUpstream{}
 	future := time.Now().AddDate(0, 0, 4)
@@ -612,7 +612,7 @@ func TestCheckClassRecordsObservedWindowEnd(t *testing.T) {
 	if !p.checkClass("testschool", 5000) {
 		t.Fatal("first poll should store the initial snapshot")
 	}
-	want := time.Now().AddDate(0, 0, 4).Format("2006-01-02")
+	_, want := pollWindow(time.Now())
 	if got := st.ObservedWindowEnd("testschool", 5000); got != want {
 		t.Errorf("ObservedWindowEnd = %q, want the fetch-window end %q", got, want)
 	}

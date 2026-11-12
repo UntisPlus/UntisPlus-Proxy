@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -138,6 +139,26 @@ func (c *ttCache) Get(k string) ([]byte, bool) {
 // evicts expired entries first, then the oldest live ones, so a working set
 // larger than the cap cannot grow the map without bound.
 const maxTTCacheEntries = 2000
+
+// Delete removes one entry, used when a poll proves the cached body stale.
+func (c *ttCache) Delete(k string) {
+	c.mu.Lock()
+	delete(c.m, k)
+	c.mu.Unlock()
+}
+
+// DeletePrefix removes every entry whose key starts with prefix. Class
+// responses are keyed 2017|school|class|start|end, so a detected change drops
+// every cached window for that class in one pass.
+func (c *ttCache) DeletePrefix(prefix string) {
+	c.mu.Lock()
+	for k := range c.m {
+		if strings.HasPrefix(k, prefix) {
+			delete(c.m, k)
+		}
+	}
+	c.mu.Unlock()
+}
 
 func (c *ttCache) Put(k string, data []byte) {
 	c.mu.Lock()

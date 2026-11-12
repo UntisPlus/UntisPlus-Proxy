@@ -401,12 +401,44 @@ func (p *Proxy) checkClass(school string, classID int64) bool {
 	return changed
 }
 
+// pollWorkers bounds concurrent class polls. Each poll is one upstream
+// timetable fetch plus a small snapshot transaction; four keeps the burst from
+// looking like a hammer to the school server while still warming a pool of
+// dozens of classes in a fraction of the serial time.
+const pollWorkers = 4
+
+// pollWindow returns the date range the change poller observes.
+//
+// The app asks for the current school week (Monday..Sunday), so fetching only
+// [today-1, today+4] left Monday and Tuesday afternoons cold: the poller had
+// never seen the weekend the app was about to request. The window therefore
+// starts at this week's Monday (plus Sunday when today is Monday, so a change
+// made over the weekend is still detected) and ends at the later of this week's
+// Sunday and today+4. That is exactly the range the app requests, and it means
+// the poller's fresh fetch also warms the class day cache for the first open.
+func pollWindow(now time.Time) (string, string) {
+	d := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	wd := int(d.Weekday())
+	if wd == 0 {
+		wd = 7
+	}
+	monday := d.AddDate(0, 0, -(wd - 1))
+	start := monday
+	if wd == 1 {
+		// Monday: include the Sunday just gone so weekend changes are diffed.
+		start = d.AddDate(0, 0, -1)
+	}
+	end := monday.AddDate(0, 0, 6)
+	if lookahead := d.AddDate(0, 0, 4); lookahead.After(end) {
+		end = lookahead
+	}
+	return start.Format("2006-01-02"), end.Format("2006-01-02")
+}
+
 // checkClassErr is checkClass but also reports why a poll produced no usable
 // data, so the poll loop can surface a stale upstream in /healthz and /metrics.
 func (p *Proxy) checkClassErr(school string, classID int64) (bool, error) {
-	now := time.Now()
-	start := now.AddDate(0, 0, -1).Format("2006-01-02")
-	end := now.AddDate(0, 0, 4).Format("2006-01-02")
+	start, end := pollWindow(time.Now())
 	periods, err := p.classPeriodsFresh(school, classID, start, end)
 	if err != nil {
 		log.Printf("[notify] poll class %d: %v", classID, err)
@@ -443,10 +475,10 @@ func (p *Proxy) checkClassErr(school string, classID int64) (bool, error) {
 
 	// The queued deliveries are written by the same transaction that stamps
 	// newVer, so a committed change always has a delivery waiting for it. The
-	// window end is passed too: the poller fetches a sliding [today-1, today+4]
-	// range, and without treating the newly visible far day as baseline every
-	// subscriber gets a burst of "new lesson" pushes at midnight (01:00/02:00
-	// local when the process runs in UTC).
+	// window end is passed too: the poller fetches a current-week window plus a
+	// short lookahead, and without treating the newly visible far day as
+	// baseline every subscriber gets a burst of "new lesson" pushes at midnight
+	// (01:00/02:00 local when the process runs in UTC).
 	var queued []store.PeriodRow
 	changed, err := p.store.ApplyClassSnapshotWindow(school, classID, next, newVer, dropBefore, end,
 		func(rows []store.PeriodRow, put func(string, int64, []byte) error) error {
@@ -460,6 +492,10 @@ func (p *Proxy) checkClassErr(school string, classID int64) (bool, error) {
 	if changed == 0 {
 		return false, nil
 	}
+	// Any cached response window for this class is now stale. The day cache was
+	// just rewritten from this same fetch, so it stays; only the exact-body
+	// entries are dropped.
+	p.tt.DeletePrefix(fmt.Sprintf("2017|%s|%d|", school, classID))
 	sort.Slice(queued, func(i, j int) bool { return queued[i].PeriodID < queued[j].PeriodID })
 	msg := notifyMsg{
 		School:  school,
@@ -930,24 +966,49 @@ func (p *Proxy) pollOnce(school string) {
 		return
 	}
 	st := p.stateFor(school)
-	for _, c := range classes {
-		changed, ferr := p.checkClassErr(school, c.ID)
-		st.pollMu.Lock()
-		st.pollRuns++
-		st.lastPoll = time.Now()
-		if changed {
-			st.pollChanges++
-		}
-		if ferr == nil {
-			// Only a poll that actually read the timetable counts as a healthy
-			// one; checkClassErr swallows the upstream error and reports "no
-			// change", which must not be mistaken for a fresh timetable.
-			st.lastPollOK = st.lastPoll
-		} else {
-			st.pollFails++
-		}
-		st.pollMu.Unlock()
+	// The first pass after a restart is what warms the class day cache for the
+	// first app open, so doing it one class after another made that warm-up as
+	// slow as the whole pool. A small worker pool keeps the upstream load
+	// bounded while collapsing the wall-clock cost.
+	workers := pollWorkers
+	if len(classes) < workers {
+		workers = len(classes)
 	}
+	if workers < 1 {
+		return
+	}
+	jobs := make(chan int64)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for classID := range jobs {
+				changed, ferr := p.checkClassErr(school, classID)
+				st.pollMu.Lock()
+				st.pollRuns++
+				st.lastPoll = time.Now()
+				if changed {
+					st.pollChanges++
+				}
+				if ferr == nil {
+					// Only a poll that actually read the timetable counts as a
+					// healthy one; checkClassErr swallows the upstream error and
+					// reports "no change", which must not be mistaken for a fresh
+					// timetable.
+					st.lastPollOK = st.lastPoll
+				} else {
+					st.pollFails++
+				}
+				st.pollMu.Unlock()
+			}
+		}()
+	}
+	for _, c := range classes {
+		jobs <- c.ID
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 // handleTimetableChanges is the pollable diff API. It requires a session whose

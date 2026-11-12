@@ -61,7 +61,24 @@ type Client struct {
 
 func New(cfg Config) *Client {
 	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = &http.Client{Timeout: 25 * time.Second}
+		cfg.HTTPClient = &http.Client{
+			Timeout: 25 * time.Second,
+			// The proxy talks to one school server, often with several pooled
+			// classes in flight. Go's default transport keeps only two idle
+			// connections per host, so a first-open burst paid a fresh TCP and
+			// TLS handshake for most requests. These keep a warm pool and let
+			// HTTP/2 be negotiated where the server supports it.
+			Transport: &http.Transport{
+				Proxy:                 http.ProxyFromEnvironment,
+				ForceAttemptHTTP2:     true,
+				MaxIdleConns:          128,
+				MaxIdleConnsPerHost:   64,
+				MaxConnsPerHost:       64,
+				IdleConnTimeout:       90 * time.Second,
+				TLSHandshakeTimeout:   10 * time.Second,
+				ExpectContinueTimeout: time.Second,
+			},
+		}
 	}
 	servers := map[string]string{}
 	if cfg.School != "" && cfg.Server != "" {

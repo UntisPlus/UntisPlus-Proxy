@@ -133,6 +133,19 @@ func main() {
 
 	uc := untis.New(untis.Config{Server: *server, School: *school})
 	sm := session.NewManager(24 * time.Hour)
+	sm.SetPersister(st)
+	if saved, err := st.LoadSessions(time.Now()); err != nil {
+		log.Printf("restore sessions: %v", err)
+	} else if len(saved) > 0 {
+		sessions := make([]session.Session, 0, len(saved))
+		for _, s := range saved {
+			sessions = append(sessions, session.Session{
+				ID: s.ID, Username: s.Username, ClassID: s.ClassID, Expires: s.Expires,
+			})
+		}
+		sm.Restore(sessions)
+		log.Printf("restored %d app session(s)", len(sessions))
+	}
 
 	p := proxy.New(st, uc, sm, proxy.Options{
 		School:             *school,

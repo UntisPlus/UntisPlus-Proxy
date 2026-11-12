@@ -284,6 +284,9 @@ func chunkDates(start, end string) ([][2]string, error) {
 // distinct period entries that share one lessonId. Deduping on lessonId would
 // collapse those consecutive time slots into a single one.
 func (p *Proxy) classPeriods(school string, classID int64, start, end string) ([]map[string]any, error) {
+	if periods, ok := p.cachedClassPeriods(school, classID, start, end); ok {
+		return periods, nil
+	}
 	chunks, err := chunkDates(start, end)
 	if err != nil {
 		return nil, err
@@ -304,6 +307,7 @@ func (p *Proxy) classPeriods(school string, classID int64, start, end string) ([
 			out = append(out, pd)
 		}
 	}
+	p.rememberClassPeriods(school, classID, start, end, out)
 	return out, nil
 }
 
@@ -329,6 +333,9 @@ func (p *Proxy) classPeriodsFresh(school string, classID int64, start, end strin
 			out = append(out, pd)
 		}
 	}
+	// This is the poller's own fetch: the data is the freshest the proxy will
+	// see, so it is exactly what should answer the app's next request.
+	p.rememberClassPeriods(school, classID, start, end, out)
 	return out, nil
 }
 
@@ -440,16 +447,39 @@ func (p *Proxy) elementPeriods(school, elType string, elID int64, start, end str
 	if err != nil {
 		return nil, err
 	}
+	// Fetches are independent, and on a cold cache this used to walk the whole
+	// pool serially while the app waited. Fetch into per-class slots with a
+	// bounded pool, then merge in the original class order so the response stays
+	// deterministic.
+	results := make([][]map[string]any, len(classes))
+	workers := elementFetchWorkers
+	if len(classes) < workers {
+		workers = len(classes)
+	}
+	if workers > 0 {
+		sem := make(chan struct{}, workers)
+		var wg sync.WaitGroup
+		for i := range classes {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+				ps, err := p.classPeriods(school, classes[i].ID, start, end)
+				if err != nil {
+					return
+				}
+				results[i] = ps
+			}(i)
+		}
+		wg.Wait()
+	}
 	type key struct {
 		start, end, subject string
 	}
 	seen := map[key]bool{}
 	var out []map[string]any
-	for _, c := range classes {
-		ps, err := p.classPeriods(school, c.ID, start, end)
-		if err != nil {
-			continue
-		}
+	for _, ps := range results {
 		for _, pd := range ps {
 			matched := false
 			sub := ""
@@ -476,6 +506,10 @@ func (p *Proxy) elementPeriods(school, elType string, elID int64, start, end str
 	}
 	return out, nil
 }
+
+// elementFetchWorkers bounds concurrent pooled-class fetches when
+// reconstructing a teacher/room/subject timetable.
+const elementFetchWorkers = 8
 
 // fetchElementRaw fetches a teacher/room/subject timetable directly from the
 // upstream WebUntis server via a boosted source account.  This returns the raw

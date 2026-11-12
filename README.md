@@ -89,7 +89,7 @@ process down at boot.
 | `-school` | **required** | school login name (the key data is stored under); no default — the proxy refuses to start without it |
 | `-env` | `dev` | deployment mode: `dev` / `beta` / `prod` |
 | `-version` | build version | reported build version; compiled in by the release build, so the image needs no version variable |
-| `-ttl` | `5m` | timetable cache TTL |
+| `-ttl` | `5m` | freshness of the class timetable response and day caches |
 | `-poll-interval` | `60s` | how often the change-detector polls each class |
 | `-ntfy-base` | `https://ntfy.sh` | ntfy server for push delivery (any ntfy, incl. self-hosted) |
 | `-ntfy-app-link` | `untis://setschool` | where an ntfy tap opens; `{school}` and `{classId}` are substituted, so the default launches the mobile app |
@@ -239,13 +239,18 @@ GET /api/timetable/stream                    # SSE live stream
 The server polls each pooled class every `-poll-interval`, diffs it against the
 last stored snapshot, bumps the class version, and persists the change rows.
 
-The poll window is `[today-1, today+4]` and therefore slides forward at
-midnight. The proxy remembers how far each class's window has reached and stores
-lessons that appear only because a new day entered the window as baseline data,
-not as changes. Without that, every subscriber got a burst of "new lesson"
-notifications at midnight (01:00/02:00 local when the container runs in UTC). A
-lesson whose date was already inside the observed window is still reported
-normally, so real upstream edits are never hidden.
+The poll window covers the current school week (Monday to Sunday) and extends
+to `today+4` when that reaches further; on Mondays it starts on the Sunday just
+gone so weekend changes are still diffed. That is the same range the app asks
+for, so the poller's fresh fetch also warms the class timetable cache: the first
+open of the day is answered from memory instead of waiting for the school
+server. The window slides forward at midnight. The proxy remembers how far each
+class's window has reached and stores lessons that appear only because a new day
+entered the window as baseline data, not as changes. Without that, every
+subscriber got a burst of "new lesson" notifications at midnight (01:00/02:00
+local when the container runs in UTC). A lesson whose date was already inside the
+observed window is still reported normally, so real upstream edits are never
+hidden.
 
 Both endpoints require a session. With no target parameter the stream keeps the
 legacy app contract: the caller's own timetable (their class changes plus the

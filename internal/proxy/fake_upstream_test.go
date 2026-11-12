@@ -42,6 +42,9 @@ type fakeUpstream struct {
 	// timetableCalls counts getTimetable2017 forwards, so tests can assert how
 	// much upstream traffic a scan actually caused.
 	timetableCalls int
+	// timetableDelay holds a timetable answer back so a test can observe a burst
+	// of concurrent requests while the one upstream flight is still in progress.
+	timetableDelay time.Duration
 
 	// restBody / restStatus are the canned answer served for /WebUntis/api/*.
 	restBody   string
@@ -94,7 +97,11 @@ func (f *fakeUpstream) handler() http.Handler {
 			}
 			tm, tstat := f.timetable, f.timetableStatus
 			reply := f.internReply
+			delay := f.timetableDelay
 			f.mu.Unlock()
+			if req.Method == "getTimetable2017" && delay > 0 {
+				time.Sleep(delay)
+			}
 			if req.Method == "getTimetable2017" && tstat != 0 {
 				w.WriteHeader(tstat)
 				_, _ = w.Write([]byte(`{"error":{"message":"upstream unavailable"}}`))

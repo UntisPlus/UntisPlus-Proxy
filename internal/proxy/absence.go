@@ -251,22 +251,21 @@ func absenceBelongsTo(abs jsonObject, user *store.User) bool {
 // absenceSubjects resolves, per absence key, the subject of the lesson it
 // displaced — but only where that lesson is unambiguous.
 //
-// The snapshot is queried once per (class, date) rather than once per absence, so
-// a term's worth of absences in one response costs a handful of queries.
+// The snapshot is queried once per class over the whole date span the response
+// covers, not once per absence or even once per (class, date): a term's worth of
+// absences in one response costs one indexed range query per class.
 func (p *Proxy) absenceSubjects(school string, user *store.User, list []jsonObject) map[int64]string {
 	out := map[int64]string{}
-	type group struct {
-		classID int64
-		date    string
-	}
 	// The key is read once, here, and carried alongside the entry. Re-reading it
 	// per group would have to re-check a value already known to be an integer.
 	type entry struct {
 		key int64
 		abs jsonObject
 	}
-	byGroup := map[group][]entry{}
-	order := []group{}
+	byClass := map[int64][]entry{}
+	order := []int64{}
+	from := map[int64]string{}
+	to := map[int64]string{}
 	for _, abs := range list {
 		key, ok := jsonID(abs["id"])
 		if !ok {
@@ -284,19 +283,34 @@ func (p *Proxy) absenceSubjects(school string, user *store.User, list []jsonObje
 		if classID == 0 {
 			continue
 		}
-		g := group{classID: classID, date: t.Format("2006-01-02")}
-		if _, seen := byGroup[g]; !seen {
-			order = append(order, g)
+		dayFrom := t.Format("2006-01-02")
+		dayTo := dayFrom
+		if endStr, ok := abs["endDateTime"].(string); ok {
+			if e, ok := parseAbsenceTime(endStr); ok && e.After(t) {
+				dayTo = e.Format("2006-01-02")
+			}
 		}
-		byGroup[g] = append(byGroup[g], entry{key: key, abs: abs})
+		if _, seen := from[classID]; !seen {
+			order = append(order, classID)
+			from[classID] = dayFrom
+			to[classID] = dayTo
+		} else {
+			if dayFrom < from[classID] {
+				from[classID] = dayFrom
+			}
+			if dayTo > to[classID] {
+				to[classID] = dayTo
+			}
+		}
+		byClass[classID] = append(byClass[classID], entry{key: key, abs: abs})
 	}
-	for _, g := range order {
-		periods, err := p.store.ClassPeriodsOnDate(school, g.classID, g.date)
+	for _, classID := range order {
+		periods, err := p.store.ClassPeriodsBetween(school, classID, from[classID], to[classID])
 		if err != nil {
-			enrichmentFailed("absence periods "+g.date, err)
+			enrichmentFailed("absence periods "+from[classID]+".."+to[classID], err)
 			continue
 		}
-		for _, e := range byGroup[g] {
+		for _, e := range byClass[classID] {
 			if subject, ok := soleOverlappingSubject(e.abs, periods); ok {
 				out[e.key] = subject
 			}

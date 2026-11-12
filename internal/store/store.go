@@ -235,6 +235,18 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// proxy_sessions keeps the app logged in across a proxy restart. The cookie
+	// is the app's only credential once the login handshake is done, so losing
+	// this table turned every deploy into a forced re-login on every phone.
+	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS proxy_sessions (
+		id TEXT NOT NULL PRIMARY KEY,
+		username TEXT NOT NULL,
+		class_id INTEGER NOT NULL DEFAULT 0,
+		expires INTEGER NOT NULL
+	)`)
+	if err != nil {
+		return nil, err
+	}
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS webhooks (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		school TEXT NOT NULL DEFAULT '',
@@ -316,6 +328,14 @@ func Open(path string) (*Store, error) {
 		PRIMARY KEY (school, class_id, period_id)
 	)`)
 	if err != nil {
+		return nil, err
+	}
+	// Absence enrichment reads a class's periods over a date range once per
+	// response. The primary key cannot serve that (it leads with period_id), and
+	// the range predicate on start needs its own index to avoid scanning every
+	// period of the school.
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS timetable_changes_range
+		ON timetable_changes (school, class_id, start)`); err != nil {
 		return nil, err
 	}
 	// notification_outbox makes delivery survive a failed send. One row per
@@ -1231,6 +1251,66 @@ func (s *Store) SettingsByPrefix(prefix string) (map[string]string, error) {
 		out[k] = v
 	}
 	return out, rows.Err()
+}
+
+// ProxySession is a persisted app session. It mirrors session.Session without
+// importing the session package, keeping the store independent of the HTTP
+// layer that owns the cookie lifecycle.
+type ProxySession struct {
+	ID       string
+	Username string
+	ClassID  int64
+	Expires  time.Time
+}
+
+// SaveSession persists one app session so a proxy restart does not log every
+// phone out. Expired rows are pruned on read and on startup.
+func (s *Store) SaveSession(id, username string, classID int64, expires time.Time) error {
+	if id == "" {
+		return nil
+	}
+	_, err := s.db.Exec(`INSERT INTO proxy_sessions (id, username, class_id, expires)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(id) DO UPDATE SET
+			username=excluded.username, class_id=excluded.class_id, expires=excluded.expires`,
+		id, norm(username), classID, expires.Unix())
+	return err
+}
+
+// DeleteSession forgets one app session, used on logout.
+func (s *Store) DeleteSession(id string) error {
+	_, err := s.db.Exec(`DELETE FROM proxy_sessions WHERE id=?`, id)
+	return err
+}
+
+// LoadSessions returns every unexpired session. Expired rows are removed in the
+// same call so the table does not grow without a separate maintenance job.
+func (s *Store) LoadSessions(now time.Time) ([]ProxySession, error) {
+	if _, err := s.db.Exec(`DELETE FROM proxy_sessions WHERE expires<=?`, now.Unix()); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(`SELECT id, username, class_id, expires FROM proxy_sessions WHERE expires>?`, now.Unix())
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ProxySession
+	for rows.Next() {
+		var p ProxySession
+		var expires int64
+		if err := rows.Scan(&p.ID, &p.Username, &p.ClassID, &expires); err != nil {
+			return nil, err
+		}
+		p.Expires = time.Unix(expires, 0)
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
+// PruneSessions deletes expired sessions.
+func (s *Store) PruneSessions(now time.Time) error {
+	_, err := s.db.Exec(`DELETE FROM proxy_sessions WHERE expires<=?`, now.Unix())
+	return err
 }
 
 // School is one registered upstream Untis school.
@@ -3590,6 +3670,37 @@ func (s *Store) ClassPeriodsOnDate(school string, classID int64, date string) ([
 	rows, err := s.db.Query(`SELECT period_id, kind, start, end, subject, room, teacher, description, mod_ver
 		FROM timetable_changes WHERE school=? AND class_id=? AND substr(start,1,10)=?
 		ORDER BY start`, school, classID, date)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []PeriodRow
+	for rows.Next() {
+		var r PeriodRow
+		if err := rows.Scan(&r.PeriodID, &r.Kind, &r.Start, &r.End, &r.Subject, &r.Room, &r.Teacher, &r.Description, &r.ModVer); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ClassPeriodsBetween returns a class's periods for every date in
+// [from,to] inclusive. It is the batched form of ClassPeriodsOnDate: absence
+// enrichment resolves a whole response's absences with one query per class
+// instead of one query per (class, date).
+func (s *Store) ClassPeriodsBetween(school string, classID int64, from, to string) ([]PeriodRow, error) {
+	t, err := time.Parse("2006-01-02", to)
+	if err != nil {
+		return nil, err
+	}
+	endExclusive := t.AddDate(0, 0, 1).Format("2006-01-02")
+	// The comparison is lexicographic on the date prefix. Both timestamp shapes
+	// the upstream uses ("YYYY-MM-DDTHH:MM" and "YYYY-MM-DD HH:MM") sort inside
+	// [from, endExclusive), and this predicate can use timetable_changes_range.
+	rows, err := s.db.Query(`SELECT period_id, kind, start, end, subject, room, teacher, description, mod_ver
+		FROM timetable_changes WHERE school=? AND class_id=? AND start>=? AND start<?
+		ORDER BY start`, school, classID, from, endExclusive)
 	if err != nil {
 		return nil, err
 	}

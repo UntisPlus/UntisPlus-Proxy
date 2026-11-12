@@ -770,30 +770,33 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 		}
 	case "CLASS":
 		classID = pr.ID
-		// A student's own class: forward untouched. Upstream validates the
-		// auth block directly, so a session-only account (no replayable
-		// key) can still view its own class timetable.
+		// A student's own class: upstream validates the auth block directly, so
+		// a session-only account (no replayable key) can still view its own
+		// class timetable. The periods are the whole class's, so they are cached
+		// viewer-neutrally; only the decoration below is per student.
 		if requester.PersonType == 5 && pr.ID == requester.ClassID {
-			b, status, _, err := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
+			if b, ok := p.cachedClassBody(school, classID, pr.StartDate, pr.EndDate); ok {
+				p.writeClassTimetable(w, school, requesterName, id, b, pr, true, true, http.StatusOK)
+				return
+			}
+			key := classTimetableCacheKey(school, classID, pr.StartDate, pr.EndDate)
+			// The flight key includes the requester because this path's upstream
+			// authentication is the requester's own: a bad auth block must not
+			// deny a classmate the fetch. The cache it fills is still shared.
+			b, status, err := p.fetchClassBody(key, key+"|"+requesterName, func() ([]byte, int, error) {
+				bb, st, _, e := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
+				return bb, st, e
+			})
 			if err != nil {
 				p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 				return
 			}
-			b = p.viewerBody(requesterName, b)
-			// A client asking for its own class is asking for its own timetable —
-			// which class of its own it named is not a privacy question, and the
-			// response it gets is its own either way. Events are therefore attached
-			// here as well as on the STUDENT branch, keyed by the session user and
-			// never by anything in the request. Without this the feature would depend
-			// on the client choosing type=STUDENT over type=CLASS for its own
-			// timetable, which is an assumption about client behaviour, not a fact
-			// the proxy can rely on: a classmate in the same class sends the same
-			// request and gets their own events, never anyone else's.
-			b = p.decorateStudentEvents(b, school, requesterName, pr.StartDate, pr.EndDate)
-			b = p.injectTechnikClass(requesterName, b)
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(status)
-			_, _ = w.Write(b)
+			// A client asking for its own class is asking for its own timetable,
+			// so personal events and the synthetic Technik class ride along,
+			// keyed by the session user and never by anything in the request. A
+			// classmate in the same class sends the same request and gets their
+			// own events, never anyone else's.
+			p.writeClassTimetable(w, school, requesterName, id, b, pr, true, false, status)
 			return
 		}
 	case "TEACHER", "ROOM", "SUBJECT":
@@ -826,13 +829,9 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 		return
 	}
 
-	key := fmt.Sprintf("2017|%d|%s|%s", classID, pr.StartDate, pr.EndDate)
-	if false {
-		if b, ok := p.tt.Get(key); ok {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write(b)
-			return
-		}
+	if b, ok := p.cachedClassBody(school, classID, pr.StartDate, pr.EndDate); ok {
+		p.writeClassTimetable(w, school, requesterName, id, b, pr, false, true, http.StatusOK)
+		return
 	}
 
 	newBody := body
@@ -843,18 +842,18 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 			return
 		}
 	}
-	b, status, _, err := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", newBody)
+	key := classTimetableCacheKey(school, classID, pr.StartDate, pr.EndDate)
+	// This fetch runs under the class owner's auth, not the requester's, so it
+	// is safe to share between concurrent viewers of the same class.
+	b, status, err := p.fetchClassBody(key, key, func() ([]byte, int, error) {
+		bb, st, _, e := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", newBody)
+		return bb, st, e
+	})
 	if err != nil {
 		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 		return
 	}
-	if requester.Username != owner.Username {
-		b = p.withRequesterMasterData(school, requester.Username, b)
-	}
-	b = p.viewerBody(requesterName, b)
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_, _ = w.Write(b)
+	p.writeClassTimetable(w, school, requesterName, id, b, pr, false, false, status)
 }
 
 // withRequesterMasterData swaps the forwarded body's result.masterData for the
@@ -1082,9 +1081,16 @@ func (p *Proxy) cacheRawMasterData(school string, body []byte) {
 			}
 			p.mdRaw[school] = append([]byte(nil), body...)
 			p.mdRawMu.Unlock()
-			// A fresh login replaces what a restart would otherwise have to
-			// rebuild from scratch, so the body is persisted for the next run.
-			// A failed write must not break serving.
+			// A login has just delivered a fresh copy. Use it immediately so the
+			// first timetable response does not wait for a refresh, and persist it
+			// for the next restart.
+			if md := parseMasterDataCache(body); md != nil {
+				st := p.stateFor(school)
+				st.mdMu.Lock()
+				st.md = md
+				st.mdNext = time.Now().Add(masterDataTTL)
+				st.mdMu.Unlock()
+			}
 			_ = p.store.SetSetting(masterDataSettingPrefix+school, string(body))
 			return
 		}

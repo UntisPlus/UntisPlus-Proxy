@@ -45,11 +45,17 @@ type Options struct {
 }
 
 type Proxy struct {
-	store    *store.Store
-	untis    *untis.Client
-	sessions *session.Manager
-	opts     Options
-	tt       *ttCache
+	store     *store.Store
+	untis     *untis.Client
+	sessions  *session.Manager
+	opts      Options
+	tt        *ttCache
+	classDays *classDayCache
+
+	// flights collapses concurrent cold class fetches. Only the leader talks to
+	// upstream; followers reuse its body (and thereby the cache entry it writes).
+	flightMu sync.Mutex
+	flights  map[string]*classFetchCall
 
 	secretsMu sync.Mutex
 	secrets   map[string]string
@@ -91,6 +97,8 @@ func (p *Proxy) RequestRescan() { p.rescanReq.Store(true) }
 // process can serve many Untis schools with independent pooling, recon and
 // master data.
 type schoolState struct {
+	school string
+
 	klMu    sync.Mutex
 	klasses map[int64]string
 	klAt    time.Time
@@ -109,6 +117,11 @@ type schoolState struct {
 	mdMu   sync.Mutex
 	md     *masterDataCache
 	mdNext time.Time
+	// mdLoading is held while an upstream refresh is in flight, so a slow or
+	// failed server cannot turn every request into its own fetch. mdDone is
+	// closed when that refresh finishes.
+	mdLoading bool
+	mdDone    chan struct{}
 }
 
 type schoolKey string
@@ -146,6 +159,7 @@ func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *
 		sessions:    sm,
 		opts:        opts,
 		tt:          newTTCache(opts.TTL),
+		classDays:   newClassDayCache(),
 		secrets:     map[string]string{},
 		hub:         newNotifyHub(),
 		schools:     map[string]*schoolState{},
@@ -189,7 +203,7 @@ func (p *Proxy) stateFor(school string) *schoolState {
 	if ok {
 		return st
 	}
-	st = &schoolState{klasses: map[int64]string{}}
+	st = &schoolState{school: school, klasses: map[int64]string{}}
 	st.recon = newElementDB()
 	p.schools[school] = st
 	if elems, err := p.store.LoadReconElements(school); err == nil && len(elems) > 0 {
@@ -314,18 +328,139 @@ func (p *Proxy) ensureReconScan(school string) {
 	p.StartRecon(school, ys, ye)
 }
 
-// masterData returns cached masterData name maps, refreshing them at most once
-// an hour via any pool account.
+// masterDataTTL is how long an in-memory masterData copy is considered fresh.
+// Once it lapses the old copy is still served while one background refresh runs;
+// a request never waits for this data when any copy exists.
+const masterDataTTL = time.Hour
+
+// masterData returns cached masterData name maps.
+//
+// The persisted raw body is the source of truth after a restart. It is parsed
+// synchronously (cheap, local) and served immediately; the upstream refresh
+// happens in the background. Before this, the first request after every process
+// start performed a synchronous getUserData2017 while holding mdMu, so every
+// concurrent request queued behind one network round trip.
 func (p *Proxy) masterData(school string) *masterDataCache {
 	st := p.stateFor(school)
+	now := time.Now()
+
 	st.mdMu.Lock()
-	defer st.mdMu.Unlock()
-	if st.md != nil && time.Now().Before(st.mdNext) {
-		return st.md
+	if st.md != nil {
+		md := st.md
+		if now.After(st.mdNext) && !st.mdLoading {
+			p.startMasterRefreshLocked(st)
+		}
+		st.mdMu.Unlock()
+		return md
 	}
+	st.mdMu.Unlock()
+
+	if md := p.masterDataFromRaw(school); md != nil {
+		st.mdMu.Lock()
+		if st.md == nil {
+			st.md = md
+			st.mdNext = now.Add(masterDataTTL)
+		}
+		md = st.md
+		st.mdMu.Unlock()
+		// The persisted copy can be old; refresh it without making the caller wait.
+		p.startMasterRefresh(school)
+		return md
+	}
+
+	return p.loadMasterDataSync(school)
+}
+
+// startMasterRefresh schedules one background refresh if none is running.
+func (p *Proxy) startMasterRefresh(school string) {
+	st := p.stateFor(school)
+	st.mdMu.Lock()
+	p.startMasterRefreshLocked(st)
+	st.mdMu.Unlock()
+}
+
+// startMasterRefreshLocked must be called with st.mdMu held.
+func (p *Proxy) startMasterRefreshLocked(st *schoolState) {
+	if st.mdLoading {
+		return
+	}
+	st.mdLoading = true
+	st.mdDone = make(chan struct{})
+	done := st.mdDone
+	go func() {
+		p.loadMasterData(st, done)
+	}()
+}
+
+// loadMasterDataSync is the cold-start path for a school with neither a cached
+// copy nor a persisted raw body. Concurrent callers wait for the one fetch; the
+// mutex is never held across the network call.
+func (p *Proxy) loadMasterDataSync(school string) *masterDataCache {
+	st := p.stateFor(school)
+	st.mdMu.Lock()
+	if st.md != nil {
+		md := st.md
+		st.mdMu.Unlock()
+		return md
+	}
+	if st.mdLoading {
+		done := st.mdDone
+		st.mdMu.Unlock()
+		<-done
+		st.mdMu.Lock()
+		md := st.md
+		st.mdMu.Unlock()
+		return md
+	}
+	st.mdLoading = true
+	st.mdDone = make(chan struct{})
+	done := st.mdDone
+	st.mdMu.Unlock()
+
+	p.loadMasterData(st, done)
+	st.mdMu.Lock()
+	md := st.md
+	st.mdMu.Unlock()
+	return md
+}
+
+// loadMasterData performs one upstream refresh and resolves waiters. A failed
+// refresh leaves the previous copy in place.
+func (p *Proxy) loadMasterData(st *schoolState, done chan struct{}) {
+	md := p.fetchMasterData(st.school)
+	st.mdMu.Lock()
+	if md != nil {
+		st.md = md
+		st.mdNext = time.Now().Add(masterDataTTL)
+	}
+	st.mdLoading = false
+	st.mdDone = nil
+	st.mdMu.Unlock()
+	close(done)
+}
+
+// masterDataFromRaw parses the persisted getUserData2017 body without any I/O
+// beyond the in-memory copy.
+func (p *Proxy) masterDataFromRaw(school string) *masterDataCache {
+	p.mdRawMu.Lock()
+	raw := p.mdRaw[school]
+	var copied []byte
+	if len(raw) > 0 {
+		copied = append([]byte(nil), raw...)
+	}
+	p.mdRawMu.Unlock()
+	if len(copied) == 0 {
+		return nil
+	}
+	return parseMasterDataCache(copied)
+}
+
+// fetchMasterData asks upstream for one school's master data. It is the only
+// network call in this path.
+func (p *Proxy) fetchMasterData(school string) *masterDataCache {
 	u, err := p.store.AnyUser(school)
 	if err != nil || u == nil {
-		return st.md
+		return nil
 	}
 	body, _ := json.Marshal(map[string]any{
 		"id": "untis-proxy-md", "jsonrpc": "2.0", "method": "getUserData2017",
@@ -336,12 +471,30 @@ func (p *Proxy) masterData(school string) *masterDataCache {
 	})
 	newBody, err := p.rewriteAuthForOwner(school, body, u)
 	if err != nil {
-		return st.md
+		return nil
 	}
 	b, _, err := p.escalatedIntern(school, u, "getUserData2017", newBody)
 	if err != nil {
-		return st.md
+		return nil
 	}
+	md := parseMasterDataCache(b)
+	if md == nil {
+		return nil
+	}
+	// Keep the raw body for displayAllowed recomputation and persist it so the
+	// next restart starts warm.
+	p.cacheRawMasterData(school, b)
+	_ = p.store.SaveMasterNames(school, "TEACHER", md.teachers)
+	_ = p.store.SaveMasterNames(school, "ROOM", md.rooms)
+	_ = p.store.SaveMasterNames(school, "SUBJECT", md.subjects)
+	_ = p.store.SaveMasterNames(school, "CLASS", md.klassen)
+	return md
+}
+
+// parseMasterDataCache converts an upstream getUserData2017 body into the name
+// maps the serving paths use. A body that does not carry masterData is nil;
+// callers then keep whatever they already had.
+func parseMasterDataCache(b []byte) *masterDataCache {
 	var resp struct {
 		Result struct {
 			MasterData struct {
@@ -373,7 +526,12 @@ func (p *Proxy) masterData(school string) *masterDataCache {
 		} `json:"result"`
 	}
 	if json.Unmarshal(b, &resp) != nil {
-		return st.md
+		return nil
+	}
+	src := resp.Result.MasterData
+	if len(src.Teachers) == 0 && len(src.Rooms) == 0 && len(src.Subjects) == 0 &&
+		len(src.Klassen) == 0 && len(src.AbsenceReasons) == 0 {
+		return nil
 	}
 	md := &masterDataCache{
 		teachers:       map[int64]string{},
@@ -382,13 +540,13 @@ func (p *Proxy) masterData(school string) *masterDataCache {
 		klassen:        map[int64]string{},
 		absenceReasons: map[int64]string{},
 	}
-	for _, t := range resp.Result.MasterData.Teachers {
+	for _, t := range src.Teachers {
 		md.teachers[t.ID] = t.Name
 	}
-	for _, r := range resp.Result.MasterData.Rooms {
+	for _, r := range src.Rooms {
 		md.rooms[r.ID] = r.Name
 	}
-	for _, s := range resp.Result.MasterData.Subjects {
+	for _, s := range src.Subjects {
 		// The school server sends a short code in "name" ("M3") and the readable
 		// title in "longName" ("Mathematik 3"). Everything user-facing — iCal
 		// summaries, the week page, the admin element list — wants the long one.
@@ -398,10 +556,10 @@ func (p *Proxy) masterData(school string) *masterDataCache {
 		}
 		md.subjects[s.ID] = name
 	}
-	for _, k := range resp.Result.MasterData.Klassen {
+	for _, k := range src.Klassen {
 		md.klassen[k.ID] = k.Name
 	}
-	for _, r := range resp.Result.MasterData.AbsenceReasons {
+	for _, r := range src.AbsenceReasons {
 		// The reason objects name themselves differently across Untis versions, so
 		// the first non-empty text field wins. An empty catalogue only costs the
 		// client the readable reason, never the absence itself.
@@ -412,14 +570,7 @@ func (p *Proxy) masterData(school string) *masterDataCache {
 			}
 		}
 	}
-	st.md = md
-	st.mdNext = time.Now().Add(time.Hour)
-	// Persist names to DB for CLI fuzzy lookup (fire-and-forget).
-	_ = p.store.SaveMasterNames(school, "TEACHER", md.teachers)
-	_ = p.store.SaveMasterNames(school, "ROOM", md.rooms)
-	_ = p.store.SaveMasterNames(school, "SUBJECT", md.subjects)
-	_ = p.store.SaveMasterNames(school, "CLASS", md.klassen)
-	return p.stateFor(school).md
+	return md
 }
 
 // maxRequestBodyBytes bounds every request body the proxy will read. The
