@@ -308,6 +308,7 @@ func Open(path string) (*Store, error) {
 		school TEXT NOT NULL,
 		class_id INTEGER NOT NULL,
 		version INTEGER NOT NULL DEFAULT 0,
+		observed_start TEXT NOT NULL DEFAULT '',
 		observed_end TEXT NOT NULL DEFAULT '',
 		PRIMARY KEY (school, class_id)
 	)`)
@@ -622,6 +623,14 @@ func Open(path string) (*Store, error) {
 	// lessons that were just added upstream, and every subscriber gets a burst
 	// of "new lesson" pushes once a day.
 	if err := addColumnIfMissing(db, "timetable_versions", "observed_end", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return nil, err
+	}
+	// migration: remember the first date the polling window reached. The window
+	// start moves backwards when the app starts asking for a whole school week
+	// (Monday..Sunday) instead of [today-1, today+4], or on Sunday/Monday when
+	// the poller widens its range. Those newly visible earlier days are baseline
+	// data, not lessons added upstream, exactly like a new far edge at midnight.
+	if err := addColumnIfMissing(db, "timetable_versions", "observed_start", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return nil, err
 	}
 	// backfill: set element_type/element_id on existing tokens
@@ -2691,6 +2700,17 @@ func (s *Store) ObservedWindowEnd(school string, classID int64) string {
 	return v
 }
 
+// ObservedWindowStart returns the earliest date the class's polling window has
+// ever reached (YYYY-MM-DD), or "" when no windowed poll has been recorded.
+// It only moves backwards: a window that temporarily widens keeps the earlier
+// date as observed forever.
+func (s *Store) ObservedWindowStart(school string, classID int64) string {
+	var v string
+	_ = s.db.QueryRow(`SELECT observed_start FROM timetable_versions WHERE school=? AND class_id=?`,
+		school, classID).Scan(&v)
+	return v
+}
+
 // SchoolVersion returns the highest class version in a school: a monotone
 // counter that only advances when a polled class timetable actually changed
 // (see ReplaceClassSnapshot). Used as a coarse change counter for feeds that
@@ -2751,20 +2771,22 @@ type Enqueuer func(changed []PeriodRow, put func(dest string, destID int64, payl
 // transaction holds and deadlock. Anything needed while enqueueing — such as
 // the list of webhooks and ntfy topics — has to be read beforehand.
 func (s *Store) ApplyClassSnapshot(school string, classID int64, next []PeriodRow, newVer int64, dropRemovedBefore string, enqueue Enqueuer) (int, error) {
-	return s.applyClassSnapshot(school, classID, next, newVer, dropRemovedBefore, "", enqueue)
+	return s.applyClassSnapshot(school, classID, next, newVer, dropRemovedBefore, "", "", enqueue)
 }
 
-// ApplyClassSnapshotWindow is ApplyClassSnapshot with the last date the fetched
-// window reaches (YYYY-MM-DD). A lesson on a date past the previous window has
-// never been observed before, so it is stored as a baseline snapshot row instead
-// of an ADDED change: the window sliding forward must not announce a whole new
-// day of lessons to every subscriber at midnight. An empty observedEnd keeps the
-// legacy behaviour, where every previously unseen period is ADDED.
-func (s *Store) ApplyClassSnapshotWindow(school string, classID int64, next []PeriodRow, newVer int64, dropRemovedBefore, observedEnd string, enqueue Enqueuer) (int, error) {
-	return s.applyClassSnapshot(school, classID, next, newVer, dropRemovedBefore, observedEnd, enqueue)
+// ApplyClassSnapshotWindow is ApplyClassSnapshot with the dates the fetched
+// window covers (YYYY-MM-DD). A lesson on a date the previous window did not
+// reach has never been observed before, so it is stored as a baseline snapshot
+// row instead of an ADDED change: the window widening at either edge (a new day
+// at midnight, or an earlier day when the app asks for a whole school week) must
+// not announce a whole day of lessons to every subscriber. An empty
+// observedStart and observedEnd keep the legacy behaviour, where every
+// previously unseen period is ADDED.
+func (s *Store) ApplyClassSnapshotWindow(school string, classID int64, next []PeriodRow, newVer int64, dropRemovedBefore, observedStart, observedEnd string, enqueue Enqueuer) (int, error) {
+	return s.applyClassSnapshot(school, classID, next, newVer, dropRemovedBefore, observedStart, observedEnd, enqueue)
 }
 
-func (s *Store) applyClassSnapshot(school string, classID int64, next []PeriodRow, newVer int64, dropRemovedBefore, observedEnd string, enqueue Enqueuer) (int, error) {
+func (s *Store) applyClassSnapshot(school string, classID int64, next []PeriodRow, newVer int64, dropRemovedBefore, observedStart, observedEnd string, enqueue Enqueuer) (int, error) {
 	old, err := s.LoadClassSnapshot(school, classID)
 	if err != nil {
 		return 0, err
@@ -2785,9 +2807,33 @@ func (s *Store) applyClassSnapshot(school string, classID int64, next []PeriodRo
 	// from a separate read, and baseline rows must carry a version that is not
 	// newer than the version actually stored.
 	var prevVer int64
-	var prevObservedEnd string
-	_ = tx.QueryRow(`SELECT version, observed_end FROM timetable_versions WHERE school=? AND class_id=?`,
-		school, classID).Scan(&prevVer, &prevObservedEnd)
+	var prevObservedStart, prevObservedEnd string
+	_ = tx.QueryRow(`SELECT version, observed_start, observed_end FROM timetable_versions WHERE school=? AND class_id=?`,
+		school, classID).Scan(&prevVer, &prevObservedStart, &prevObservedEnd)
+	// A row written before observed_start existed knows its far edge but not its
+	// near one. Treat today (the drop horizon) as the earliest date it can vouch
+	// for: everything earlier is baseline for this one poll, which is the
+	// conservative choice. Without this the first poll after the upgrade would
+	// announce a whole school week of "new" lessons, which is exactly the burst
+	// the marker exists to prevent. The real window start is persisted below, so
+	// the fallback only applies once.
+	if prevObservedStart == "" && prevObservedEnd != "" && observedStart != "" {
+		if dropRemovedBefore != "" {
+			prevObservedStart = dropRemovedBefore
+		} else {
+			prevObservedStart = prevObservedEnd
+		}
+	}
+	// Both markers are monotone: the window edge may only widen. observed_start
+	// takes the earliest date ever reached, observed_end the latest.
+	newObservedStart := prevObservedStart
+	if observedStart != "" && (newObservedStart == "" || observedStart < newObservedStart) {
+		newObservedStart = observedStart
+	}
+	newObservedEnd := prevObservedEnd
+	if observedEnd != "" && observedEnd > newObservedEnd {
+		newObservedEnd = observedEnd
+	}
 	if _, err := tx.Exec(`DELETE FROM timetable_changes WHERE school=? AND class_id=?`, school, classID); err != nil {
 		return 0, err
 	}
@@ -2797,9 +2843,17 @@ func (s *Store) applyClassSnapshot(school string, classID int64, next []PeriodRo
 		// A period on a date the window has only just reached was never in the
 		// snapshot because it was outside the fetch horizon, not because it was
 		// added upstream. It is baseline data: storing it keeps the next diff
-		// correct, but it must not count as a change or queue a delivery.
-		horizon := !existed && observedEnd != "" && prevObservedEnd != "" &&
-			len(r.Start) >= 10 && r.Start[:10] > prevObservedEnd
+		// correct, but it must not count as a change or queue a delivery. This
+		// applies at both edges: a new far day at midnight, and an earlier day
+		// when the window widens (a Monday-based school week, or Sunday on a
+		// Monday).
+		date := ""
+		if len(r.Start) >= 10 {
+			date = r.Start[:10]
+		}
+		horizon := !existed && date != "" &&
+			((prevObservedStart != "" && date < prevObservedStart) ||
+				(observedEnd != "" && prevObservedEnd != "" && date > prevObservedEnd))
 		// A period that is back after a cancellation is a reinstatement, and
 		// kind is deliberately not part of the comparison below. Without this
 		// a lesson that was cancelled and then restored with byte-identical
@@ -2892,14 +2946,11 @@ func (s *Store) applyClassSnapshot(school string, classID int64, next []PeriodRo
 		changedRows = append(changedRows, r)
 	}
 	if changed > 0 {
-		if _, err := tx.Exec(`INSERT INTO timetable_versions (school,class_id,version,observed_end) VALUES (?,?,?,?)
+		if _, err := tx.Exec(`INSERT INTO timetable_versions (school,class_id,version,observed_start,observed_end) VALUES (?,?,?,?,?)
 			ON CONFLICT(school,class_id) DO UPDATE SET version=excluded.version,
-				observed_end=CASE
-					WHEN excluded.observed_end='' THEN timetable_versions.observed_end
-					WHEN timetable_versions.observed_end='' OR excluded.observed_end > timetable_versions.observed_end
-						THEN excluded.observed_end
-					ELSE timetable_versions.observed_end END`,
-			school, classID, newVer, observedEnd); err != nil {
+				observed_start=excluded.observed_start,
+				observed_end=excluded.observed_end`,
+			school, classID, newVer, newObservedStart, newObservedEnd); err != nil {
 			return 0, err
 		}
 		if enqueue != nil {
@@ -2913,15 +2964,14 @@ func (s *Store) applyClassSnapshot(school string, classID int64, next []PeriodRo
 				return 0, err
 			}
 		}
-	} else if observedEnd != "" && observedEnd > prevObservedEnd {
-		// Nothing to announce, but the window moved forward: remember its new
-		// edge so the next poll treats that date as already observed. Keep the
-		// current version, because there is no change for a client to fetch.
-		// This is strictly forward-only; a backwards clock must not un-observe
-		// days that were already seen.
-		if _, err := tx.Exec(`INSERT INTO timetable_versions (school,class_id,version,observed_end) VALUES (?,?,?,?)
-			ON CONFLICT(school,class_id) DO UPDATE SET observed_end=excluded.observed_end`,
-			school, classID, prevVer, observedEnd); err != nil {
+	} else if newObservedStart != prevObservedStart || newObservedEnd != prevObservedEnd {
+		// Nothing to announce, but the window moved: remember its new edges so
+		// the next poll treats those dates as already observed. Keep the current
+		// version, because there is no change for a client to fetch. The markers
+		// are monotone above, so a backwards clock cannot un-observe days.
+		if _, err := tx.Exec(`INSERT INTO timetable_versions (school,class_id,version,observed_start,observed_end) VALUES (?,?,?,?,?)
+			ON CONFLICT(school,class_id) DO UPDATE SET observed_start=excluded.observed_start, observed_end=excluded.observed_end`,
+			school, classID, prevVer, newObservedStart, newObservedEnd); err != nil {
 			return 0, err
 		}
 	}

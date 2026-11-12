@@ -45,12 +45,13 @@ type Options struct {
 }
 
 type Proxy struct {
-	store     *store.Store
-	untis     *untis.Client
-	sessions  *session.Manager
-	opts      Options
-	tt        *ttCache
-	classDays *classDayCache
+	store       *store.Store
+	untis       *untis.Client
+	sessions    *session.Manager
+	opts        Options
+	tt          *ttCache
+	classDays   *classDayCache
+	studentDays *classDayCache
 
 	// flights collapses concurrent cold class fetches. Only the leader talks to
 	// upstream; followers reuse its body (and thereby the cache entry it writes).
@@ -160,6 +161,7 @@ func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *
 		opts:        opts,
 		tt:          newTTCache(opts.TTL),
 		classDays:   newClassDayCache(),
+		studentDays: newClassDayCache(),
 		secrets:     map[string]string{},
 		hub:         newNotifyHub(),
 		schools:     map[string]*schoolState{},

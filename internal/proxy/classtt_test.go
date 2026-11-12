@@ -265,3 +265,192 @@ func TestMasterDataServedFromPersistedRawWithoutUpstream(t *testing.T) {
 		t.Errorf("teacher 42 = %q, want the persisted name", got)
 	}
 }
+
+// TestBoostedClassTimetableServedFromWarmCache: a boosted user used to bypass
+// every class cache and pay for a teacher fetch on each request. A class
+// timetable is class-wide data, so the poller-warmed day cache answers it.
+func TestBoostedClassTimetableServedFromWarmCache(t *testing.T) {
+	f := &fakeUpstream{}
+	f.setTimetableBody(cacheTestTimetable)
+	p, st := newFakeProxyUpstream(t, f)
+	seedRawMasterData(t, p)
+	seedTeacherSource(t, st, "mrTeacher", 5009)
+	seedSessionUser(t, st, "dee", 5, 7, 5000)
+	if err := st.SetBoostedFlag("dee", true); err != nil {
+		t.Fatalf("boost dee: %v", err)
+	}
+	// What the poller leaves behind after its tick.
+	p.rememberClassPeriods("testschool", 5000, "2026-11-09", "2026-11-15", []map[string]any{
+		{"id": float64(1), "startDateTime": "2026-11-09T08:00:00Z", "endDateTime": "2026-11-09T08:45:00Z",
+			"text": map[string]any{"lesson": "Mathe"},
+			"can":  []any{"READ_LESSONTOPIC", "WRITE_LESSONTOPIC"}},
+	})
+
+	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+		ttParam(5000, "CLASS", "2026-11-09", "2026-11-15", "dee")))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if got := f.TimetableCalls(); got != 0 {
+		t.Errorf("upstream calls = %d, want 0 (warm day cache)", got)
+	}
+	periods := cachedPeriods(t, rec)
+	if len(periods) != 1 {
+		t.Fatalf("periods = %d, want 1", len(periods))
+	}
+	caps := periodCaps(t, rec)
+	if hasCap(caps, "WRITE_LESSONTOPIC") {
+		t.Errorf("boosted non-editor kept a write capability: %v", caps)
+	}
+	if !hasCap(caps, readLessonTopicCap) {
+		t.Errorf("boosted user lost the lesson topic: %v", caps)
+	}
+}
+
+// TestBoostedClassTimetableMissFillsSharedCache: a cold boosted request still
+// pays for one teacher fetch, but it must land in the cache so the next request
+// (boosted or not) is free.
+func TestBoostedClassTimetableMissFillsSharedCache(t *testing.T) {
+	f := &fakeUpstream{}
+	f.setTimetableBody(cacheTestTimetable)
+	p, st := newFakeProxyUpstream(t, f)
+	seedRawMasterData(t, p)
+	seedTeacherSource(t, st, "mrTeacher", 5009)
+	seedSessionUser(t, st, "dee", 5, 7, 5000)
+	if err := st.SetBoostedFlag("dee", true); err != nil {
+		t.Fatalf("boost dee: %v", err)
+	}
+
+	first := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+		ttParam(5000, "CLASS", "2026-11-09", "2026-11-15", "dee")))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d, body %s", first.Code, first.Body.String())
+	}
+	if got := f.TimetableCalls(); got != 1 {
+		t.Fatalf("first upstream calls = %d, want 1", got)
+	}
+	second := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+		ttParam(5000, "CLASS", "2026-11-09", "2026-11-15", "dee")))
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, body %s", second.Code, second.Body.String())
+	}
+	if got := f.TimetableCalls(); got != 1 {
+		t.Errorf("upstream calls after second request = %d, want 1 (cache hit)", got)
+	}
+	if _, ok := p.tt.Get(classTimetableCacheKey("testschool", 5000, "2026-11-09", "2026-11-15")); !ok {
+		t.Error("boosted class fetch did not fill the shared class cache")
+	}
+}
+
+// TestBoostedStudentTimetableServedFromWarmCache: a boosted student's personal
+// timetable can be answered from the poller-warmed day cache. The cached data is
+// viewer-neutral; capabilities are replaced per viewer.
+func TestBoostedStudentTimetableServedFromWarmCache(t *testing.T) {
+	f := &fakeUpstream{}
+	f.setTimetableBody(cacheTestTimetable)
+	p, st := newFakeProxyUpstream(t, f)
+	seedRawMasterData(t, p)
+	seedTeacherSource(t, st, "mrTeacher", 5009)
+	seedSessionUser(t, st, "dee", 5, 7, 5000)
+	if err := st.SetBoostedFlag("dee", true); err != nil {
+		t.Fatalf("boost dee: %v", err)
+	}
+	// What the warmer leaves behind: the whole week, so the app's Monday..Saturday
+	// range is covered too.
+	p.rememberStudentPeriods("testschool", 7, "2026-11-09", "2026-11-15", []map[string]any{
+		{"id": float64(1), "startDateTime": "2026-11-09T08:00:00Z", "endDateTime": "2026-11-09T08:45:00Z",
+			"text": map[string]any{"lesson": "Mathe"},
+			"can":  []any{"READ_LESSONTOPIC", "WRITE_LESSONTOPIC"}},
+	})
+
+	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+		ttParam(7, "STUDENT", "2026-11-09", "2026-11-14", "dee")))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if got := f.TimetableCalls(); got != 0 {
+		t.Errorf("upstream calls = %d, want 0 (warm personal day cache)", got)
+	}
+	periods := cachedPeriods(t, rec)
+	if len(periods) != 1 {
+		t.Fatalf("periods = %d, want 1", len(periods))
+	}
+	caps := periodCaps(t, rec)
+	if hasCap(caps, "WRITE_LESSONTOPIC") {
+		t.Errorf("boosted non-editor kept a write capability: %v", caps)
+	}
+	if !hasCap(caps, readLessonTopicCap) {
+		t.Errorf("boosted user lost the lesson topic: %v", caps)
+	}
+}
+
+// TestBoostedStudentTimetableMissFillsSharedCache: a cold personal request pays
+// for one teacher fetch, then both the exact range and any range covered by the
+// fetched days are answered locally.
+func TestBoostedStudentTimetableMissFillsSharedCache(t *testing.T) {
+	f := &fakeUpstream{}
+	f.setTimetableBody(cacheTestTimetable)
+	p, st := newFakeProxyUpstream(t, f)
+	seedRawMasterData(t, p)
+	seedTeacherSource(t, st, "mrTeacher", 5009)
+	seedSessionUser(t, st, "dee", 5, 7, 5000)
+	if err := st.SetBoostedFlag("dee", true); err != nil {
+		t.Fatalf("boost dee: %v", err)
+	}
+
+	first := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+		ttParam(7, "STUDENT", "2026-11-09", "2026-11-15", "dee")))
+	if first.Code != http.StatusOK {
+		t.Fatalf("first status = %d, body %s", first.Code, first.Body.String())
+	}
+	if got := f.TimetableCalls(); got != 1 {
+		t.Fatalf("first upstream calls = %d, want 1", got)
+	}
+	if _, ok := p.tt.Get(studentTimetableCacheKey("testschool", 7, "2026-11-09", "2026-11-15")); !ok {
+		t.Error("boosted student fetch did not fill the shared response cache")
+	}
+
+	second := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+		ttParam(7, "STUDENT", "2026-11-09", "2026-11-15", "dee")))
+	if second.Code != http.StatusOK {
+		t.Fatalf("second status = %d, body %s", second.Code, second.Body.String())
+	}
+	if got := f.TimetableCalls(); got != 1 {
+		t.Errorf("upstream calls after exact repeat = %d, want 1", got)
+	}
+
+	covered := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+		ttParam(7, "STUDENT", "2026-11-10", "2026-11-12", "dee")))
+	if covered.Code != http.StatusOK {
+		t.Fatalf("covered status = %d, body %s", covered.Code, covered.Body.String())
+	}
+	if got := f.TimetableCalls(); got != 1 {
+		t.Errorf("upstream calls after covered range = %d, want 1 (day cache)", got)
+	}
+}
+
+// TestWarmBoostedStudentsFetchesAppWeeksOnce: the warmer pre-fetches the five
+// weeks the app opens with, and skips every range that is already warm.
+func TestWarmBoostedStudentsFetchesAppWeeksOnce(t *testing.T) {
+	f := &fakeUpstream{}
+	f.setTimetableBody(cacheTestTimetable)
+	p, st := newFakeProxyUpstream(t, f)
+	seedRawMasterData(t, p)
+	seedTeacherSource(t, st, "mrTeacher", 5009)
+	seedSessionUser(t, st, "dee", 5, 7, 5000)
+	if err := st.SetBoostedFlag("dee", true); err != nil {
+		t.Fatalf("boost dee: %v", err)
+	}
+
+	if got := len(studentWarmRanges(time.Now())); got != 5 {
+		t.Fatalf("warm ranges = %d, want 5", got)
+	}
+	p.warmBoostedStudents("testschool")
+	if got := f.TimetableCalls(); got != 5 {
+		t.Fatalf("first warm upstream calls = %d, want 5", got)
+	}
+	p.warmBoostedStudents("testschool")
+	if got := f.TimetableCalls(); got != 5 {
+		t.Errorf("second warm upstream calls = %d, want 5 (all ranges warm)", got)
+	}
+}

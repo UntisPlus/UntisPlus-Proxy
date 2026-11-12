@@ -145,7 +145,7 @@ func BenchmarkApplyClassSnapshot(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ver++
-		if _, err := st.ApplyClassSnapshotWindow("testschool", 42, rows, ver, "2026-11-10", "2026-11-14", nil); err != nil {
+		if _, err := st.ApplyClassSnapshotWindow("testschool", 42, rows, ver, "2026-11-10", "2026-11-10", "2026-11-14", nil); err != nil {
 			b.Fatal(err)
 		}
 	}

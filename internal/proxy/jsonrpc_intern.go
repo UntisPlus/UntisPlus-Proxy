@@ -891,12 +891,63 @@ func (p *Proxy) serveRawFromBoostedSource(w http.ResponseWriter, r *http.Request
 	if owner == nil {
 		return false
 	}
-	newBody, err := p.rewriteAuthForOwner(school, body, owner)
-	if err != nil {
-		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
-		return true
+	// Class and personal timetables are viewer-neutral in this proxy: the
+	// periods and master data come from the shared teacher source, and every
+	// viewer-specific field (capabilities, events, the synthetic Technik class)
+	// is applied after the body leaves the cache. So both can be answered from
+	// the poller-warmed caches instead of paying for a teacher fetch on every
+	// request. A miss below fills those same caches.
+	switch pr.Type {
+	case "CLASS":
+		if b, ok := p.cachedClassBody(school, pr.ID, pr.StartDate, pr.EndDate); ok {
+			p.writeBoostedClassTimetable(w, school, requesterName, id, b, requester, pr)
+			return true
+		}
+	case "STUDENT":
+		if b, ok := p.cachedStudentBody(school, pr.ID, pr.StartDate, pr.EndDate); ok {
+			p.writeBoostedStudentTimetable(w, school, requesterName, id, b, requester, pr)
+			return true
+		}
 	}
-	b, status, _, err := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", newBody)
+	var b []byte
+	var status int
+	var err error
+	switch pr.Type {
+	case "CLASS":
+		var newBody []byte
+		newBody, err = p.rewriteAuthForOwner(school, body, owner)
+		if err != nil {
+			p.writeJSONRPCError(w, id, "no right for timetable", -8509)
+			return true
+		}
+		// The boosted source is shared by every boosted user, so the in-flight
+		// fetch is safe to share too. A miss fills the same cache the pool path
+		// and the poller use.
+		key := classTimetableCacheKey(school, pr.ID, pr.StartDate, pr.EndDate)
+		b, status, err = p.fetchClassBody(key, key, func() ([]byte, int, error) {
+			bb, st, _, e := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", newBody)
+			return bb, st, e
+		})
+		if err == nil && !p.hasRawMasterData(school) {
+			// Same rule as writeClassTimetable: keep the upstream masterData block
+			// so a later cache hit can substitute the requester's own copy.
+			p.cacheRawMasterData(school, b)
+		}
+	case "STUDENT":
+		// A personal timetable is keyed by person, not by class: two students in
+		// one class have different schedules. The fetch builds a canonical body
+		// instead of replaying the client's, so the cached bytes never depend on
+		// which app version made the first request.
+		b, status, err = p.fetchBoostedStudent(school, owner, pr.ID, pr.StartDate, pr.EndDate)
+	default:
+		var newBody []byte
+		newBody, err = p.rewriteAuthForOwner(school, body, owner)
+		if err != nil {
+			p.writeJSONRPCError(w, id, "no right for timetable", -8509)
+			return true
+		}
+		b, status, _, err = p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", newBody)
+	}
 	if err != nil {
 		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 		return true
@@ -931,6 +982,82 @@ func (p *Proxy) serveRawFromBoostedSource(w http.ResponseWriter, r *http.Request
 	w.WriteHeader(status)
 	_, _ = w.Write(b)
 	return true
+}
+
+// writeBoostedClassTimetable serves a class body from the shared class cache to a
+// boosted viewer. It mirrors the decoration of the uncached boosted path: the
+// cache carries no usable masterData for this viewer, events only ride along on
+// the viewer's own timetable, and the synthetic Technik class is always present.
+func (p *Proxy) writeBoostedClassTimetable(w http.ResponseWriter, school, viewer string, id json.RawMessage, raw []byte, requester *store.User, pr timetableParams) {
+	b := p.withRequesterMasterData(school, viewer, raw)
+	b = patchJSONRPCID(b, idVal(id))
+	if p.ownsTimetable(requester, pr) {
+		b = p.decorateStudentEvents(b, school, viewer, pr.StartDate, pr.EndDate)
+	}
+	b = p.viewerBody(viewer, b)
+	b = p.injectTechnikClass(viewer, b)
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(b)
+}
+
+// writeBoostedStudentTimetable serves a personal timetable from the shared
+// caches to a boosted viewer. The cached body carries the fetching account's
+// master data and capabilities, so both are replaced for this viewer; events
+// ride along only when the request is for the viewer's own timetable.
+func (p *Proxy) writeBoostedStudentTimetable(w http.ResponseWriter, school, viewer string, id json.RawMessage, raw []byte, requester *store.User, pr timetableParams) {
+	b := p.withRequesterMasterData(school, viewer, raw)
+	b = patchJSONRPCID(b, idVal(id))
+	if p.ownsTimetable(requester, pr) {
+		b = p.decorateStudentEvents(b, school, viewer, pr.StartDate, pr.EndDate)
+	}
+	b = p.viewerBody(viewer, b)
+	b = p.injectTechnikClass(viewer, b)
+	w.Header().Set("Content-Type", "application/json")
+	_, _ = w.Write(b)
+}
+
+// boostedStudentRequestBody builds the canonical getTimetable2017 body for a
+// personal timetable. Only the fields that identify the request are sent: the
+// client's timestamps would make otherwise identical requests produce
+// different cache entries, and the auth block is injected by the caller.
+func boostedStudentRequestBody(personID int64, start, end string) []byte {
+	b, _ := json.Marshal(map[string]any{
+		"id":      "untis-proxy",
+		"jsonrpc": "2.0",
+		"method":  "getTimetable2017",
+		"params": []any{map[string]any{
+			"id":        personID,
+			"type":      "STUDENT",
+			"startDate": start,
+			"endDate":   end,
+		}},
+	})
+	return b
+}
+
+// fetchBoostedStudent fetches one personal timetable through the boosted source
+// account, collapsing concurrent identical requests into one upstream flight.
+// A successful answer fills the exact-body cache (inside fetchClassBody), the
+// raw master-data copy and the personal day cache, so the warmer and the first
+// app open share the same warm state.
+func (p *Proxy) fetchBoostedStudent(school string, owner *store.User, personID int64, start, end string) ([]byte, int, error) {
+	key := studentTimetableCacheKey(school, personID, start, end)
+	b, status, err := p.fetchClassBody(key, key, func() ([]byte, int, error) {
+		newBody, e := p.rewriteAuthForOwner(school, boostedStudentRequestBody(personID, start, end), owner)
+		if e != nil {
+			return nil, 0, e
+		}
+		bb, st, _, e := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", newBody)
+		return bb, st, e
+	})
+	if err != nil || status != http.StatusOK || len(b) == 0 || jsonrpcError(b) != "" {
+		return b, status, err
+	}
+	if !p.hasRawMasterData(school) {
+		p.cacheRawMasterData(school, b)
+	}
+	p.rememberStudentPeriods(school, personID, start, end, periodsFromBody(b))
+	return b, status, nil
 }
 
 // ownsTimetable reports whether a timetable request is for the requester's own

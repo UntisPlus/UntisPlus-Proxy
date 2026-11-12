@@ -233,6 +233,84 @@ func classTimetableCacheKey(school string, classID int64, start, end string) str
 	return fmt.Sprintf("2017|%s|%d|%s|%s", school, classID, start, end)
 }
 
+// studentTimetableCacheKey mirrors classTimetableCacheKey for a personal
+// timetable. The id is the person, not the class: two students in the same
+// class have different personal schedules. The "student" segment keeps the key
+// space disjoint from class keys even when ids happen to overlap.
+func studentTimetableCacheKey(school string, personID int64, start, end string) string {
+	return fmt.Sprintf("2017|student|%s|%d|%s|%s", school, personID, start, end)
+}
+
+// studentBodyFromDays builds the JSON-RPC envelope around the personal day
+// cache. Like classBodyFromDays it omits master data, which is substituted per
+// viewer on the way out.
+func (p *Proxy) studentBodyFromDays(school string, personID int64, start, end string) ([]byte, bool) {
+	if !p.hasRawMasterData(school) {
+		return nil, false
+	}
+	oldest := time.Now().Add(-p.opts.TTL)
+	periods, ok := p.studentDays.lookup(school, personID, start, end, oldest)
+	if !ok {
+		return nil, false
+	}
+	out := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      nil,
+		"result": map[string]any{
+			"timetable": map[string]any{
+				"displayableStartDate": start,
+				"displayableEndDate":   end,
+				"periods":              periods,
+			},
+		},
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return nil, false
+	}
+	return b, true
+}
+
+// cachedStudentBody checks the exact response cache first, then the personal
+// day cache. The same master-data gate as the class path applies: a cached body
+// may carry the fetching account's element flags, so it is only safe to serve
+// once the requester's own copy can be substituted.
+func (p *Proxy) cachedStudentBody(school string, personID int64, start, end string) ([]byte, bool) {
+	if !p.hasRawMasterData(school) {
+		return nil, false
+	}
+	if b, ok := p.tt.Get(studentTimetableCacheKey(school, personID, start, end)); ok {
+		return b, true
+	}
+	return p.studentBodyFromDays(school, personID, start, end)
+}
+
+// rememberStudentPeriods records a fetched personal window so a later request
+// for a covered range is answered locally. Only app-sized ranges are kept; a
+// long calendar export must not copy months of lessons into memory.
+func (p *Proxy) rememberStudentPeriods(school string, personID int64, start, end string, periods []map[string]any) {
+	if _, ok := dayWindowSpan(start, end); !ok {
+		return
+	}
+	p.studentDays.putWindow(school, personID, start, end, periods, time.Now())
+}
+
+// periodsFromBody decodes result.timetable.periods from a raw JSON-RPC
+// response, returning nil when the body is not a timetable answer.
+func periodsFromBody(raw []byte) []map[string]any {
+	var resp struct {
+		Result struct {
+			Timetable struct {
+				Periods []map[string]any `json:"periods"`
+			} `json:"timetable"`
+		} `json:"result"`
+	}
+	if json.Unmarshal(raw, &resp) != nil {
+		return nil
+	}
+	return resp.Result.Timetable.Periods
+}
+
 func (p *Proxy) hasRawMasterData(school string) bool {
 	p.mdRawMu.Lock()
 	defer p.mdRawMu.Unlock()

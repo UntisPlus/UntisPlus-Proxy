@@ -39,7 +39,7 @@ func TestSnapshotWindowSuppressesHorizonDiscovery(t *testing.T) {
 	day1 := []PeriodRow{{
 		PeriodID: 10, Kind: "ADDED", Start: "2026-09-05 08:00", End: "2026-09-05 08:45", Subject: "Math",
 	}}
-	changed, err := st.ApplyClassSnapshotWindow("s", 5000, day1, 1, "", "2026-09-05", enqueue)
+	changed, err := st.ApplyClassSnapshotWindow("s", 5000, day1, 1, "", "2026-09-05", "2026-09-05", enqueue)
 	if err != nil {
 		t.Fatalf("first window poll: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestSnapshotWindowSuppressesHorizonDiscovery(t *testing.T) {
 		{PeriodID: 10, Kind: "ADDED", Start: "2026-09-05 08:00", End: "2026-09-05 08:45", Subject: "Math"},
 		{PeriodID: 20, Kind: "ADDED", Start: "2026-09-06 08:00", End: "2026-09-06 08:45", Subject: "Bio"},
 	}
-	changed, err = st.ApplyClassSnapshotWindow("s", 5000, day2, 2, "", "2026-09-06", enqueue)
+	changed, err = st.ApplyClassSnapshotWindow("s", 5000, day2, 2, "", "2026-09-05", "2026-09-06", enqueue)
 	if err != nil {
 		t.Fatalf("horizon poll: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestSnapshotWindowSuppressesHorizonDiscovery(t *testing.T) {
 		{PeriodID: 10, Kind: "ADDED", Start: "2026-09-05 08:00", End: "2026-09-05 08:45", Subject: "Math"},
 		{PeriodID: 20, Kind: "ADDED", Start: "2026-09-06 08:00", End: "2026-09-06 08:45", Subject: "Bio", Room: "R112"},
 	}
-	changed, err = st.ApplyClassSnapshotWindow("s", 5000, day3, 2, "", "2026-09-07", enqueue)
+	changed, err = st.ApplyClassSnapshotWindow("s", 5000, day3, 2, "", "2026-09-05", "2026-09-07", enqueue)
 	if err != nil {
 		t.Fatalf("real change after horizon: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestSnapshotWindowOnInitiallyEmptyClass(t *testing.T) {
 	st := openWindowTest(t)
 	enqueue, calls := captureEnqueuer()
 
-	changed, err := st.ApplyClassSnapshotWindow("s", 5003, nil, 1, "", "2026-09-05", enqueue)
+	changed, err := st.ApplyClassSnapshotWindow("s", 5003, nil, 1, "", "2026-09-05", "2026-09-05", enqueue)
 	if err != nil {
 		t.Fatalf("empty first poll: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestSnapshotWindowOnInitiallyEmptyClass(t *testing.T) {
 	day2 := []PeriodRow{{
 		PeriodID: 50, Kind: "ADDED", Start: "2026-09-06 08:00", End: "2026-09-06 08:45", Subject: "Chem",
 	}}
-	changed, err = st.ApplyClassSnapshotWindow("s", 5003, day2, 1, "", "2026-09-06", enqueue)
+	changed, err = st.ApplyClassSnapshotWindow("s", 5003, day2, 1, "", "2026-09-05", "2026-09-06", enqueue)
 	if err != nil {
 		t.Fatalf("horizon poll: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestSnapshotWindowAnnouncesAdditionInsideObservedRange(t *testing.T) {
 	day1 := []PeriodRow{{
 		PeriodID: 10, Kind: "ADDED", Start: "2026-09-04 08:00", End: "2026-09-04 08:45", Subject: "Math",
 	}}
-	if _, err := st.ApplyClassSnapshotWindow("s", 5001, day1, 1, "", "2026-09-05", enqueue); err != nil {
+	if _, err := st.ApplyClassSnapshotWindow("s", 5001, day1, 1, "", "2026-09-04", "2026-09-05", enqueue); err != nil {
 		t.Fatalf("first poll: %v", err)
 	}
 
@@ -187,7 +187,7 @@ func TestSnapshotWindowAnnouncesAdditionInsideObservedRange(t *testing.T) {
 		{PeriodID: 10, Kind: "ADDED", Start: "2026-09-04 08:00", End: "2026-09-04 08:45", Subject: "Math"},
 		{PeriodID: 30, Kind: "ADDED", Start: "2026-09-05 10:00", End: "2026-09-05 10:45", Subject: "Physics"},
 	}
-	changed, err := st.ApplyClassSnapshotWindow("s", 5001, day2, 2, "", "2026-09-06", enqueue)
+	changed, err := st.ApplyClassSnapshotWindow("s", 5001, day2, 2, "", "2026-09-04", "2026-09-06", enqueue)
 	if err != nil {
 		t.Fatalf("addition poll: %v", err)
 	}
@@ -225,5 +225,129 @@ func TestSnapshotLegacyStillAnnouncesEveryUnseenPeriod(t *testing.T) {
 	}
 	if got := st.ObservedWindowEnd("s", 5002); got != "" {
 		t.Errorf("legacy call recorded observed_end %q, want empty", got)
+	}
+}
+
+// TestSnapshotWindowSuppressesEarlierHorizonDiscovery pins the mirror image of
+// the midnight case: when the app starts asking for the whole school week, the
+// window start moves backwards and lessons on the newly visible earlier days are
+// baseline data, not lessons added upstream.
+func TestSnapshotWindowSuppressesEarlierHorizonDiscovery(t *testing.T) {
+	st := openWindowTest(t)
+	enqueue, calls := captureEnqueuer()
+
+	// Sunday 2026-09-06 was not in the window yet; Monday was.
+	monday := []PeriodRow{
+		{PeriodID: 10, Kind: "ADDED", Start: "2026-09-07 08:00", End: "2026-09-07 08:45", Subject: "Math"},
+	}
+	changed, err := st.ApplyClassSnapshotWindow("s", 5004, monday, 1, "", "2026-09-07", "2026-09-13", enqueue)
+	if err != nil {
+		t.Fatalf("first window poll: %v", err)
+	}
+	if changed != 1 {
+		t.Fatalf("first window poll changed=%d, want 1 (fresh baseline is announced)", changed)
+	}
+
+	// The window widens to include Sunday. Its lessons have been there all
+	// along; they were simply outside the fetch range.
+	widened := []PeriodRow{
+		{PeriodID: 11, Kind: "ADDED", Start: "2026-09-06 18:00", End: "2026-09-06 18:45", Subject: "Sport"},
+		{PeriodID: 10, Kind: "ADDED", Start: "2026-09-07 08:00", End: "2026-09-07 08:45", Subject: "Math"},
+	}
+	changed, err = st.ApplyClassSnapshotWindow("s", 5004, widened, 2, "", "2026-09-06", "2026-09-13", enqueue)
+	if err != nil {
+		t.Fatalf("widened poll: %v", err)
+	}
+	if changed != 0 {
+		t.Fatalf("widened poll changed=%d, want 0 (newly visible earlier day is not a change)", changed)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("enqueue calls = %d, want 1 (widening must not notify)", len(*calls))
+	}
+	if v := st.ClassVersion("s", 5004); v != 1 {
+		t.Errorf("ClassVersion = %d, want 1 (widening must not bump)", v)
+	}
+	if got := st.ObservedWindowStart("s", 5004); got != "2026-09-06" {
+		t.Errorf("ObservedWindowStart = %q, want 2026-09-06 (stored even without a change)", got)
+	}
+
+	snap, err := st.LoadClassSnapshot("s", 5004)
+	if err != nil {
+		t.Fatalf("load snapshot: %v", err)
+	}
+	for _, r := range snap {
+		if r.PeriodID == 11 && (r.Kind != "UNCHANGED" || r.ModVer != 1) {
+			t.Errorf("widened lesson = %+v, want UNCHANGED at pre-change version 1", r)
+		}
+	}
+	if pending, _, _ := st.PendingChanges("s", 5004, 1); len(pending) != 0 {
+		t.Errorf("since=1 pending = %+v, want none (widening is baseline)", pending)
+	}
+
+	// Once Sunday is inside the observed window, a real addition there is
+	// announced normally.
+	realAdd := []PeriodRow{
+		{PeriodID: 11, Kind: "ADDED", Start: "2026-09-06 18:00", End: "2026-09-06 18:45", Subject: "Sport"},
+		{PeriodID: 12, Kind: "ADDED", Start: "2026-09-06 09:00", End: "2026-09-06 09:45", Subject: "Kunst"},
+		{PeriodID: 10, Kind: "ADDED", Start: "2026-09-07 08:00", End: "2026-09-07 08:45", Subject: "Math"},
+	}
+	changed, err = st.ApplyClassSnapshotWindow("s", 5004, realAdd, 2, "", "2026-09-06", "2026-09-13", enqueue)
+	if err != nil {
+		t.Fatalf("real addition: %v", err)
+	}
+	if changed != 1 {
+		t.Fatalf("real addition changed=%d, want 1", changed)
+	}
+	last := (*calls)[len(*calls)-1]
+	if len(last) != 1 || last[0].PeriodID != 12 || last[0].Kind != "ADDED" {
+		t.Errorf("announced rows = %+v, want one ADDED period 12", last)
+	}
+}
+
+// TestSnapshotWindowLegacyRowDoesNotBurstOnUpgrade covers a row written before
+// observed_start existed. Its near edge is unknown, so the first widened poll
+// must treat earlier days as baseline instead of announcing a whole week, and it
+// must persist the real start so normal detection resumes immediately after.
+func TestSnapshotWindowLegacyRowDoesNotBurstOnUpgrade(t *testing.T) {
+	st := openWindowTest(t)
+	enqueue, calls := captureEnqueuer()
+
+	monday := []PeriodRow{
+		{PeriodID: 10, Kind: "ADDED", Start: "2026-09-07 08:00", End: "2026-09-07 08:45", Subject: "Math"},
+	}
+	if _, err := st.ApplyClassSnapshotWindow("s", 5005, monday, 1, "", "2026-09-07", "2026-09-13", enqueue); err != nil {
+		t.Fatalf("first window poll: %v", err)
+	}
+	if _, err := st.db.Exec(`UPDATE timetable_versions SET observed_start='' WHERE school='s' AND class_id=5005`); err != nil {
+		t.Fatalf("simulate pre-upgrade row: %v", err)
+	}
+
+	widened := []PeriodRow{
+		{PeriodID: 11, Kind: "ADDED", Start: "2026-09-06 18:00", End: "2026-09-06 18:45", Subject: "Sport"},
+		{PeriodID: 10, Kind: "ADDED", Start: "2026-09-07 08:00", End: "2026-09-07 08:45", Subject: "Math"},
+	}
+	changed, err := st.ApplyClassSnapshotWindow("s", 5005, widened, 2, "2026-09-08", "2026-09-06", "2026-09-13", enqueue)
+	if err != nil {
+		t.Fatalf("widened legacy poll: %v", err)
+	}
+	if changed != 0 {
+		t.Fatalf("widened legacy poll changed=%d, want 0 (no upgrade burst)", changed)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("enqueue calls = %d, want 1", len(*calls))
+	}
+	if got := st.ObservedWindowStart("s", 5005); got != "2026-09-06" {
+		t.Errorf("ObservedWindowStart = %q, want the real window start 2026-09-06", got)
+	}
+
+	// Detection resumes on the next poll: the earlier day is now observed.
+	add := append([]PeriodRow(nil), widened...)
+	add = append(add, PeriodRow{PeriodID: 12, Kind: "ADDED", Start: "2026-09-06 09:00", End: "2026-09-06 09:45", Subject: "Kunst"})
+	changed, err = st.ApplyClassSnapshotWindow("s", 5005, add, 3, "2026-09-08", "2026-09-06", "2026-09-13", enqueue)
+	if err != nil {
+		t.Fatalf("poll after upgrade: %v", err)
+	}
+	if changed != 1 {
+		t.Fatalf("poll after upgrade changed=%d, want 1", changed)
 	}
 }

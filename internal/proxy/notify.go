@@ -480,7 +480,7 @@ func (p *Proxy) checkClassErr(school string, classID int64) (bool, error) {
 	// baseline every subscriber gets a burst of "new lesson" pushes at midnight
 	// (01:00/02:00 local when the process runs in UTC).
 	var queued []store.PeriodRow
-	changed, err := p.store.ApplyClassSnapshotWindow(school, classID, next, newVer, dropBefore, end,
+	changed, err := p.store.ApplyClassSnapshotWindow(school, classID, next, newVer, dropBefore, start, end,
 		func(rows []store.PeriodRow, put func(string, int64, []byte) error) error {
 			queued = rows
 			return p.enqueueChange(school, className, classID, newVer, rows, prevSnapshot, hooks, topics, targets, put)
@@ -974,40 +974,105 @@ func (p *Proxy) pollOnce(school string) {
 	if len(classes) < workers {
 		workers = len(classes)
 	}
-	if workers < 1 {
+	if workers > 0 {
+		jobs := make(chan int64)
+		var wg sync.WaitGroup
+		for i := 0; i < workers; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for classID := range jobs {
+					changed, ferr := p.checkClassErr(school, classID)
+					st.pollMu.Lock()
+					st.pollRuns++
+					st.lastPoll = time.Now()
+					if changed {
+						st.pollChanges++
+					}
+					if ferr == nil {
+						// Only a poll that actually read the timetable counts as a
+						// healthy one; checkClassErr swallows the upstream error and
+						// reports "no change", which must not be mistaken for a fresh
+						// timetable.
+						st.lastPollOK = st.lastPoll
+					} else {
+						st.pollFails++
+					}
+					st.pollMu.Unlock()
+				}
+			}()
+		}
+		for _, c := range classes {
+			jobs <- c.ID
+		}
+		close(jobs)
+		wg.Wait()
+	}
+	p.warmBoostedStudents(school)
+}
+
+// studentWarmRanges returns the school weeks the app preloads when it opens: the
+// previous week through three weeks ahead, Monday..Sunday. A request for the
+// Monday..Saturday subset the client actually sends is then covered by the same
+// day cache.
+func studentWarmRanges(now time.Time) [][2]string {
+	d := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	wd := int(d.Weekday())
+	if wd == 0 {
+		wd = 7
+	}
+	monday := d.AddDate(0, 0, -(wd - 1))
+	out := make([][2]string, 0, 5)
+	for off := -1; off <= 3; off++ {
+		s := monday.AddDate(0, 0, off*7)
+		e := s.AddDate(0, 0, 6)
+		out = append(out, [2]string{s.Format("2006-01-02"), e.Format("2006-01-02")})
+	}
+	return out
+}
+
+// warmBoostedStudents pre-fetches the personal timetables a boosted student's
+// app opens with. Boosted requests bypass the pool, so without this every first
+// open of the day paid for five upstream student fetches. Cache hits are
+// skipped, which naturally paces the refreshes to the timetable TTL instead of
+// the poll interval.
+func (p *Proxy) warmBoostedStudents(school string) {
+	owner := p.boostedSource(school)
+	if owner == nil {
 		return
 	}
-	jobs := make(chan int64)
+	users, err := p.store.ListUsers()
+	if err != nil {
+		return
+	}
+	ranges := studentWarmRanges(time.Now())
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for classID := range jobs {
-				changed, ferr := p.checkClassErr(school, classID)
-				st.pollMu.Lock()
-				st.pollRuns++
-				st.lastPoll = time.Now()
-				if changed {
-					st.pollChanges++
-				}
-				if ferr == nil {
-					// Only a poll that actually read the timetable counts as a
-					// healthy one; checkClassErr swallows the upstream error and
-					// reports "no change", which must not be mistaken for a fresh
-					// timetable.
-					st.lastPollOK = st.lastPoll
-				} else {
-					st.pollFails++
-				}
-				st.pollMu.Unlock()
+	sem := make(chan struct{}, pollWorkers)
+	for _, u := range users {
+		if u.PersonType != 5 || u.PersonID <= 0 {
+			continue
+		}
+		if u.School != "" && u.School != school {
+			continue
+		}
+		if !p.isBoosted(u.Username) {
+			continue
+		}
+		for _, r := range ranges {
+			if _, ok := p.cachedStudentBody(school, u.PersonID, r[0], r[1]); ok {
+				continue
 			}
-		}()
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(personID int64, start, end string) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				if _, _, err := p.fetchBoostedStudent(school, owner, personID, start, end); err != nil {
+					log.Printf("[notify] warm student %d %s..%s: %v", personID, start, end, err)
+				}
+			}(u.PersonID, r[0], r[1])
+		}
 	}
-	for _, c := range classes {
-		jobs <- c.ID
-	}
-	close(jobs)
 	wg.Wait()
 }
 
