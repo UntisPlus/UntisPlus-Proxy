@@ -444,11 +444,13 @@ func (p *Proxy) markPooledElementsDisplayableInner(school string, body []byte, u
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body
 	}
+	// One pool read instead of a PoolContains query per class. The login path
+	// and every cached timetable hit go through this rewrite, and with a few
+	// hundred classes the per-class queries dominated both.
 	pooled := map[int64]bool{}
-	for _, k := range resp.Result.MasterData.Klassen {
-		ok, err := p.store.PoolContains(school, k.ID)
-		if err == nil && ok {
-			pooled[k.ID] = true
+	if classes, err := p.store.Pool(school); err == nil {
+		for _, c := range classes {
+			pooled[c.ID] = true
 		}
 	}
 	if len(pooled) == 0 {
