@@ -258,10 +258,6 @@ func (p *Proxy) decorateStudentEvents(raw []byte, school, username, from, to str
 	if school == "" || username == "" {
 		return raw
 	}
-	// The zone comes from the response's own periods. A school is not on a single
-	// offset across the year, so it is read from the data being served rather than
-	// assumed; a DST boundary inside the range is handled by the zone database.
-	loc := responseLocation(raw)
 	// The range the caller asked for is preferred, but a request without usable
 	// dates still deserves the events for the span it actually returned.
 	if !validDate(from) || !validDate(to) {
@@ -275,7 +271,23 @@ func (p *Proxy) decorateStudentEvents(raw []byte, school, username, from, to str
 	if to < from {
 		return raw
 	}
-	periods := p.studentEventPeriods(school, username, from, to, loc)
+	// Ask for the events before decoding the response. Most timetables have none,
+	// and responseLocation parses the whole body; doing that first made every
+	// warm request pay for a JSON pass just to discover there was nothing to add.
+	events, err := p.store.StudentEventsForRange(school, username, from, to)
+	if err != nil {
+		enrichmentFailed("student events "+username, err)
+		return raw
+	}
+	if len(events) == 0 {
+		return raw
+	}
+	// The zone comes from the response's own periods. A school is not on a single
+	// offset across the year, so it is read from the data being served rather than
+	// assumed; a DST boundary inside the range is handled by the zone database.
+	loc := responseLocation(raw)
+	periods := customEventPeriods(events, loc)
+	p.labelAppointmentRoster(school, from, to, periods)
 	if len(periods) == 0 {
 		return raw
 	}

@@ -459,10 +459,6 @@ func (p *Proxy) markPooledElementsDisplayableInner(school string, body []byte, u
 	result, _ := m["result"].(map[string]any)
 	md, _ := result["masterData"].(map[string]any)
 
-	// Persist element names so `untisctl calendar create --teacher|--room|--subject`
-	// can fuzzy-lookup by name; the masterData on every login carries the full set.
-	p.persistElementNames(school, md)
-
 	setDisplayable := func(listKey string, want func(id int64) bool, flag string) {
 		items, _ := md[listKey].([]any)
 		for _, item := range items {
@@ -991,13 +987,7 @@ func (p *Proxy) serveRawFromBoostedSource(w http.ResponseWriter, r *http.Request
 // cache carries no usable masterData for this viewer, events only ride along on
 // the viewer's own timetable, and the synthetic Technik class is always present.
 func (p *Proxy) writeBoostedClassTimetable(w http.ResponseWriter, school, viewer string, id json.RawMessage, raw []byte, requester *store.User, pr timetableParams) {
-	b := p.withRequesterMasterData(school, viewer, raw)
-	b = patchJSONRPCID(b, idVal(id))
-	if p.ownsTimetable(requester, pr) {
-		b = p.decorateStudentEvents(b, school, viewer, pr.StartDate, pr.EndDate)
-	}
-	b = p.viewerBody(viewer, b)
-	b = p.injectTechnikClass(viewer, b)
+	b := p.renderCachedTimetable(school, viewer, idVal(id), raw, p.ownsTimetable(requester, pr), pr.StartDate, pr.EndDate)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(b)
 }
@@ -1007,13 +997,7 @@ func (p *Proxy) writeBoostedClassTimetable(w http.ResponseWriter, school, viewer
 // master data and capabilities, so both are replaced for this viewer; events
 // ride along only when the request is for the viewer's own timetable.
 func (p *Proxy) writeBoostedStudentTimetable(w http.ResponseWriter, school, viewer string, id json.RawMessage, raw []byte, requester *store.User, pr timetableParams) {
-	b := p.withRequesterMasterData(school, viewer, raw)
-	b = patchJSONRPCID(b, idVal(id))
-	if p.ownsTimetable(requester, pr) {
-		b = p.decorateStudentEvents(b, school, viewer, pr.StartDate, pr.EndDate)
-	}
-	b = p.viewerBody(viewer, b)
-	b = p.injectTechnikClass(viewer, b)
+	b := p.renderCachedTimetable(school, viewer, idVal(id), raw, p.ownsTimetable(requester, pr), pr.StartDate, pr.EndDate)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(b)
 }
@@ -1210,6 +1194,14 @@ func (p *Proxy) cacheRawMasterData(school string, body []byte) {
 			}
 			p.mdRaw[school] = append([]byte(nil), body...)
 			p.mdRawMu.Unlock()
+			// A fresh copy invalidates every viewer's derived masterData.
+			p.dropViewerMasterData(school)
+			// Persist element names so `untisctl calendar create
+			// --teacher|--room|--subject` can fuzzy-lookup by name. This used to
+			// run inside the per-request rewrite, which meant hundreds of rows
+			// rewritten on every timetable response; a fresh masterData copy is
+			// the only time the names can actually change.
+			p.persistElementNames(school, md)
 			// A login has just delivered a fresh copy. Use it immediately so the
 			// first timetable response does not wait for a refresh, and persist it
 			// for the next restart.
@@ -1260,6 +1252,221 @@ func (p *Proxy) rewrittenMasterData(school, username string) map[string]any {
 	}
 	md["timeStamp"] = time.Now().UnixMilli()
 	return md
+}
+
+// maxViewerMasterDataEntries bounds the per-viewer masterData cache. A working
+// set is one entry per signed-in user; the cap only matters after many
+// permission/pool variants accumulated in a long-running process.
+const maxViewerMasterDataEntries = 128
+
+// dropViewerMasterData forgets every rewritten masterData for a school. It is
+// called when a fresh raw copy arrives: the display flags and names derived
+// from the old copy are no longer authoritative.
+func (p *Proxy) dropViewerMasterData(school string) {
+	prefix := school + "\x00"
+	p.mdViewMu.Lock()
+	for k := range p.mdView {
+		if strings.HasPrefix(k, prefix) {
+			delete(p.mdView, k)
+		}
+	}
+	p.mdViewMu.Unlock()
+}
+
+// viewerMasterDataBytes returns the viewer's masterData object as JSON,
+// caching the expensive rewrite across requests. Every input that can change
+// the result is part of the key: the user, their permissions, and the pooled
+// class set. Recon users are not cached because their visible element set grows
+// while the background scan advances; boosted users bypass recon entirely.
+func (p *Proxy) viewerMasterDataBytes(school, username string) []byte {
+	if school == "" || username == "" {
+		return nil
+	}
+	boosted := p.isBoosted(username)
+	isStudent := false
+	if u, _ := p.store.GetUser(username); u != nil {
+		isStudent = u.PersonType == 5
+	}
+	if isStudent && !boosted {
+		if recon, _ := p.store.ReconAccess(username, "TEACHER"); recon {
+			return marshalViewerMasterData(p.rewrittenMasterData(school, username))
+		}
+	}
+	var key strings.Builder
+	key.WriteString(school)
+	key.WriteByte(0)
+	key.WriteString(username)
+	key.WriteByte(0)
+	if boosted {
+		key.WriteByte('b')
+	}
+	if p.isEditor(username) {
+		key.WriteByte('e')
+	}
+	if p.hasTechniker(username) {
+		key.WriteByte('t')
+	}
+	if isStudent {
+		key.WriteByte('s')
+	}
+	key.WriteByte(0)
+	if classes, err := p.store.Pool(school); err == nil {
+		for _, c := range classes {
+			key.WriteString(strconv.FormatInt(c.ID, 10))
+			key.WriteByte(',')
+		}
+	}
+	k := key.String()
+	p.mdViewMu.Lock()
+	if b, ok := p.mdView[k]; ok {
+		p.mdViewMu.Unlock()
+		return b
+	}
+	p.mdViewMu.Unlock()
+	b := marshalViewerMasterData(p.rewrittenMasterData(school, username))
+	if b == nil {
+		return nil
+	}
+	p.mdViewMu.Lock()
+	if len(p.mdView) >= maxViewerMasterDataEntries {
+		p.mdView = map[string][]byte{}
+	}
+	p.mdView[k] = b
+	p.mdViewMu.Unlock()
+	return b
+}
+
+func marshalViewerMasterData(md map[string]any) []byte {
+	if md == nil {
+		return nil
+	}
+	b, err := json.Marshal(md)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+// refreshMasterTimestamp advances the timeStamp inside a cached masterData
+// object without decoding it. Bumping the stamp is what tells a client that
+// already holds a copy to re-read the element lists, so every response must
+// carry a current one.
+func refreshMasterTimestamp(md []byte) []byte {
+	const marker = `"timeStamp":`
+	i := bytes.Index(md, []byte(marker))
+	if i < 0 {
+		return md
+	}
+	j := i + len(marker)
+	k := j
+	if k < len(md) && md[k] == '-' {
+		k++
+	}
+	for k < len(md) && md[k] >= '0' && md[k] <= '9' {
+		k++
+	}
+	if k == j {
+		return md
+	}
+	out := make([]byte, 0, len(md)+16)
+	out = append(out, md[:j]...)
+	out = strconv.AppendInt(out, time.Now().UnixMilli(), 10)
+	out = append(out, md[k:]...)
+	return out
+}
+
+// applyViewerCaps rewrites the capability list of every period in a timetable
+// object. The editor flag is resolved once for the whole response instead of
+// once per lesson. A timetable with no periods is reported as unchanged so the
+// caller keeps the original bytes.
+func (p *Proxy) applyViewerCaps(username string, ttRaw []byte) ([]byte, bool) {
+	var tt map[string]json.RawMessage
+	if json.Unmarshal(ttRaw, &tt) != nil {
+		return nil, false
+	}
+	periodsRaw, ok := tt["periods"]
+	if !ok {
+		return nil, false
+	}
+	var periods []map[string]any
+	if json.Unmarshal(periodsRaw, &periods) != nil || len(periods) == 0 {
+		return nil, false
+	}
+	canEdit := p.isEditor(username)
+	var techniker *bool
+	for _, pd := range periods {
+		can, _ := pd["can"].([]any)
+		can = viewerCapsWith(canEdit, can)
+		if isSyntheticEventPeriod(pd) {
+			if techniker == nil {
+				t := p.hasTechniker(username)
+				techniker = &t
+			}
+			if *techniker {
+				can = withAbsenceCaps(can)
+			}
+		}
+		pd["can"] = can
+	}
+	pb, err := json.Marshal(periods)
+	if err != nil {
+		return nil, false
+	}
+	tt["periods"] = pb
+	out, err := json.Marshal(tt)
+	if err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+// renderCachedTimetable applies every viewer-specific part of a cached body in
+// one pass: the requester's masterData, the request id, per-viewer
+// capabilities, and — for the viewer's own timetable — personal events.
+//
+// The masterData is spliced in as raw JSON, so the 300 KB element catalogue is
+// never decoded. The old path decoded and re-encoded the whole response once
+// for the masterData swap, once for the id, and once for the capabilities,
+// which dominated a warm request.
+func (p *Proxy) renderCachedTimetable(school, viewer string, id any, raw []byte, own bool, from, to string) []byte {
+	var env map[string]json.RawMessage
+	if json.Unmarshal(raw, &env) != nil {
+		return raw
+	}
+	resultRaw, ok := env["result"]
+	if !ok {
+		return raw
+	}
+	var result map[string]json.RawMessage
+	if json.Unmarshal(resultRaw, &result) != nil {
+		return raw
+	}
+	if md := p.viewerMasterDataBytes(school, viewer); len(md) > 0 {
+		result["masterData"] = refreshMasterTimestamp(md)
+	}
+	if ttRaw, ok := result["timetable"]; ok {
+		if b, ok := p.applyViewerCaps(viewer, ttRaw); ok {
+			result["timetable"] = b
+		}
+	}
+	if id != nil {
+		if b, err := json.Marshal(id); err == nil {
+			env["id"] = b
+		}
+	}
+	res, err := json.Marshal(result)
+	if err != nil {
+		return raw
+	}
+	env["result"] = res
+	out, err := json.Marshal(env)
+	if err != nil {
+		return raw
+	}
+	if own {
+		out = p.decorateStudentEvents(out, school, viewer, from, to)
+	}
+	return out
 }
 
 // rewriteAuthForOwner replaces the auth block in a getTimetable2017 request with

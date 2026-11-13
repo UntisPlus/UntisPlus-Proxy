@@ -68,6 +68,13 @@ type Proxy struct {
 	mdRawMu sync.Mutex
 	mdRaw   map[string][]byte
 
+	// mdView caches the already-rewritten masterData object per viewer. The key
+	// carries the permissions and the pooled class set, so a grant, revocation
+	// or pool change simply misses instead of serving stale flags. Entries are
+	// dropped when a fresh raw masterData arrives.
+	mdViewMu sync.Mutex
+	mdView   map[string][]byte
+
 	hub *notifyHub
 
 	// schools holds per-school live state (klasses, recon, master data).
@@ -163,6 +170,7 @@ func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *
 		classDays:   newClassDayCache(),
 		studentDays: newClassDayCache(),
 		secrets:     map[string]string{},
+		mdView:      map[string][]byte{},
 		hub:         newNotifyHub(),
 		schools:     map[string]*schoolState{},
 		absenceDiag: &absenceDiagnostics{},

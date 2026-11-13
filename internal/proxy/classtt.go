@@ -430,15 +430,16 @@ func (p *Proxy) writeClassTimetable(w http.ResponseWriter, school, viewer string
 	}
 	if fromCache {
 		// A cached body always needs the requester's own master data and id.
-		b = p.withRequesterMasterData(school, viewer, b)
-		b = patchJSONRPCID(b, idVal(id))
+		b = p.renderCachedTimetable(school, viewer, idVal(id), b, ownClass, pr.StartDate, pr.EndDate)
 	} else if !ownClass {
 		// The pool path already did this before caching; keep the uncached
 		// path byte-compatible with upstream for clients/tests that compare.
-		b = p.withRequesterMasterData(school, viewer, b)
-	}
-	b = p.viewerBody(viewer, b)
-	if ownClass {
+		b = p.renderCachedTimetable(school, viewer, nil, b, false, pr.StartDate, pr.EndDate)
+	} else {
+		// An own-class body fetched through the viewer's own account already
+		// carries their masterData; only capabilities, events and the Technik
+		// class are added.
+		b = p.viewerBody(viewer, b)
 		b = p.decorateStudentEvents(b, school, viewer, pr.StartDate, pr.EndDate)
 		b = p.injectTechnikClass(viewer, b)
 	}

@@ -68,7 +68,13 @@ func withAbsenceCaps(can []any) []any {
 // the write-method gate would refuse the call anyway, so showing the editing UI
 // would just be a dead button.
 func (p *Proxy) viewerCaps(username string, can []any) []any {
-	canEdit := p.isEditor(username)
+	return viewerCapsWith(p.isEditor(username), can)
+}
+
+// viewerCapsWith is viewerCaps with the editor flag already resolved. The
+// per-period path resolves it once per response instead of once per period,
+// which used to mean one permission query per lesson.
+func viewerCapsWith(canEdit bool, can []any) []any {
 	out := make([]any, 0, len(can)+1)
 	seen := make(map[string]bool, len(can))
 	for _, c := range can {

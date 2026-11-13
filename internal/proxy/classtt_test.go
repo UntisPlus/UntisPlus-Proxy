@@ -454,3 +454,157 @@ func TestWarmBoostedStudentsFetchesAppWeeksOnce(t *testing.T) {
 		t.Errorf("second warm upstream calls = %d, want 5 (all ranges warm)", got)
 	}
 }
+
+// TestWarmTimetableKeepsElementNames: a warm response must not rewrite the
+// persisted element-name catalogue. That rewrite used to run inside the
+// per-request masterData decoration, so every cache hit paid for hundreds of
+// UPSERTs that could not possibly change anything between two logins.
+func TestWarmTimetableKeepsElementNames(t *testing.T) {
+	f := &fakeUpstream{}
+	f.setTimetableBody(cacheTestTimetable)
+	p, st := newFakeProxyUpstream(t, f)
+	seedRawMasterData(t, p)
+	seedSessionUser(t, st, "dee", 5, 7, 5000)
+
+	body := internBody("getTimetable2017", ttParam(5000, "CLASS", "2026-11-09", "2026-11-09", "dee"))
+	if rec := internReq(t, p, "getTimetable2017", "", body); rec.Code != http.StatusOK {
+		t.Fatalf("first status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	// The login is allowed to seed the catalogue; a later warm request is not.
+	if err := st.UpsertElementNames("testschool", "TEACHER", map[int64]string{42: "Sentinel"}); err != nil {
+		t.Fatalf("seed sentinel: %v", err)
+	}
+	if rec := internReq(t, p, "getTimetable2017", "", body); rec.Code != http.StatusOK {
+		t.Fatalf("warm status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	if got := st.ElementName("testschool", "TEACHER", 42); got != "Sentinel" {
+		t.Errorf("warm timetable rewrote element names: got %q, want Sentinel", got)
+	}
+}
+
+// TestViewerMasterDataCacheTracksPermissions: the cached per-viewer masterData
+// is keyed by the permissions that shape it, so granting a flag changes the
+// next response even though the raw catalogue did not change.
+func TestViewerMasterDataCacheTracksPermissions(t *testing.T) {
+	f := &fakeUpstream{}
+	p, st := newFakeProxyUpstream(t, f)
+	p.cacheRawMasterData("testschool", []byte(`{"jsonrpc":"2.0","id":"md","result":{"masterData":{
+		"teachers":[],"rooms":[],"subjects":[],
+		"klassen":[{"id":5000,"name":"5a"},{"id":6000,"name":"6b"}],
+		"absenceReasons":[]}}}`))
+	seedSessionUser(t, st, "dee", 5, 7, 5000)
+
+	displayable := func(b []byte) map[int64]bool {
+		t.Helper()
+		var md struct {
+			Klassen []struct {
+				ID          int64 `json:"id"`
+				Displayable bool  `json:"displayable"`
+			} `json:"klassen"`
+		}
+		if err := json.Unmarshal(b, &md); err != nil {
+			t.Fatalf("bad masterData: %v", err)
+		}
+		out := map[int64]bool{}
+		for _, k := range md.Klassen {
+			out[k.ID] = k.Displayable
+		}
+		return out
+	}
+
+	basic := displayable(p.viewerMasterDataBytes("testschool", "dee"))
+	if !basic[5000] || basic[6000] {
+		t.Errorf("basic viewer flags = %v, want only the pooled class 5000", basic)
+	}
+	if err := st.SetBoostedFlag("dee", true); err != nil {
+		t.Fatalf("boost: %v", err)
+	}
+	boosted := displayable(p.viewerMasterDataBytes("testschool", "dee"))
+	if !boosted[5000] || !boosted[6000] {
+		t.Errorf("boosted viewer flags = %v, want every class", boosted)
+	}
+}
+
+// TestViewerMasterDataCacheDropsOnFreshCopy: a new login carries a new
+// catalogue, so cached per-viewer copies derived from the old one must not be
+// served.
+func TestViewerMasterDataCacheDropsOnFreshCopy(t *testing.T) {
+	f := &fakeUpstream{}
+	p, st := newFakeProxyUpstream(t, f)
+	seedRawMasterData(t, p)
+	seedSessionUser(t, st, "dee", 5, 7, 5000)
+
+	before := string(p.viewerMasterDataBytes("testschool", "dee"))
+	p.cacheRawMasterData("testschool", []byte(`{"jsonrpc":"2.0","id":"md","result":{"masterData":{
+		"teachers":[{"id":42,"name":"Fresh"}],"rooms":[],"subjects":[],
+		"klassen":[{"id":5000,"name":"5a"}],"absenceReasons":[]}}}`))
+	after := string(p.viewerMasterDataBytes("testschool", "dee"))
+	if before == after {
+		t.Fatal("viewer masterData cache survived a fresh raw copy")
+	}
+	if !strings.Contains(after, `"Fresh"`) {
+		t.Errorf("viewer masterData did not pick up the fresh copy: %s", after)
+	}
+}
+
+// TestRenderCachedTimetableKeepsUnknownFields: the single-pass renderer may only
+// replace the fields it owns. Anything else the real server sent must survive
+// byte-for-byte in value.
+func TestRenderCachedTimetableKeepsUnknownFields(t *testing.T) {
+	f := &fakeUpstream{}
+	p, st := newFakeProxyUpstream(t, f)
+	seedRawMasterData(t, p)
+	seedSessionUser(t, st, "dee", 5, 7, 5000)
+
+	raw := []byte(`{"jsonrpc":"2.0","id":"old","result":{"keep":{"a":1},"timetable":{"periods":[
+		{"id":1,"can":["READ_HOMEWORK","WRITE_LESSONTOPIC"]}]},"masterData":{"klassen":[]}}}`)
+	out := p.renderCachedTimetable("testschool", "dee", "new", raw, false, "", "")
+	var doc struct {
+		ID     string `json:"id"`
+		Result struct {
+			Keep struct {
+				A int `json:"a"`
+			} `json:"keep"`
+			Timetable struct {
+				Periods []struct {
+					Can []string `json:"can"`
+				} `json:"periods"`
+			} `json:"timetable"`
+			MasterData struct {
+				Teachers []struct {
+					Name string `json:"name"`
+				} `json:"teachers"`
+			} `json:"masterData"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(out, &doc); err != nil {
+		t.Fatalf("bad render: %v (%s)", err, out)
+	}
+	if doc.ID != "new" {
+		t.Errorf("id = %q, want new", doc.ID)
+	}
+	if doc.Result.Keep.A != 1 {
+		t.Errorf("unknown result field was dropped: %+v", doc.Result.Keep)
+	}
+	if len(doc.Result.MasterData.Teachers) != 1 || doc.Result.MasterData.Teachers[0].Name != "Persisted" {
+		t.Errorf("masterData was not replaced with the viewer copy: %+v", doc.Result.MasterData)
+	}
+	if len(doc.Result.Timetable.Periods) != 1 {
+		t.Fatalf("periods = %d, want 1", len(doc.Result.Timetable.Periods))
+	}
+	caps := doc.Result.Timetable.Periods[0].Can
+	for _, c := range caps {
+		if c == "WRITE_LESSONTOPIC" {
+			t.Errorf("basic viewer kept a write capability: %v", caps)
+		}
+	}
+	found := false
+	for _, c := range caps {
+		if c == readLessonTopicCap {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("capabilities = %v, want %s", caps, readLessonTopicCap)
+	}
+}
