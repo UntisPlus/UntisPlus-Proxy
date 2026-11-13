@@ -214,6 +214,59 @@ func TestClassTimetableCacheKeyIsSchoolScoped(t *testing.T) {
 	}
 }
 
+// TestNextClassWeekIsTheWeekAfterTheCurrent: the app preloads the following
+// class week on open, so the warmer's range must be Monday..Sunday one week
+// after the poller's current school week.
+func TestNextClassWeekIsTheWeekAfterTheCurrent(t *testing.T) {
+	cases := []struct {
+		name      string
+		now       time.Time
+		wantStart string
+		wantEnd   string
+	}{
+		{"monday", time.Date(2026, 11, 9, 12, 0, 0, 0, time.UTC), "2026-11-16", "2026-11-22"},
+		{"friday", time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC), "2026-11-16", "2026-11-22"},
+		{"sunday", time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC), "2026-11-16", "2026-11-22"},
+		{"next monday", time.Date(2026, 11, 16, 0, 0, 0, 0, time.UTC), "2026-11-23", "2026-11-29"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			start, end := nextClassWeek(c.now)
+			if start != c.wantStart || end != c.wantEnd {
+				t.Errorf("nextClassWeek(%s) = %s..%s, want %s..%s",
+					c.now.Format("2006-01-02"), start, end, c.wantStart, c.wantEnd)
+			}
+		})
+	}
+}
+
+// TestWarmClassAdjacentWeekFetchesOnceThenSkips: the warmer must pre-fetch the
+// next week exactly once per TTL, not on every poll, and the app's later request
+// for that week must then be answered from the day cache.
+func TestWarmClassAdjacentWeekFetchesOnceThenSkips(t *testing.T) {
+	f := &fakeUpstream{}
+	f.setTimetableBody(cacheTestTimetable)
+	p, st := newFakeProxyUpstream(t, f)
+	seedRawMasterData(t, p)
+	seedSessionUser(t, st, "dee", 5, 7, 5000)
+	classes := []store.Class{{ID: 5000, Name: "5a"}}
+
+	p.warmClassAdjacentWeek("testschool", classes)
+	if got := f.TimetableCalls(); got != 1 {
+		t.Fatalf("warm upstream calls = %d, want 1", got)
+	}
+
+	start, end := nextClassWeek(time.Now())
+	if _, ok := p.cachedClassPeriods("testschool", 5000, start, end); !ok {
+		t.Fatal("next class week was not recorded in the day cache")
+	}
+
+	p.warmClassAdjacentWeek("testschool", classes)
+	if got := f.TimetableCalls(); got != 1 {
+		t.Errorf("upstream calls after warm cache hit = %d, want 1", got)
+	}
+}
+
 // TestPollWindowCoversTheRequestedSchoolWeek pins the window the poller warms:
 // Monday..Sunday of the current week, extended by a today+4 lookahead when that
 // reaches further.

@@ -1008,7 +1008,52 @@ func (p *Proxy) pollOnce(school string) {
 		close(jobs)
 		wg.Wait()
 	}
+	p.warmClassAdjacentWeek(school, classes)
 	p.warmBoostedStudents(school)
+}
+
+// nextClassWeek is the Monday..Sunday range immediately after the current school
+// week. The app asks for it as soon as it opens (the class page preloads the
+// following week), so leaving it un-warmed made the first open after a restart
+// pay a full upstream class fetch for a page the user had not even scrolled to.
+func nextClassWeek(now time.Time) (string, string) {
+	d := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	wd := int(d.Weekday())
+	if wd == 0 {
+		wd = 7
+	}
+	monday := d.AddDate(0, 0, -(wd - 1))
+	s := monday.AddDate(0, 0, 7)
+	e := s.AddDate(0, 0, 6)
+	return s.Format("2006-01-02"), e.Format("2006-01-02")
+}
+
+// warmClassAdjacentWeek pre-fetches the pooled classes' next school week. Cache
+// hits are skipped, so this costs one upstream fetch per class per timetable TTL
+// (not per poll) and the class day cache answers the app's next-week request as
+// soon as it opens.
+func (p *Proxy) warmClassAdjacentWeek(school string, classes []store.Class) {
+	if len(classes) == 0 {
+		return
+	}
+	start, end := nextClassWeek(time.Now())
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, pollWorkers)
+	for _, c := range classes {
+		if _, ok := p.cachedClassPeriods(school, c.ID, start, end); ok {
+			continue
+		}
+		wg.Add(1)
+		sem <- struct{}{}
+		go func(classID int64) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			if _, err := p.classPeriodsFresh(school, classID, start, end); err != nil {
+				log.Printf("[notify] warm class %d %s..%s: %v", classID, start, end, err)
+			}
+		}(c.ID)
+	}
+	wg.Wait()
 }
 
 // studentWarmRanges returns the school weeks the app preloads when it opens: the
