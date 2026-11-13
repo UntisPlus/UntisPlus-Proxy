@@ -466,10 +466,37 @@ type PersonInfo struct {
 }
 
 // PersonInfo fetches identity/class data for a real session.
+//
+// The two config endpoints are independent and the upstream is HTTP/2, so they
+// are fetched concurrently on the login's own connection. Sequentially the
+// smaller one added its full round trip to every login; overlapping them makes
+// the pair cost roughly the slower of the two.
 func (c *Client) PersonInfo(school, cookie string) (*PersonInfo, error) {
 	info := &PersonInfo{}
+	base := c.base(school)
 	// /api/app/config
-	b, status, err := c.get(c.base(school)+"/WebUntis/api/app/config", cookieHeader(cookie))
+	var appCfg []byte
+	var appStatus int
+	var appErr error
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		appCfg, appStatus, appErr = c.get(base+"/WebUntis/api/app/config", cookieHeader(cookie))
+	}()
+	// /api/daytimetable/config
+	if b, status, err := c.get(base+"/WebUntis/api/daytimetable/config", cookieHeader(cookie)); err == nil && status == http.StatusOK {
+		var cfg struct {
+			Data struct {
+				KlasseID int64 `json:"klasseId"`
+			} `json:"data"`
+		}
+		if json.Unmarshal(b, &cfg) == nil {
+			info.ClassID = cfg.Data.KlasseID
+		}
+	}
+	wg.Wait()
+	b, status, err := appCfg, appStatus, appErr
 	if err == nil && status == http.StatusOK {
 		var cfg struct {
 			Data struct {
@@ -497,18 +524,6 @@ func (c *Client) PersonInfo(school, cookie string) (*PersonInfo, error) {
 				}
 				info.DisplayName = p.DisplayName
 			}
-		}
-	}
-	// /api/daytimetable/config
-	b, status, err = c.get(c.base(school)+"/WebUntis/api/daytimetable/config", cookieHeader(cookie))
-	if err == nil && status == http.StatusOK {
-		var cfg struct {
-			Data struct {
-				KlasseID int64 `json:"klasseId"`
-			} `json:"data"`
-		}
-		if json.Unmarshal(b, &cfg) == nil {
-			info.ClassID = cfg.Data.KlasseID
 		}
 	}
 	return info, nil

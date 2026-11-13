@@ -653,3 +653,41 @@ func TestMasterDataCacheIsNotSharedBetweenUsers(t *testing.T) {
 		}
 	}
 }
+
+// TestKeyLoginSeedsClassNamesFromMasterData: a login carries the full class
+// catalogue, so the class-name lookup must not spend an extra getKlassen round
+// trip on the login path. Before the seeding, a fresh process paid that request
+// for the very first user (and again after the name table's hourly expiry).
+func TestKeyLoginSeedsClassNamesFromMasterData(t *testing.T) {
+	f := &fakeUpstream{
+		userDataBody: masterDataLoginBody,
+		// PersonInfo reads the user's class from the daytimetable config.
+		restBody: `{"data":{"klasseId":5000}}`,
+	}
+	p, st := newFakeProxyUpstream(t, f)
+	seedKeyUser(t, st)
+
+	rec := mdLogin(t, p)
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200 (body=%s)", rec.Code, rec.Body.String())
+	}
+
+	if got := p.classNameFor("testschool", "", 5000); got != "10b" {
+		t.Errorf("class name = %q, want 10b from the login's masterData", got)
+	}
+	u, err := st.GetUser("owen")
+	if err != nil || u == nil {
+		t.Fatalf("user: %v %v", u, err)
+	}
+	if u.ClassName != "10b" {
+		t.Errorf("stored class name = %q, want 10b", u.ClassName)
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, req := range f.forwards {
+		if req.Method == "getKlassen" {
+			t.Errorf("login forwarded a getKlassen request: %s", req.Path)
+		}
+	}
+}

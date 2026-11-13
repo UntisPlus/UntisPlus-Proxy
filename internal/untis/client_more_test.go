@@ -11,7 +11,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // roundTripFunc adapts a function to http.RoundTripper.
@@ -288,6 +290,53 @@ func TestPersonInfoSurvivesBrokenConfig(t *testing.T) {
 	}
 	if *info != (PersonInfo{}) {
 		t.Errorf("info = %+v, want the zero value when upstream is broken", info)
+	}
+}
+
+func TestPersonInfoFetchesBothConfigsConcurrently(t *testing.T) {
+	// Each endpoint withholds its answer until the other one has arrived. A
+	// sequential implementation can therefore never finish, while a concurrent
+	// one completes in about one round trip. The margin is generous so a loaded
+	// CI machine does not turn scheduling jitter into a failure.
+	var arrived int32
+	gate := make(chan struct{})
+	once := sync.Once{}
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&arrived, 1) == 2 {
+			once.Do(func() { close(gate) })
+		}
+		select {
+		case <-gate:
+		case <-time.After(3 * time.Second):
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/WebUntis/api/app/config":
+			_, _ = w.Write([]byte(`{"data":{"loginServiceConfig":{"user":{"personId":5005}}}}`))
+		case "/WebUntis/api/daytimetable/config":
+			_, _ = w.Write([]byte(`{"data":{"klasseId":5000}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	})
+	srv := httptest.NewTLSServer(handler)
+	defer srv.Close()
+	c := New(Config{Server: strings.TrimPrefix(srv.URL, "https://"), School: "testschool", HTTPClient: srv.Client()})
+
+	start := time.Now()
+	info, err := c.PersonInfo("testschool", "JSESSIONID=abc")
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatalf("PersonInfo: %v", err)
+	}
+	if got := int(atomic.LoadInt32(&arrived)); got != 2 {
+		t.Fatalf("endpoints requested = %d, want 2", got)
+	}
+	if elapsed > time.Second {
+		t.Errorf("PersonInfo took %v; the two config requests did not overlap", elapsed)
+	}
+	if info.PersonID != 5005 || info.ClassID != 5000 {
+		t.Errorf("info = %+v, want both endpoints' values", info)
 	}
 }
 

@@ -356,8 +356,28 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 		_ = p.store.UpsertSecret(auth.User, replayKey)
 	}
 
+	// The identity configs are fetched in the background while this request
+	// rewrites and caches the login body. The two are independent, and
+	// PersonInfo itself fetches its two endpoints concurrently, so the only
+	// unavoidable network cost is the login POST itself plus the slower of the
+	// two config GETs.
+	infoCh := make(chan *untis.PersonInfo, 1)
+	go func() {
+		info, _ := p.untis.PersonInfo(school, cookie)
+		infoCh <- info
+	}()
+
+	// Cache a pristine copy of the login body now, while the identity request
+	// is in flight. This also fills the school's class-name table from the
+	// fresh masterData, so classNameFor below does not need its own getKlassen
+	// round trip.
+	p.cacheRawMasterData(school, realBody)
+
+	info := <-infoCh
+	if info == nil {
+		info = &untis.PersonInfo{}
+	}
 	isAnon := auth.User == "#anonymous#"
-	info, _ := p.untis.PersonInfo(school, cookie)
 	if replayKey == "" {
 		if existing, err := p.store.GetUser(auth.User); err == nil && existing != nil && existing.Password != "" {
 			replayKey = existing.Password
@@ -398,9 +418,6 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	s := p.sessions.New(auth.User, user.ClassID)
 	p.setSessionCookies(w, r, s.ID, school)
 	rewritten := p.markPooledElementsDisplayable(school, realBody, auth.User)
-	// Cache the raw body, not the rewritten one: the flags depend on the
-	// requesting user's permissions and are recomputed on every request.
-	p.cacheRawMasterData(school, realBody)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write(rewritten)
 }
@@ -561,6 +578,54 @@ func (p *Proxy) persistElementNames(school string, md map[string]any) {
 		if err := p.store.UpsertElementNames(school, lt.typ, names); err != nil {
 			log.Printf("[recon] persist %s names: %v", lt.typ, err)
 		}
+	}
+}
+
+// seedClassNames fills the school's class-name table from a fresh masterData
+// class list. Class names are only used to label a user's own class, so a
+// login that arrives before any getKlassen must still be able to name it
+// without paying for an extra upstream request. The timestamp is only moved
+// forward when the table was empty (a cold process): a populated table keeps
+// its own hourly refresh schedule, and a missing class still triggers one.
+func (p *Proxy) seedClassNames(school string, md map[string]any) {
+	klassen, _ := md["klassen"].([]any)
+	if len(klassen) == 0 {
+		return
+	}
+	names := make(map[int64]string, len(klassen))
+	for _, it := range klassen {
+		ci, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		idf, ok := ci["id"].(float64)
+		if !ok || idf == 0 {
+			continue
+		}
+		name, _ := ci["name"].(string)
+		if name == "" {
+			name, _ = ci["longName"].(string)
+		}
+		if name == "" {
+			continue
+		}
+		names[int64(idf)] = name
+	}
+	if len(names) == 0 {
+		return
+	}
+	st := p.stateFor(school)
+	st.klMu.Lock()
+	defer st.klMu.Unlock()
+	if st.klasses == nil {
+		st.klasses = map[int64]string{}
+	}
+	cold := len(st.klasses) == 0
+	for id, name := range names {
+		st.klasses[id] = name
+	}
+	if cold {
+		st.klAt = time.Now()
 	}
 }
 
@@ -1202,6 +1267,11 @@ func (p *Proxy) cacheRawMasterData(school string, body []byte) {
 			// rewritten on every timetable response; a fresh masterData copy is
 			// the only time the names can actually change.
 			p.persistElementNames(school, md)
+			// A login carries the class catalogue too. Seed the class-name table
+			// from it so naming the user's own class (and therefore the whole
+			// first login on a fresh process) needs no separate getKlassen
+			// round trip.
+			p.seedClassNames(school, md)
 			// A login has just delivered a fresh copy. Use it immediately so the
 			// first timetable response does not wait for a refresh, and persist it
 			// for the next restart.
