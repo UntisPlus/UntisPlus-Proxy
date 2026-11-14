@@ -309,13 +309,20 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 			otp = s
 		}
 	}
+	// The anonymous account is a session, not a replayable user. Never forward
+	// a stored placeholder secret or a caller-supplied key for it, and never
+	// persist one: upstream validates the anonymous login on its own.
+	isAnon := auth.User == "#anonymous#"
 	extra := map[string]any{}
-	replayKey := auth.Key
-	if replayKey == "" {
-		replayKey = p.replayKey(auth.User)
-	}
-	if replayKey == "" {
-		replayKey, _ = p.store.GetSecret(auth.User)
+	replayKey := ""
+	if !isAnon {
+		replayKey = auth.Key
+		if replayKey == "" {
+			replayKey = p.replayKey(auth.User)
+		}
+		if replayKey == "" {
+			replayKey, _ = p.store.GetSecret(auth.User)
+		}
 	}
 
 	// Password fallback: a base32-shaped value in the "otp" field means the
@@ -326,7 +333,7 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	// clobbers a working stored key. Note isBase32Secret requires >=16 chars,
 	// so a real 6-digit TOTP can never be mistaken for a secret.
 	loginOTP := otp
-	if isBase32Secret(otp) {
+	if !isAnon && isBase32Secret(otp) {
 		replayKey = otp
 		loginOTP = untis.TOTP(otp)
 	}
@@ -350,8 +357,9 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 
 	// A login the upstream accepted is the strongest proof the presented replay
 	// key (stored secret or pasted base32 secret) is valid, so record it for
-	// future session escalation even if it wasn't captured before.
-	if replayKey != "" {
+	// future session escalation even if it wasn't captured before. Anonymous is
+	// not replayable, so it has no key to record.
+	if replayKey != "" && !isAnon {
 		p.setReplayKey(auth.User, replayKey)
 		_ = p.store.UpsertSecret(auth.User, replayKey)
 	}
@@ -377,8 +385,7 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	if info == nil {
 		info = &untis.PersonInfo{}
 	}
-	isAnon := auth.User == "#anonymous#"
-	if replayKey == "" {
+	if !isAnon && replayKey == "" {
 		if existing, err := p.store.GetUser(auth.User); err == nil && existing != nil && existing.Password != "" {
 			replayKey = existing.Password
 		}
@@ -758,10 +765,33 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 	if requesterName == "" {
 		if u := p.sessionUser(r); u != nil {
 			requesterName = u.Username
+		} else if ck, err := r.Cookie("JSESSIONID"); err == nil && ck.Value != "" {
+			// keyLogin deliberately does not persist "#anonymous#" as a user, so
+			// sessionUser cannot resolve it. Read the session identity directly so
+			// a client that only carries the login cookie still works.
+			if s := p.sessions.Get(ck.Value); s != nil && s.Username == "#anonymous#" {
+				requesterName = s.Username
+			}
 		}
 	}
 	if requesterName == "" {
 		p.writeJSONRPCError(w, id, "not logged in", -8520)
+		return
+	}
+	// Anonymous is a real upstream session but deliberately not a stored user.
+	// Forward the request raw with its own auth block so upstream applies the
+	// anonymous account's read permissions. Never route it through the pool, an
+	// owner account or the shared class cache: a warmed cache entry may belong
+	// to a class the anonymous account is not allowed to read.
+	if requesterName == "#anonymous#" {
+		b, status, _, err := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
+		if err != nil {
+			p.writeJSONRPCError(w, id, "no right for timetable", -8509)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(b)
 		return
 	}
 	requester, err := p.store.GetUser(requesterName)
