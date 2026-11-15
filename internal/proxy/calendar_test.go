@@ -241,6 +241,11 @@ func TestCalendar_TeacherToken_RequiresReconOrBoosted(t *testing.T) {
 	if err := st.UpsertUser(&store.User{Username: "plain", Method: "key", PersonType: 5, PersonID: 1, ClassID: 5000}); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
+	// New users inherit the default recon permission; this fixture is the
+	// genuine plain-student case, so take it back.
+	if err := st.SetPerm("plain", store.FeatureRecon, false); err != nil {
+		t.Fatalf("revoke default recon: %v", err)
+	}
 
 	rec := calRequest(t, p, "plain", `{"teacherId":99}`)
 	if rec.Code != http.StatusForbidden {

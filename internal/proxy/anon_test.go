@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestKeyLoginAnonymousSkipsReplayKey: a stale placeholder secret stored for
@@ -170,6 +171,13 @@ func TestAnonymousPooledClassServedFromOwner(t *testing.T) {
 	}})
 	p, st := newFakeProxyUpstream(t, f)
 	seedSessionUser(t, st, "owner", 5, 7, 5000)
+	// The fallback is opt-in and only serves what recon has actually covered.
+	if err := st.SetAnonymousFeature("classes", true); err != nil {
+		t.Fatalf("enable anonymous classes: %v", err)
+	}
+	start := time.Now().Format("2006-01-02")
+	end := time.Now().AddDate(0, 0, 6).Format("2006-01-02")
+	p.stateFor("testschool").recon.setScanHorizon(5000, end)
 
 	login := httptest.NewRequest(http.MethodPost,
 		"/WebUntis/jsonrpc_intern.do?m=getUserData2017&school=testschool",
@@ -187,7 +195,7 @@ func TestAnonymousPooledClassServedFromOwner(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost,
 		"/WebUntis/jsonrpc_intern.do?m=getTimetable2017&school=testschool",
 		strings.NewReader(internBody("getTimetable2017",
-			ttParam(5000, "CLASS", "2026-11-09", "2026-11-15", "#anonymous#"))))
+			ttParam(5000, "CLASS", start, end, "#anonymous#"))))
 	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: sid})
 	rec := httptest.NewRecorder()
 	p.handleJSONRPCIntern(rec, req)
@@ -234,6 +242,10 @@ func TestAnonymousMasterDataPromotesPooledClasses(t *testing.T) {
 		{"id":7000,"name":"7c","displayable":true}]}}}`
 	p, st := newFakeProxyUpstream(t, f)
 	seedSessionUser(t, st, "owner", 5, 7, 5000)
+	if err := st.SetAnonymousFeature("classes", true); err != nil {
+		t.Fatalf("enable anonymous classes: %v", err)
+	}
+	p.stateFor("testschool").recon.setScanHorizon(5000, reconHorizon())
 
 	login := httptest.NewRequest(http.MethodPost,
 		"/WebUntis/jsonrpc_intern.do?m=getUserData2017&school=testschool",
@@ -268,5 +280,139 @@ func TestAnonymousMasterDataPromotesPooledClasses(t *testing.T) {
 	}
 	if !got[7000] {
 		t.Fatalf("upstream-displayable class 7000 was hidden: %v", got)
+	}
+}
+
+// TestAnonymousMasterDataStaysStockByDefault: without the classes capability
+// anonymous must look exactly like upstream, so a pooled class that upstream
+// hides is not promoted.
+func TestAnonymousMasterDataStaysStockByDefault(t *testing.T) {
+	f := &fakeUpstream{}
+	f.userDataBody = `{"jsonrpc":"2.0","id":"upstream","result":{"masterData":{"klassen":[
+		{"id":5000,"name":"5a","displayable":false},
+		{"id":7000,"name":"7c","displayable":true}]}}}`
+	p, st := newFakeProxyUpstream(t, f)
+	seedSessionUser(t, st, "owner", 5, 7, 5000)
+	p.stateFor("testschool").recon.setScanHorizon(5000, reconHorizon())
+
+	login := httptest.NewRequest(http.MethodPost,
+		"/WebUntis/jsonrpc_intern.do?m=getUserData2017&school=testschool",
+		strings.NewReader(loginBody(t, "#anonymous#", "0")))
+	rec := httptest.NewRecorder()
+	p.handleJSONRPCIntern(rec, login)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("anonymous login status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Result struct {
+			MasterData struct {
+				Klassen []struct {
+					ID          int64 `json:"id"`
+					Displayable bool  `json:"displayable"`
+				} `json:"klassen"`
+			} `json:"masterData"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode login body: %v", err)
+	}
+	for _, k := range resp.Result.MasterData.Klassen {
+		if k.ID == 5000 && k.Displayable {
+			t.Fatal("pooled class was promoted while anonymous classes is off")
+		}
+		if k.ID == 7000 && !k.Displayable {
+			t.Fatal("upstream-displayable class was hidden")
+		}
+	}
+}
+
+// TestAnonymousPooledClassRequiresFeatureAndCoverage pins the two conditions
+// for the pooled-class fallback. Either one missing must leave the request on
+// the raw upstream path rather than serving it through the pool.
+func TestAnonymousPooledClassRequiresFeatureAndCoverage(t *testing.T) {
+	start := time.Now().Format("2006-01-02")
+	end := time.Now().AddDate(0, 0, 6).Format("2006-01-02")
+	short := time.Now().AddDate(0, 0, 3).Format("2006-01-02")
+
+	cases := []struct {
+		name      string
+		classes   bool
+		horizon   string
+		endDate   string
+		wantOwner bool
+	}{
+		{name: "feature off", classes: false, horizon: end, endDate: end},
+		{name: "never scanned", classes: true, horizon: "", endDate: end},
+		{name: "scan ends before request", classes: true, horizon: short, endDate: end},
+		{name: "covered", classes: true, horizon: end, endDate: end, wantOwner: true},
+		{name: "covered with compact date", classes: true, horizon: end, endDate: strings.ReplaceAll(end, "-", ""), wantOwner: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeUpstream{}
+			f.setTimetable(t, []map[string]any{{
+				"id":            1,
+				"startDateTime": start + "T08:00:00Z",
+				"endDateTime":   start + "T08:45:00Z",
+			}})
+			p, st := newFakeProxyUpstream(t, f)
+			seedSessionUser(t, st, "owner", 5, 7, 5000)
+			if tc.classes {
+				if err := st.SetAnonymousFeature("classes", true); err != nil {
+					t.Fatalf("enable classes: %v", err)
+				}
+			}
+			if tc.horizon != "" {
+				p.stateFor("testschool").recon.setScanHorizon(5000, tc.horizon)
+			}
+
+			login := httptest.NewRequest(http.MethodPost,
+				"/WebUntis/jsonrpc_intern.do?m=getUserData2017&school=testschool",
+				strings.NewReader(loginBody(t, "#anonymous#", "0")))
+			loginRec := httptest.NewRecorder()
+			p.handleJSONRPCIntern(loginRec, login)
+			if loginRec.Code != http.StatusOK {
+				t.Fatalf("anonymous login status = %d, body %s", loginRec.Code, loginRec.Body.String())
+			}
+			sid := findCookie(loginRec, "JSESSIONID")
+
+			req := httptest.NewRequest(http.MethodPost,
+				"/WebUntis/jsonrpc_intern.do?m=getTimetable2017&school=testschool",
+				strings.NewReader(internBody("getTimetable2017",
+					ttParam(5000, "CLASS", start, tc.endDate, "#anonymous#"))))
+			req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: sid})
+			rec := httptest.NewRecorder()
+			p.handleJSONRPCIntern(rec, req)
+			if code := errCode(t, rec); code != 0 {
+				t.Fatalf("timetable error code = %d, body %s", code, rec.Body.String())
+			}
+
+			var sent struct {
+				Params []struct {
+					Auth struct {
+						User string `json:"user"`
+					} `json:"auth"`
+				} `json:"params"`
+			}
+			forwards := f.Forwards()
+			if len(forwards) != 1 {
+				t.Fatalf("upstream forwards = %d, want 1 (body %s)", len(forwards), rec.Body.String())
+			}
+			if err := json.Unmarshal(forwards[0].Body, &sent); err != nil {
+				t.Fatalf("decode forwarded body: %v", err)
+			}
+			authUser := ""
+			if len(sent.Params) == 1 {
+				authUser = sent.Params[0].Auth.User
+			}
+			want := "#anonymous#"
+			if tc.wantOwner {
+				want = "owner"
+			}
+			if authUser != want {
+				t.Fatalf("forwarded auth user = %q, want %q", authUser, want)
+			}
+		})
 	}
 }

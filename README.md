@@ -154,6 +154,25 @@ untisctl perms reset                             # wipe all -> Basic for everyon
 `boosted`, `editor` and `techniker` are **per-user only** (no `--global`), because
 each grants access to data pooled from several accounts.
 
+### Default permissions for new users
+
+A user's flags are copied **once**, the first time the proxy sees their
+account. Existing users keep exactly the flags an admin gave them; changing the
+default set never rewrites them. Recon is the shipped default, and the operator
+can choose any combination:
+
+```sh
+untisctl perms default list                  # what a newly seen user gets
+untisctl perms default grant recon           # add to the default set
+untisctl perms default grant boosted         # auto-revokes default recon
+untisctl perms default revoke editor         # remove from the default set
+untisctl perms default clear                 # new users start with no flags
+```
+
+The same set is editable from the dashboard's **Default permissions for new
+users** panel. Recon and boosted remain mutually exclusive in the defaults,
+exactly like per-user rows.
+
 Absence **reads** (`getStudentAbsences2017`) are available to **everyone** by
 default; only the **write/mutation** methods need `editor`. Being an **admin of
 this proxy does not imply editing**: admins manage accounts here, they do not
@@ -237,16 +256,29 @@ The proxy's read-only `#anonymous#` account is controlled by two layers:
 
 | Capability | Effect when enabled |
 |---|---|
+| **pooled classes** | Fall back to the proxy's class index when upstream hides classes from `#anonymous#`. Only independent (pooled) classes whose recon scan covers the requested dates are served; everything else stays raw-forwarded. |
 | **ntfy** | Create / list / test / delete ntfy subscriptions for pooled classes. |
 | **webhooks** | Create / list / test / delete webhook subscriptions for pooled classes. |
 | **live changes** | Poll `/api/timetable/changes` and open `/api/timetable/stream` for pooled classes. |
 
-Anonymous sessions can **never mint calendar links**. A public ICS token is a
-credential that outlives the session and would bypass the anonymous login
-switch, so the calendar endpoints require a stored account. The dashboard API
-for the global switches is `GET /admin/anonymous` and
-`POST /admin/anonymous/{ntfy|webhooks|changes}` with `{"enabled":true|false}`;
-the per-school login is `POST /admin/schools/{school}/anonymous`.
+All four are **off by default**, so anonymous access stays as close to stock
+WebUntis as possible until an operator opts in. Enabled capabilities are
+deployment-wide; only the login switch is per school. Anonymous sessions can
+**never mint calendar links**. A public ICS token is a credential that outlives
+the session and would bypass the anonymous login switch, so the calendar
+endpoints require a stored account.
+
+```sh
+untisctl anonymous list              # global capability matrix
+untisctl anonymous grant classes     # enable the pooled-class fallback
+untisctl anonymous revoke classes    # back to stock upstream visibility
+untisctl anonymous grant ntfy        # also: webhooks, changes
+```
+
+The dashboard API for the global switches is `GET /admin/anonymous` and
+`POST /admin/anonymous/{classes|ntfy|webhooks|changes}` with
+`{"enabled":true|false}`; the per-school login is
+`POST /admin/schools/{school}/anonymous`.
 
 Anonymous sessions never create a stored user. They share one `#anonymous#`
 owner per school, so subscriptions created anonymously are visible to other
@@ -673,6 +705,24 @@ it the same way. `dumpcreds` prints both the key and the password.
 ### perms
 
 See [Permissions](#permissions).
+
+```sh
+untisctl perms default list                  # current new-user default set
+untisctl perms default grant recon           # add a default permission
+untisctl perms default revoke boosted        # remove one
+untisctl perms default clear                 # no defaults
+```
+
+### anonymous — deployment-wide capabilities
+
+```sh
+untisctl anonymous list                      # classes, ntfy, webhooks, changes
+untisctl anonymous grant classes             # enable the pooled-class fallback
+untisctl anonymous revoke webhooks           # disable one capability
+```
+
+These are global by design. The anonymous **login** stays per school and is
+toggled from the dashboard's Schools table.
 
 ### pool — classes
 

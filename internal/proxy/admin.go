@@ -90,8 +90,8 @@ func (p *Proxy) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		p.adminStatus(w)
 	case parts[0] == "users":
 		p.adminUsers(w, r, parts[1:])
-	case parts[0] == "perms" && r.Method == http.MethodGet:
-		p.adminPerms(w)
+	case parts[0] == "perms":
+		p.adminPerms(w, r, parts[1:])
 	case parts[0] == "pool":
 		p.adminPool(w, r, parts[1:])
 	case parts[0] == "tokens":
@@ -182,13 +182,48 @@ func (p *Proxy) adminStatus(w http.ResponseWriter) {
 	})
 }
 
-func (p *Proxy) adminPerms(w http.ResponseWriter) {
-	perms, err := p.store.AllPerms()
-	if err != nil {
-		p.writeJSON(w, map[string]any{"error": "store error"})
+func (p *Proxy) adminPerms(w http.ResponseWriter, r *http.Request, parts []string) {
+	switch {
+	case r.Method == http.MethodGet && len(parts) == 0:
+		perms, err := p.store.AllPerms()
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		defaults, err := p.store.DefaultPerms()
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.writeJSON(w, map[string]any{"perms": perms, "defaults": defaults})
+		return
+	case r.Method == http.MethodPost && len(parts) == 1 && parts[0] == "default":
+		var req struct {
+			Feature string `json:"feature"`
+			Allowed *bool  `json:"allowed"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Allowed == nil || req.Feature == "" {
+			p.writeJSON(w, map[string]any{"error": "feature and allowed required"})
+			return
+		}
+		if err := p.store.SetDefaultPerm(req.Feature, *req.Allowed); err != nil {
+			if errors.Is(err, store.ErrUnknownPerm) {
+				p.writeJSON(w, map[string]any{"error": "unknown permission"})
+				return
+			}
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.audit(r, "", "perms.default", req.Feature, "allowed="+strconv.FormatBool(*req.Allowed))
+		defaults, err := p.store.DefaultPerms()
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.writeJSON(w, map[string]any{"feature": req.Feature, "allowed": *req.Allowed, "defaults": defaults})
 		return
 	}
-	p.writeJSON(w, map[string]any{"perms": perms})
+	p.writeJSON(w, map[string]any{"error": "not found"})
 }
 
 func (p *Proxy) adminPool(w http.ResponseWriter, r *http.Request, parts []string) {
@@ -1085,16 +1120,9 @@ func (p *Proxy) reconProgress(school string) map[string]any {
 	target := reconHorizon()
 	refresh := p.reconRefreshDays()
 	classes, _ := p.store.Pool(school)
-	horizons := p.stateFor(school).recon.scanProgress()
-	// Before the first sweep of this process the in-memory map is empty, so
-	// report what the database recorded rather than "never scanned".
-	if stored, err := p.store.ReconScan(school); err == nil {
-		for id, until := range stored {
-			if _, ok := horizons[id]; !ok {
-				horizons[id] = until
-			}
-		}
-	}
+	// The live registry is empty before this process's first sweep, so fill in
+	// what the database recorded rather than reporting "never scanned".
+	horizons := p.reconHorizons(school)
 	rows := make([]map[string]any, 0, len(classes))
 	scanned, stale := 0, 0
 	oldest := ""

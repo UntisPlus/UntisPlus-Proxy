@@ -35,11 +35,15 @@ func meLevel(t *testing.T, p *Proxy, username string) (level string, code int) {
 	return
 }
 
-// TestMe_Basic: a freshly-created user with no perms must report "basic".
+// TestMe_Basic: a user with no perms must report "basic". The shipped default
+// set grants recon to a newly seen user, so the fixture revokes it first.
 func TestMe_Basic(t *testing.T) {
 	p, st := newTestProxy(t)
 	if err := st.UpsertUser(&store.User{Username: "plain", Method: "key"}); err != nil {
 		t.Fatalf("upsert user: %v", err)
+	}
+	if err := st.SetPerm("plain", store.FeatureRecon, false); err != nil {
+		t.Fatalf("revoke default recon: %v", err)
 	}
 	if lvl, code := meLevel(t, p, "plain"); code != 200 || lvl != "basic" {
 		t.Errorf("got level=%q code=%d, want basic/200", lvl, code)

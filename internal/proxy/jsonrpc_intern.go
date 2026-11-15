@@ -517,14 +517,27 @@ func (p *Proxy) markPooledElementsDisplayableInner(school string, body []byte, u
 	// #anonymous# would otherwise show an empty picker, while a school that
 	// already marks its classes displayable must keep them.
 	if username == "#anonymous#" {
-		if items, ok := md["klassen"].([]any); ok {
-			for _, item := range items {
-				ci, ok := item.(map[string]any)
-				if !ok {
-					continue
-				}
-				if idf, ok := ci["id"].(float64); ok && pooled[int64(idf)] {
-					ci["displayable"] = true
+		// Promote a pooled class only when the operator enabled the class
+		// fallback and recon has fresh coverage for that class. Existing
+		// upstream-displayable classes are never cleared: the proxy index is a
+		// fallback, not a replacement for what the anonymous account can see.
+		if p.anonymousFeature(school, "classes") {
+			target := reconHorizon()
+			refresh := p.reconRefreshDays()
+			horizons := p.reconHorizons(school)
+			covered := map[int64]bool{}
+			for id, until := range horizons {
+				covered[id] = until != "" && !reconStale(until, target, refresh)
+			}
+			if items, ok := md["klassen"].([]any); ok {
+				for _, item := range items {
+					ci, ok := item.(map[string]any)
+					if !ok {
+						continue
+					}
+					if idf, ok := ci["id"].(float64); ok && pooled[int64(idf)] && covered[int64(idf)] {
+						ci["displayable"] = true
+					}
 				}
 			}
 		}
@@ -661,6 +674,23 @@ func (p *Proxy) seedClassNames(school string, md map[string]any) {
 	if cold {
 		st.klAt = time.Now()
 	}
+}
+
+// normalizeTimetableDate accepts the ISO date the proxy's recon state uses and
+// the compact YYYYMMDD form the app sometimes sends, and returns ISO. An
+// unparseable or empty date yields "", which callers treat as "not covered".
+func normalizeTimetableDate(s string) string {
+	switch len(s) {
+	case len("2006-01-02"):
+		if validDate(s) {
+			return s
+		}
+	case len("20060102"):
+		if _, err := time.Parse("20060102", s); err == nil {
+			return s[:4] + "-" + s[4:6] + "-" + s[6:]
+		}
+	}
+	return ""
 }
 
 // timetableParams is the first element of a getTimetable2017 request's params
@@ -819,7 +849,13 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 			return
 		}
 		if pr.Type == "CLASS" {
-			if pooled, err := p.store.PoolContains(school, pr.ID); err == nil && pooled {
+			// The pooled-class fallback needs both the operator's global
+			// capability and recon coverage through the requested end date.
+			// Anything else is raw-forwarded, leaving upstream's anonymous
+			// permissions in charge exactly like before the fallback existed.
+			if pooled, err := p.store.PoolContains(school, pr.ID); err == nil && pooled &&
+				p.anonymousFeature(school, "classes") &&
+				p.reconCoversClass(school, pr.ID, normalizeTimetableDate(pr.EndDate)) {
 				requester = &store.User{Username: requesterName, School: school, PersonType: 5}
 			}
 		}

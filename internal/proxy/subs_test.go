@@ -88,6 +88,11 @@ func TestSubsElementTargets(t *testing.T) {
 	p, st := newTestProxy(t)
 	_ = st.UpsertUser(&store.User{Username: "recon", Method: "key", PersonType: 5, PersonID: 42, ClassID: 5000, School: "testschool"})
 	_ = st.UpsertUser(&store.User{Username: "plain", Method: "key", PersonType: 5, PersonID: 43, ClassID: 5000, School: "testschool"})
+	// Default permissions now grant recon to a newly seen user, but this fixture
+	// needs a genuinely plain student, so take it back explicitly.
+	if err := st.SetPerm("plain", store.FeatureRecon, false); err != nil {
+		t.Fatalf("revoke default recon: %v", err)
+	}
 	if err := st.SetReconOverride("recon", "", true); err != nil {
 		t.Fatalf("grant recon: %v", err)
 	}

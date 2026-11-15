@@ -235,6 +235,20 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// migration: permissions granted to a user the first time the proxy sees
+	// them. Recon is the shipped default because it unlocks the reconstructed
+	// teacher/room/subject views without handing out raw teacher-account
+	// forwarding. INSERT OR IGNORE keeps an admin's later choice intact.
+	for _, kv := range []struct{ key, value string }{
+		{SettingDefaultPermRecon, "1"},
+		{SettingDefaultPermBoosted, "0"},
+		{SettingDefaultPermEditor, "0"},
+		{SettingDefaultPermTechniker, "0"},
+	} {
+		if _, err := db.Exec(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`, kv.key, kv.value); err != nil {
+			return nil, err
+		}
+	}
 	// proxy_sessions keeps the app logged in across a proxy restart. The cookie
 	// is the app's only credential once the login handshake is done, so losing
 	// this table turned every deploy into a forced re-login on every phone.
@@ -1346,6 +1360,11 @@ type School struct {
 // capability that does not exist.
 var ErrUnknownAnonymousFeature = errors.New("unknown anonymous feature")
 
+// ErrUnknownPerm is returned when a caller names a permission that does not
+// exist. It keeps the default-permission whitelist from silently accepting a
+// typo and creating a dead setting.
+var ErrUnknownPerm = errors.New("unknown permission")
+
 // Global anonymous capabilities. They are deployment-wide on purpose: an
 // anonymous session is one shared identity, so a per-school capability matrix
 // invited cross-school fallbacks (the calendar mint resolving its school
@@ -1356,6 +1375,19 @@ const (
 	SettingAnonNtfy     = "anonymous_ntfy"
 	SettingAnonWebhooks = "anonymous_webhooks"
 	SettingAnonChanges  = "anonymous_changes"
+	// SettingAnonClasses lets anonymous sessions use the proxy's pooled-class
+	// index when upstream's #anonymous# account hides classes. It is off by
+	// default so anonymous stays as close to stock WebUntis as possible.
+	SettingAnonClasses = "anonymous_classes"
+)
+
+// Default permissions stored in settings and applied to every newly inserted
+// user row. They never override an existing user's explicit rows.
+const (
+	SettingDefaultPermRecon     = "default_perm_recon"
+	SettingDefaultPermBoosted   = "default_perm_boosted"
+	SettingDefaultPermEditor    = "default_perm_editor"
+	SettingDefaultPermTechniker = "default_perm_techniker"
 )
 
 // anonymousFeatureKey maps the public capability names onto their settings
@@ -1368,6 +1400,8 @@ func anonymousFeatureKey(feature string) (string, bool) {
 		return SettingAnonWebhooks, true
 	case "changes":
 		return SettingAnonChanges, true
+	case "classes":
+		return SettingAnonClasses, true
 	}
 	return "", false
 }
@@ -1534,7 +1568,7 @@ func (s *Store) AnonymousFeature(feature string) (bool, error) {
 // the dashboard renders, so it never has to know the settings keys.
 func (s *Store) AnonymousFeatures() (map[string]bool, error) {
 	out := map[string]bool{}
-	for _, feature := range []string{"ntfy", "webhooks", "changes"} {
+	for _, feature := range []string{"classes", "ntfy", "webhooks", "changes"} {
 		on, err := s.AnonymousFeature(feature)
 		if err != nil {
 			return nil, err
@@ -1542,6 +1576,92 @@ func (s *Store) AnonymousFeatures() (map[string]bool, error) {
 		out[feature] = on
 	}
 	return out, nil
+}
+
+// defaultPermKey maps a permission feature onto its settings key.
+func defaultPermKey(feature string) (string, bool) {
+	switch feature {
+	case FeatureRecon:
+		return SettingDefaultPermRecon, true
+	case FeatureBoosted:
+		return SettingDefaultPermBoosted, true
+	case FeatureEditor:
+		return SettingDefaultPermEditor, true
+	case FeatureTechniker:
+		return SettingDefaultPermTechniker, true
+	}
+	return "", false
+}
+
+// DefaultPerms returns the permissions applied to a newly inserted user. A
+// missing key is off, except that the Open migration seeds recon on.
+func (s *Store) DefaultPerms() (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, feature := range []string{FeatureRecon, FeatureBoosted, FeatureEditor, FeatureTechniker} {
+		key, _ := defaultPermKey(feature)
+		v, set, err := s.GetSetting(key)
+		if err != nil {
+			return nil, err
+		}
+		out[feature] = set && v != "0"
+	}
+	return out, nil
+}
+
+// SetDefaultPerm turns one default permission on or off for future users.
+// Recon and boosted remain mutually exclusive, exactly like per-user rows.
+func (s *Store) SetDefaultPerm(feature string, allowed bool) error {
+	key, ok := defaultPermKey(feature)
+	if !ok {
+		return ErrUnknownPerm
+	}
+	v := "0"
+	if allowed {
+		v = "1"
+	}
+	if err := s.SetSetting(key, v); err != nil {
+		return err
+	}
+	if !allowed {
+		return nil
+	}
+	switch feature {
+	case FeatureRecon:
+		return s.SetSetting(SettingDefaultPermBoosted, "0")
+	case FeatureBoosted:
+		return s.SetSetting(SettingDefaultPermRecon, "0")
+	}
+	return nil
+}
+
+// ClearDefaultPerms removes every default, so newly seen users start with no
+// permissions at all.
+func (s *Store) ClearDefaultPerms() error {
+	for _, feature := range []string{FeatureRecon, FeatureBoosted, FeatureEditor, FeatureTechniker} {
+		key, _ := defaultPermKey(feature)
+		if err := s.SetSetting(key, "0"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// applyDefaultPerms grants the configured defaults to one new user. Only
+// allowed defaults are written; absence already means denied.
+func (s *Store) applyDefaultPerms(username string) error {
+	defaults, err := s.DefaultPerms()
+	if err != nil {
+		return err
+	}
+	for _, feature := range []string{FeatureRecon, FeatureBoosted, FeatureEditor, FeatureTechniker} {
+		if !defaults[feature] {
+			continue
+		}
+		if err := s.setPerm(username, feature, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // DeleteSchool removes a school registration. Its pool, users, tokens and other
@@ -2040,11 +2160,27 @@ func (s *Store) UpsertUser(u *User) error {
 	// collapse the variants first so the upsert below re-targets the merged row
 	// instead of creating yet another case-duplicate.
 	var existing string
+	isNew := false
 	err := s.db.QueryRow(`SELECT username FROM users WHERE username=?`, u.Username).Scan(&existing)
-	if err == sql.ErrNoRows && s.hasCaseVariant(u.Username) {
-		if err := s.normalizeUsernames(); err != nil {
-			return err
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		isNew = true
+		if s.hasCaseVariant(u.Username) {
+			if err := s.normalizeUsernames(); err != nil {
+				return err
+			}
+			err = s.db.QueryRow(`SELECT username FROM users WHERE username=?`, u.Username).Scan(&existing)
+			switch {
+			case err == nil:
+				isNew = false
+			case errors.Is(err, sql.ErrNoRows):
+				isNew = true
+			default:
+				return err
+			}
 		}
+	case err != nil:
+		return err
 	}
 	admin := 0
 	if u.Admin {
@@ -2072,7 +2208,15 @@ func (s *Store) UpsertUser(u *User) error {
 		u.Username, u.Password, u.Method, u.PersonID, u.PersonType,
 		u.ClassID, u.ClassName, u.Email, u.DisplayName,
 		u.CreatedAt.Unix(), now.Unix(), u.School, admin)
-	return err
+	if err != nil {
+		return err
+	}
+	if isNew {
+		// Apply the operator's default permission set only on the first insert.
+		// An existing account keeps exactly the flags an admin gave it.
+		return s.applyDefaultPerms(u.Username)
+	}
+	return nil
 }
 
 // SetDefaultSchool backfills users whose school has not been recorded yet

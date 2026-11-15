@@ -352,7 +352,7 @@ func TestReconPermMakesEveryReconstructedElementSelectable(t *testing.T) {
 	}{
 		{
 			name:          "no perm hides every teacher, room and subject",
-			grant:         func(*testing.T, *store.Store) {},
+			grant:         func(t *testing.T, st *store.Store) { mustSetPerm(t, st, "owen", false) },
 			wantTeachers:  map[int64]bool{5009: false, 224: false, 225: false},
 			wantRooms:     map[int64]bool{169: false, 170: false, 171: false},
 			wantSubjects:  map[int64]bool{7: false, 8: false},
@@ -369,8 +369,13 @@ func TestReconPermMakesEveryReconstructedElementSelectable(t *testing.T) {
 			wantClass4420: false,
 		},
 		{
-			name:          "the global recon perm covers users without their own row",
-			grant:         func(t *testing.T, st *store.Store) { mustSetPerm(t, st, store.GlobalPermUser(), true) },
+			name: "the global recon perm covers users without their own row",
+			grant: func(t *testing.T, st *store.Store) {
+				if _, err := st.ClearReconOverrides("owen"); err != nil {
+					t.Fatalf("clear recon overrides: %v", err)
+				}
+				mustSetPerm(t, st, store.GlobalPermUser(), true)
+			},
 			wantTeachers:  map[int64]bool{5009: true, 224: true, 225: false},
 			wantRooms:     map[int64]bool{169: true, 170: true, 171: false},
 			wantSubjects:  map[int64]bool{7: true, 8: false},
@@ -424,6 +429,11 @@ func TestReconPermToggleFlipsRoomAndTeacherSelectability(t *testing.T) {
 		"TEACHER": {5009}, "ROOM": {169, 170},
 	}); err != nil {
 		t.Fatalf("save recon elements: %v", err)
+	}
+
+	// New users inherit default recon; start from the plain-student state.
+	if err := st.SetPerm("owen", store.FeatureRecon, false); err != nil {
+		t.Fatalf("revoke default recon: %v", err)
 	}
 
 	// selectable := the reconstructed rooms/teachers, and only those
@@ -506,6 +516,10 @@ func TestReconPermSelectableElementsAreServable(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save recon elements: %v", err)
 	}
+	// New users inherit default recon; this test starts from no permission.
+	if err := st.SetPerm("sam", store.FeatureRecon, false); err != nil {
+		t.Fatalf("revoke default recon: %v", err)
+	}
 
 	// 2 = teacher, 3 = subject, 4 = room
 	get := func(user, elType, elID string) int {
@@ -561,6 +575,11 @@ func TestReconPermAppliesWithoutRelogin(t *testing.T) {
 		"TEACHER": {5009}, "ROOM": {169},
 	}); err != nil {
 		t.Fatalf("save recon elements: %v", err)
+	}
+	// New users inherit default recon; this test wants to log in before the
+	// permission exists, so remove the default first.
+	if err := st.SetPerm("owen", store.FeatureRecon, false); err != nil {
+		t.Fatalf("revoke default recon: %v", err)
 	}
 	// log in *before* the permission exists
 	mdLogin(t, p)

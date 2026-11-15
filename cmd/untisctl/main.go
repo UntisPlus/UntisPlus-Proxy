@@ -51,6 +51,15 @@ Commands:
                                      grant/revoke recon|boosted|editor|techniker (per-user only)
   perms clear --user U               drop a user's overrides (fall back to global)
   perms reset                        wipe all permissions (class-pool-only default)
+  perms default list                 show permissions granted to newly seen users
+  perms default grant|revoke TYPE    add/remove recon|boosted|editor|techniker
+                                     from the default set (existing users unaffected)
+  perms default clear                give newly seen users no permissions
+
+  anonymous list                     show the global anonymous capability matrix
+  anonymous grant|revoke FEATURE     enable/disable classes|ntfy|webhooks|changes
+                                     for every school (anonymous login stays
+                                     per school and is set from the dashboard)
 
   users list                         list accounts
   users add --user U --secret S [--method password|key]
@@ -124,6 +133,8 @@ Run 'untisctl <command> -h' for per-command flags.
 	switch flag.Arg(0) {
 	case "perms":
 		cmdPerms(st, flag.Args()[1:])
+	case "anonymous":
+		cmdAnonymous(st, flag.Args()[1:])
 	case "users":
 		cmdUsers(st, flag.Args()[1:], *server, *school)
 	case "pool":
@@ -191,8 +202,94 @@ func cmdPerms(st *store.Store, args []string) {
 			fatal("reset perms: %v", err)
 		}
 		fmt.Printf("reset %d permission rows: all users back to class-pool-only\n", n)
+	case "default", "defaults":
+		cmdDefaultPerms(st, args[1:])
 	default:
 		fatal("unknown perms subcommand %q", args[0])
+	}
+}
+
+// defaultPermOrder keeps the list output stable.
+var defaultPermOrder = []string{
+	store.FeatureRecon,
+	store.FeatureBoosted,
+	store.FeatureEditor,
+	store.FeatureTechniker,
+}
+
+// cmdDefaultPerms manages the permissions a login inherits the first time the
+// proxy sees its account. Existing rows are never rewritten: the set is copied
+// at insert time only.
+func cmdDefaultPerms(st *store.Store, args []string) {
+	if len(args) == 0 {
+		fatal("perms default requires a subcommand (list|grant|revoke|clear)")
+	}
+	switch args[0] {
+	case "list":
+		defaults, err := st.DefaultPerms()
+		if err != nil {
+			fatal("list default perms: %v", err)
+		}
+		fmt.Printf("%-10s %s\n", "TYPE", "DEFAULT")
+		for _, feature := range defaultPermOrder {
+			fmt.Printf("%-10s %v\n", feature, defaults[feature])
+		}
+	case "grant", "revoke":
+		if len(args) < 2 {
+			fatal("perms default %s requires a TYPE (recon|boosted|editor|techniker)", args[0])
+		}
+		typ, ok := reconTypes[strings.ToLower(args[1])]
+		if !ok {
+			fatal("unknown type %q (use recon|boosted|editor|techniker)", args[1])
+		}
+		if err := st.SetDefaultPerm(typ, args[0] == "grant"); err != nil {
+			fatal("default %s: %v", typ, err)
+		}
+		fmt.Printf("%s %s for newly seen users\n", past(args[0]), typ)
+	case "clear":
+		if err := st.ClearDefaultPerms(); err != nil {
+			fatal("clear default perms: %v", err)
+		}
+		fmt.Println("cleared default permissions: newly seen users start with none")
+	default:
+		fatal("unknown perms default subcommand %q", args[0])
+	}
+}
+
+// anonymousFeatureOrder keeps the capability list output stable.
+var anonymousFeatureOrder = []string{"classes", "ntfy", "webhooks", "changes"}
+
+// cmdAnonymous manages the deployment-wide anonymous capabilities. The
+// per-school login switch is intentionally not exposed here: it needs the
+// dashboard's school context and is stored on the school row.
+func cmdAnonymous(st *store.Store, args []string) {
+	if len(args) == 0 {
+		fatal("anonymous requires a subcommand (list|grant|revoke)")
+	}
+	switch args[0] {
+	case "list":
+		features, err := st.AnonymousFeatures()
+		if err != nil {
+			fatal("list anonymous features: %v", err)
+		}
+		fmt.Printf("%-10s %s\n", "FEATURE", "ENABLED")
+		for _, feature := range anonymousFeatureOrder {
+			fmt.Printf("%-10s %v\n", feature, features[feature])
+		}
+	case "grant", "revoke":
+		if len(args) < 2 {
+			fatal("anonymous %s requires a FEATURE (classes|ntfy|webhooks|changes)", args[0])
+		}
+		feature := strings.ToLower(args[1])
+		if feature == "class" {
+			feature = "classes"
+		}
+		if err := st.SetAnonymousFeature(feature, args[0] == "grant"); err != nil {
+			fatal("anonymous %s %s: %v", args[0], feature, err)
+		}
+		fmt.Printf("%s anonymous %s\n", past(args[0]), feature)
+	default:
+		fatal("unknown anonymous subcommand %q", args[0])
 	}
 }
 

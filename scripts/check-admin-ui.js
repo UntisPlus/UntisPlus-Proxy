@@ -172,20 +172,35 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
     && jsq("a'b" + String.fromCharCode(34)).indexOf(String.fromCharCode(34))<0,
     'jsq does not neutralise quotes or tags for an inline handler');
 
-  // Anonymous access matrix is deployment-wide: three global capability rows,
-  // each rendered from the flags the API returned.
-  anonFeatures={ntfy:false,webhooks:false,changes:false};
+  // Anonymous access matrix is deployment-wide: four global capability rows,
+  // each rendered from the flags the API returned. Pooled classes come first so
+  // the fallback that most affects what users see is not buried.
+  anonFeatures={classes:false,ntfy:false,webhooks:false,changes:false};
   renderAnonymous();
   let anonRows=_sel('__q').children;
-  must(anonRows.length===3, 'expected 3 anonymous capability rows, got '+anonRows.length);
-  must(anonRows[0]._html.indexOf('setAnonFeature')>=0, 'anonymous ntfy toggle missing');
-  must(anonRows[0]._html.indexOf('>off<')>=0, 'disabled capability did not render off');
-  anonFeatures={ntfy:true,webhooks:false,changes:true};
+  must(anonRows.length===4, 'expected 4 anonymous capability rows, got '+anonRows.length);
+  must(anonRows[0]._html.indexOf('setAnonFeature')>=0, 'anonymous classes toggle missing');
+  must(anonRows[0]._html.indexOf('classes')>=0, 'the first anonymous row is not pooled classes');
+  must(anonRows[1]._html.indexOf('setAnonFeature')>=0, 'anonymous ntfy toggle missing');
+  must(anonRows[1]._html.indexOf('>off<')>=0, 'disabled capability did not render off');
+  anonFeatures={classes:true,ntfy:true,webhooks:false,changes:true};
   renderAnonymous();
   anonRows=_sel('__q').children;
-  must(anonRows[0]._html.indexOf('>on<')>=0, 'enabled capability did not render on');
-  must(anonRows[2]._html.indexOf('>on<')>=0, 'enabled live-changes capability did not render on');
+  must(anonRows[0]._html.indexOf('>on<')>=0, 'enabled pooled classes did not render on');
+  must(anonRows[1]._html.indexOf('>on<')>=0, 'enabled capability did not render on');
+  must(anonRows[3]._html.indexOf('>on<')>=0, 'enabled live-changes capability did not render on');
   must(anonRows[0]._html.indexOf('setAnonFeature')>=0, 'anonymous toggles disappeared after reload');
+
+  // Default-permission panel: one row per grantable permission, rendered from
+  // the values the API returned, with recon/boosted independent buttons.
+  defaultPerms={recon:true,boosted:false,editor:false,techniker:true};
+  renderDefaultPerms();
+  const permRows=_sel('__q').children;
+  must(permRows.length===4, 'expected 4 default-permission rows, got '+permRows.length);
+  must(permRows[0]._html.indexOf('setDefaultPerm')>=0, 'default recon toggle missing');
+  must(permRows[0]._html.indexOf('>on<')>=0, 'default recon did not render on');
+  must(permRows[1]._html.indexOf('>off<')>=0, 'default boosted did not render off');
+  must(permRows[3]._html.indexOf('>on<')>=0, 'default techniker did not render on');
 
   console.log('check-admin-ui: all admin UI checks passed');
 })().catch(function(e){ console.error('FAIL: ' + (e && e.stack || e)); process.exit(1); });

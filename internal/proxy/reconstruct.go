@@ -584,6 +584,32 @@ func (p *Proxy) reconRefreshDays() int {
 	return defaultReconRefresh
 }
 
+// reconHorizons returns the per-class scan horizons for a school, preferring
+// the live registry and filling gaps from the database. The database is the
+// only source before the first sweep after a restart.
+func (p *Proxy) reconHorizons(school string) map[int64]string {
+	horizons := p.stateFor(school).recon.scanProgress()
+	if stored, err := p.store.ReconScan(school); err == nil {
+		for id, until := range stored {
+			if _, ok := horizons[id]; !ok {
+				horizons[id] = until
+			}
+		}
+	}
+	return horizons
+}
+
+// reconCoversClass reports whether a pooled class was enumerated through date
+// (an ISO YYYY-MM-DD string). A class that was never scanned, or whose horizon
+// ends before the requested date, is not covered and must fall back to upstream.
+func (p *Proxy) reconCoversClass(school string, classID int64, date string) bool {
+	if date == "" {
+		return false
+	}
+	until := p.reconHorizons(school)[classID]
+	return until != "" && until >= date
+}
+
 // reconStale reports whether a class scanned up to `since` must be re-scanned to
 // reach `target`: true when it was never scanned, or when its horizon has fallen
 // more than the refresh window behind the target.

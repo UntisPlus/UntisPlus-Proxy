@@ -407,6 +407,124 @@ func TestLookupElement_SubstringMatch(t *testing.T) {
 	}
 }
 
+// TestDefaultPermsApplyOnlyToNewUsers pins the v1.15 contract: a fresh install
+// seeds recon on, the operator can change the set, and a user who already has
+// rows keeps exactly those rows across later logins.
+func TestDefaultPermsApplyOnlyToNewUsers(t *testing.T) {
+	st := openTestStore(t)
+
+	defaults, err := st.DefaultPerms()
+	if err != nil {
+		t.Fatalf("DefaultPerms: %v", err)
+	}
+	if !defaults[FeatureRecon] || defaults[FeatureBoosted] || defaults[FeatureEditor] || defaults[FeatureTechniker] {
+		t.Fatalf("shipped defaults = %v, want recon only", defaults)
+	}
+
+	if err := st.UpsertUser(&User{Username: "newbie", Method: "password"}); err != nil {
+		t.Fatalf("upsert new user: %v", err)
+	}
+	if on, _ := st.ReconAccess("newbie", "TEACHER"); !on {
+		t.Fatal("new user did not inherit the default recon permission")
+	}
+	if on, _ := st.EditorAccess("newbie"); on {
+		t.Fatal("new user inherited an editor default that is off")
+	}
+
+	// An admin revoking the default from this user must survive the next login.
+	if err := st.SetReconOverride("newbie", FeatureRecon, false); err != nil {
+		t.Fatalf("revoke recon: %v", err)
+	}
+	if err := st.UpsertUser(&User{Username: "newbie", Method: "password"}); err != nil {
+		t.Fatalf("re-upsert existing user: %v", err)
+	}
+	if on, _ := st.ReconAccess("newbie", "TEACHER"); on {
+		t.Fatal("existing user's explicit revoke was overwritten on login")
+	}
+}
+
+// TestDefaultPermsSurviveReopen: Open seeds the defaults only when the key is
+// missing, so restarting must not silently restore recon after an admin turned
+// it off.
+func TestDefaultPermsSurviveReopen(t *testing.T) {
+	path := t.TempDir() + "/t.db"
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ClearDefaultPerms(); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetDefaultPerm(FeatureEditor, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	defaults, err := st.DefaultPerms()
+	if err != nil {
+		t.Fatalf("DefaultPerms: %v", err)
+	}
+	if defaults[FeatureRecon] || !defaults[FeatureEditor] {
+		t.Fatalf("defaults after reopen = %v, want editor only", defaults)
+	}
+}
+
+// TestDefaultPermsConfigurable covers the operator-facing setters behind both
+// untisctl and the dashboard, including the recon/boosted exclusion.
+func TestDefaultPermsConfigurable(t *testing.T) {
+	st := openTestStore(t)
+
+	if err := st.ClearDefaultPerms(); err != nil {
+		t.Fatalf("clear defaults: %v", err)
+	}
+	if err := st.UpsertUser(&User{Username: "plain", Method: "password"}); err != nil {
+		t.Fatalf("upsert: %v", err)
+	}
+	if on, _ := st.ReconAccess("plain", "TEACHER"); on {
+		t.Fatal("cleared defaults still granted recon")
+	}
+
+	if err := st.SetDefaultPerm(FeatureEditor, true); err != nil {
+		t.Fatalf("default editor: %v", err)
+	}
+	if err := st.UpsertUser(&User{Username: "editor", Method: "password"}); err != nil {
+		t.Fatalf("upsert editor: %v", err)
+	}
+	if on, _ := st.EditorAccess("editor"); !on {
+		t.Fatal("new user did not inherit the editor default")
+	}
+
+	// Recon and boosted stay mutually exclusive in the defaults too.
+	if err := st.SetDefaultPerm(FeatureBoosted, true); err != nil {
+		t.Fatalf("default boosted: %v", err)
+	}
+	defaults, err := st.DefaultPerms()
+	if err != nil {
+		t.Fatalf("DefaultPerms: %v", err)
+	}
+	if defaults[FeatureRecon] || !defaults[FeatureBoosted] {
+		t.Fatalf("defaults after boosted = %v, want boosted only", defaults)
+	}
+	if err := st.SetDefaultPerm(FeatureRecon, true); err != nil {
+		t.Fatalf("default recon: %v", err)
+	}
+	defaults, _ = st.DefaultPerms()
+	if !defaults[FeatureRecon] || defaults[FeatureBoosted] {
+		t.Fatalf("defaults after recon = %v, want recon only", defaults)
+	}
+
+	if err := st.SetDefaultPerm("nope", true); err != ErrUnknownPerm {
+		t.Fatalf("unknown default perm error = %v, want ErrUnknownPerm", err)
+	}
+}
+
 func TestLookupElement_Ambiguous(t *testing.T) {
 	st, _ := Open(t.TempDir() + "/t.db")
 	st.SaveMasterNames("testschool", "ROOM", map[int64]string{5: "Aula", 6: "Aula EG", 7: "Bibliothek"})

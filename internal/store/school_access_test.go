@@ -147,7 +147,7 @@ func TestAnonymousFeaturesAreGlobal(t *testing.T) {
 	if ok, err := st.AnonymousAllowed("other"); err != nil || !ok {
 		t.Fatalf("AnonymousAllowed unknown = (%v, %v), want (true, nil)", ok, err)
 	}
-	for _, f := range []string{"ntfy", "webhooks", "changes"} {
+	for _, f := range []string{"classes", "ntfy", "webhooks", "changes"} {
 		if ok, err := st.AnonymousFeature(f); err != nil || ok {
 			t.Fatalf("AnonymousFeature(%s) = (%v, %v), want (false, nil)", f, ok, err)
 		}
@@ -172,7 +172,7 @@ func TestAnonymousFeaturesAreGlobal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AnonymousFeatures: %v", err)
 	}
-	if features["ntfy"] || !features["webhooks"] || !features["changes"] {
+	if !features["classes"] || features["ntfy"] || !features["webhooks"] || !features["changes"] {
 		t.Fatalf("AnonymousFeatures = %v", features)
 	}
 

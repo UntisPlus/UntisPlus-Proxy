@@ -40,7 +40,8 @@ An admin can do everything `untisctl` can, from the dashboard:
 | `/admin/status` | GET | counts: users, admins, pool, schools, tokens, webhooks, ntfy, recon, boosted, editors, global perms |
 | `/admin/users` | GET/POST | list users; add/promote (`{username, admin}`) |
 | `/admin/users/{name}` | POST/DELETE | set admin flag, set a feature (`feature`+`allowed`), revoke a permission, or delete |
-| `/admin/perms` | GET | all permission rows |
+| `/admin/perms` | GET | all permission rows plus the new-user defaults |
+| `/admin/perms/default` | POST | set one default permission: `{feature, allowed}` |
 | `/admin/pool[/{school}]` | GET | pooled classes + owners |
 | `/admin/tokens[/{school}]` | GET | calendar tokens |
 | `/admin/tokens/{token}` | DELETE | revoke a token |
@@ -399,13 +400,21 @@ two controls:
   blocked, which prevents locking the deployment out of itself.
 
 The **Anonymous access** panel holds deployment-wide switches for the shared
-read-only `#anonymous#` session: ntfy, webhooks, and live change polling/SSE.
-They apply only to schools whose per-school **anonymous login** is enabled
-(Schools table), and they default **off**. Anonymous sessions can never mint
-calendar links: a public ICS token outlives the session and would bypass the
-anonymous switch. The API is `GET /admin/anonymous` and
-`POST /admin/anonymous/{ntfy|webhooks|changes}` with `{"enabled": bool}`; the
-login stays per school at `POST /admin/schools/{school}/anonymous`.
+read-only `#anonymous#` session: pooled classes, ntfy, webhooks, and live change
+polling/SSE. They apply only to schools whose per-school **anonymous login** is
+enabled (Schools table), and they default **off**. Anonymous sessions can never
+mint calendar links: a public ICS token outlives the session and would bypass
+the anonymous switch. The API is `GET /admin/anonymous` and
+`POST /admin/anonymous/{classes|ntfy|webhooks|changes}` with
+`{"enabled": bool}`; the login stays per school at
+`POST /admin/schools/{school}/anonymous`.
+
+**Pooled classes** is a fallback, not a replacement: it promotes a class only
+when the class is in the pool and its recon scan covers the requested end date.
+Otherwise the request is raw-forwarded so upstream's anonymous visibility wins.
+The dashboard's **Default permissions for new users** panel edits the flags a
+first-time login inherits; existing users are never rewritten. The same set is
+available from `untisctl perms default …`.
 
 `DELETE /admin/schools/{school}` removes the registration row only; the pool,
 users, tokens and other per-school data remain. If auto-registration is still

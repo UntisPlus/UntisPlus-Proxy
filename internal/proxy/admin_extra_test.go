@@ -39,6 +39,44 @@ func TestAdminPermsListing(t *testing.T) {
 	}
 }
 
+// TestAdminDefaultPerms covers the dashboard half of the configurable default
+// permission set: GET returns the current defaults, POST mutates one, and an
+// unknown name is rejected instead of writing a dead setting.
+func TestAdminDefaultPerms(t *testing.T) {
+	p, st := newTestProxy(t)
+
+	rec := adminRequest(t, p, "bob", http.MethodGet, "/admin/perms", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	var listing struct {
+		Defaults map[string]bool `json:"defaults"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &listing); err != nil {
+		t.Fatalf("bad json: %v", err)
+	}
+	if !listing.Defaults[store.FeatureRecon] || listing.Defaults[store.FeatureBoosted] {
+		t.Fatalf("shipped defaults = %v, want recon only", listing.Defaults)
+	}
+
+	rec = adminRequest(t, p, "bob", http.MethodPost, "/admin/perms/default", `{"feature":"editor","allowed":true}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d (body %s)", rec.Code, rec.Body.String())
+	}
+	defaults, err := st.DefaultPerms()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !defaults[store.FeatureEditor] {
+		t.Fatalf("defaults = %v, want editor on", defaults)
+	}
+
+	rec = adminRequest(t, p, "bob", http.MethodPost, "/admin/perms/default", `{"feature":"nope","allowed":true}`)
+	if !strings.Contains(rec.Body.String(), "unknown permission") {
+		t.Fatalf("unknown default response = %s", rec.Body.String())
+	}
+}
+
 func TestAdminPoolListing(t *testing.T) {
 	p, st := newTestProxy(t)
 	if err := st.UpsertUser(&store.User{Username: "dee", Method: "key", PersonType: 5, PersonID: 7, ClassID: 5000, ClassName: "10aR", Password: "replayable"}); err != nil {

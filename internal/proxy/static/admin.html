@@ -61,6 +61,16 @@
 </section>
 
 <section>
+  <h2>Default permissions for new users <button class="mini" onclick="loadDefaultPerms()">refresh</button></h2>
+  <p style="font-size:.78rem;color:#9aa0ae;margin:0 0 .5rem">
+    Granted only the first time the proxy sees an account. Existing users keep the
+    flags an admin gave them; changing this set never rewrites them. Recon and
+    boosted are mutually exclusive, exactly like per-user rows.
+  </p>
+  <table id="defaultPerms"><thead><tr><th>permission</th><th>state</th></tr></thead><tbody></tbody></table>
+</section>
+
+<section>
   <h2>Schools <button class="mini" onclick="loadSchools()">refresh</button></h2>
   <div class="row" style="margin-bottom:.5rem">
     <input id="sName" placeholder="school login name">
@@ -899,6 +909,42 @@ async function addUser(){
 }
 async function setAdmin(u,v){ await api('POST','users/'+u,{admin:v}); loadUsers(); renderCards(); }
 async function setPerm(u,f,v){ await api('POST','users/'+u,{feature:f,allowed:v}); loadUsers(); renderCards(); }
+
+let defaultPerms = {};
+const defaultPermLabels = {
+  recon:'recon — reconstructed teacher/room/subject views',
+  boosted:'boosted — raw teacher-account forwarding',
+  editor:'editor — absences, lessons and subjects',
+  techniker:'techniker — merged Technik class',
+};
+
+function renderDefaultPerms(){
+  const tb=$('defaultPerms').querySelector('tbody'); if(!tb) return;
+  tb.innerHTML='';
+  for(const feature of ['recon','boosted','editor','techniker']){
+    const on=!!defaultPerms[feature];
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td>'+esc(defaultPermLabels[feature])+'</td>'+
+      '<td><button class="mini '+(on?'danger':'')+'" onclick="setDefaultPerm(\''+feature+'\','+(!on)+')">'+
+      (on?'on':'off')+'</button></td>';
+    tb.appendChild(tr);
+  }
+}
+
+async function loadDefaultPerms(){
+  const d=await api('GET','perms');
+  if(d.error){ log('default perms: '+d.error); return; }
+  defaultPerms=d.defaults||{};
+  renderDefaultPerms();
+}
+
+async function setDefaultPerm(feature, allowed){
+  const d=await api('POST','perms/default',{feature:feature, allowed:allowed});
+  if(d.error){ log('default '+feature+': '+d.error); return; }
+  defaultPerms=d.defaults||{};
+  renderDefaultPerms();
+  log('default '+feature+' '+(allowed?'enabled':'disabled')+' for newly seen users');
+}
 async function delUser(u){ if(!confirm('delete '+u+'?')) return; await api('DELETE','users/'+u); log('deleted '+u); loadUsers(); renderCards(); }
 
 async function loadSchools(){
@@ -940,12 +986,13 @@ let anonFeatures = {};
 function renderAnonymous(){
   const tb=$('anon').querySelector('tbody'); if(!tb) return;
   const labels = {
+    classes:['pooled classes','fall back to the proxy class index when #anonymous# cannot see a class; needs recon coverage'],
     ntfy:['ntfy push','create/list ntfy subscriptions for pooled classes'],
     webhooks:['webhooks','create/list webhook subscriptions for pooled classes'],
     changes:['live changes','poll the change diff and open the SSE stream for pooled classes'],
   };
   tb.innerHTML='';
-  for(const feature of ['ntfy','webhooks','changes']){
+  for(const feature of ['classes','ntfy','webhooks','changes']){
     const on=!!anonFeatures[feature];
     const tr=document.createElement('tr');
     const meta=labels[feature];
@@ -1152,7 +1199,7 @@ async function refreshAll(){
   const hint = $('refreshHint'); if(hint) hint.textContent = 'last refresh '+mark;
   const jobs = {users:loadUsers, webhooks:loadWebhooks,
                 ntfy:loadNtfy, outage:loadOutageNtfy, tokens:loadTokens, pool:loadPool, roommap:loadRoomMap, audit:loadAudit,
-                anonymous:loadAnonymous};
+                anonymous:loadAnonymous, defaultPerms:loadDefaultPerms};
   // The school list has to land before the cards render, because rendering the
   // cards is what fills the school selectors.
   try { await loadSchools(); } catch(e){ log('schools: '+e); }

@@ -317,8 +317,15 @@ func TestAdminSchoolAccessAPI(t *testing.T) {
 	if ok, err := st.AnonymousFeature("ntfy"); err != nil || !ok {
 		t.Fatalf("ntfy flag = (%v, %v), want true", ok, err)
 	}
+	res = adminRequest(t, p, "bob", http.MethodPost, "/admin/anonymous/classes", `{"enabled":true}`)
+	if !strings.Contains(res.Body.String(), `"feature":"classes"`) || !strings.Contains(res.Body.String(), `"enabled":true`) {
+		t.Fatalf("anonymous classes enable response = %s", res.Body.String())
+	}
+	if ok, err := st.AnonymousFeature("classes"); err != nil || !ok {
+		t.Fatalf("classes flag = (%v, %v), want true", ok, err)
+	}
 	res = adminRequest(t, p, "bob", http.MethodGet, "/admin/anonymous", "")
-	if !strings.Contains(res.Body.String(), `"ntfy":true`) {
+	if !strings.Contains(res.Body.String(), `"ntfy":true`) || !strings.Contains(res.Body.String(), `"classes":true`) {
 		t.Fatalf("anonymous matrix response = %s", res.Body.String())
 	}
 	res = adminRequest(t, p, "bob", http.MethodPost, "/admin/anonymous/calendar", `{"enabled":true}`)
