@@ -398,6 +398,15 @@ two controls:
   unblocking is a single flag flip. The configured default school cannot be
   blocked, which prevents locking the deployment out of itself.
 
+The **Anonymous access** table decides what the shared read-only `#anonymous#`
+session may do per school: the login itself, ntfy, webhooks, calendar feeds, and
+live change polling/SSE. The login defaults **on**; the self-service surfaces
+default **off**, so existing deployments keep their historical read-only
+behaviour until an admin opts a school in. Turning the login off cuts every
+surface. The API is `POST /admin/schools/{school}/anonymous/{login|ntfy|webhooks|calendar|changes}`
+with `{"enabled": bool}`. Anonymous sessions never create a user row; they share
+one owner per school and may only target classes the change poller maintains.
+
 `DELETE /admin/schools/{school}` removes the registration row only; the pool,
 users, tokens and other per-school data remain. If auto-registration is still
 on, that school can register again on its next login — use **block** to keep it

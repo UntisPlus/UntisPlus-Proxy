@@ -807,6 +807,62 @@ func (p *Proxy) anonymousAllowed(school string) bool {
 	return err == nil && ok
 }
 
+// anonymousSessionUser returns the synthetic read-only user for an anonymous
+// proxy session. It looks at the session directly instead of going through
+// store.GetUser: "#anonymous#" is deliberately never persisted as a user, and a
+// stale row must not turn an anonymous session into a real account.
+func (p *Proxy) anonymousSessionUser(r *http.Request, school string) *store.User {
+	ck, err := r.Cookie("JSESSIONID")
+	if err != nil || ck.Value == "" {
+		return nil
+	}
+	s := p.sessions.Get(ck.Value)
+	if s == nil || s.Username != "#anonymous#" {
+		return nil
+	}
+	return &store.User{Username: "#anonymous#", School: school, PersonType: 5}
+}
+
+// anonymousFeature reports whether one opt-in anonymous capability is enabled.
+// The master login switch always wins: a disabled login cuts every surface,
+// even if an individual flag was left on.
+func (p *Proxy) anonymousFeature(school, feature string) bool {
+	if !p.anonymousAllowed(school) {
+		return false
+	}
+	ok, err := p.store.AnonymousFeature(school, feature)
+	return err == nil && ok
+}
+
+// sessionUserFor resolves the caller for a self-service endpoint. A real
+// session wins; an anonymous session becomes the synthetic read-only user only
+// when the school enables the requested capability. Returning nil keeps the
+// handlers' existing 401 path unchanged.
+func (p *Proxy) sessionUserFor(r *http.Request, school, feature string) *store.User {
+	if u := p.anonymousSessionUser(r, school); u != nil {
+		if !p.anonymousFeature(school, feature) {
+			return nil
+		}
+		return u
+	}
+	return p.sessionUser(r)
+}
+
+// sessionUserForAny is sessionUserFor for an endpoint shared by several
+// capabilities: an anonymous session is admitted when at least one of the
+// named features is enabled. Real sessions are unaffected.
+func (p *Proxy) sessionUserForAny(r *http.Request, school string, features ...string) *store.User {
+	if u := p.anonymousSessionUser(r, school); u != nil {
+		for _, f := range features {
+			if p.anonymousFeature(school, f) {
+				return u
+			}
+		}
+		return nil
+	}
+	return p.sessionUser(r)
+}
+
 // isBoosted reports whether a user effectively gets Boosted raw timetable
 // forwarding (holds the boosted flag).
 func (p *Proxy) isBoosted(username string) bool {

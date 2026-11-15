@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 // TestSchoolBlockingAndAllowNew covers the access controls behind the dashboard:
 // a blocked flag that survives an upsert, an allow-new switch whose default
@@ -128,6 +131,66 @@ func TestSchoolAnonymousSwitch(t *testing.T) {
 	}
 	if ok, err := st.AnonymousAllowed("other"); err != nil || !ok {
 		t.Fatalf("AnonymousAllowed after enable = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+// TestSchoolAnonymousFeatures covers the opt-in capabilities layered on top of
+// the anonymous login: a fresh school starts with all of them off, each toggle
+// persists independently, and an unknown feature name is rejected rather than
+// silently ignored.
+func TestSchoolAnonymousFeatures(t *testing.T) {
+	st := openTestStore(t)
+
+	// Unknown school: login follows allow-new, opt-in features do not exist yet.
+	if err := st.SetAllowNewSchools(true); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.AnonymousAllowed("other"); err != nil || !ok {
+		t.Fatalf("AnonymousAllowed unknown = (%v, %v), want (true, nil)", ok, err)
+	}
+	for _, f := range []string{"ntfy", "webhooks", "calendar", "changes"} {
+		if ok, err := st.AnonymousFeature("other", f); err != nil || ok {
+			t.Fatalf("AnonymousFeature(unknown, %s) = (%v, %v), want (false, nil)", f, ok, err)
+		}
+	}
+
+	if err := st.UpsertSchool("other"); err != nil {
+		t.Fatalf("upsert school: %v", err)
+	}
+	for _, f := range []string{"ntfy", "webhooks", "calendar", "changes"} {
+		if ok, err := st.AnonymousFeature("other", f); err != nil || ok {
+			t.Fatalf("new school %s = (%v, %v), want disabled", f, ok, err)
+		}
+		if err := st.SetSchoolAnonymousFeature("other", f, true); err != nil {
+			t.Fatalf("enable %s: %v", f, err)
+		}
+		if ok, err := st.AnonymousFeature("other", f); err != nil || !ok {
+			t.Fatalf("enabled %s = (%v, %v), want true", f, ok, err)
+		}
+	}
+	// Each flag is independent: turning one off leaves the others alone.
+	if err := st.SetSchoolAnonymousFeature("other", "ntfy", false); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := st.AnonymousFeature("other", "ntfy"); ok {
+		t.Fatal("ntfy stayed on after disabling it")
+	}
+	if ok, _ := st.AnonymousFeature("other", "webhooks"); !ok {
+		t.Fatal("disabling ntfy also disabled webhooks")
+	}
+	info, err := st.SchoolInfo("other")
+	if err != nil || info == nil {
+		t.Fatalf("SchoolInfo: %+v, %v", info, err)
+	}
+	if info.AnonNtfy || !info.AnonWebhooks || !info.AnonCalendar || !info.AnonChanges {
+		t.Fatalf("SchoolInfo flags = %+v", info)
+	}
+
+	if err := st.SetSchoolAnonymousFeature("other", "nope", true); !errors.Is(err, ErrUnknownAnonymousFeature) {
+		t.Fatalf("unknown feature error = %v, want ErrUnknownAnonymousFeature", err)
+	}
+	if _, err := st.AnonymousFeature("other", "nope"); !errors.Is(err, ErrUnknownAnonymousFeature) {
+		t.Fatalf("unknown AnonymousFeature error = %v, want ErrUnknownAnonymousFeature", err)
 	}
 }
 

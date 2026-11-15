@@ -1124,20 +1124,31 @@ func (p *Proxy) warmBoostedStudents(school string) {
 // handleTimetableChanges is the pollable diff API. It requires a session whose
 // class matches classId; returns pending changes since `since`.
 func (p *Proxy) handleTimetableChanges(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUser(r)
-	if u == nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
 	school := r.URL.Query().Get("school")
 	if school == "" {
 		school = p.opts.School
+	}
+	u := p.sessionUserFor(r, school, "changes")
+	if u == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
 	}
 	classID, err := strconv.ParseInt(r.URL.Query().Get("classId"), 10, 64)
 	if err != nil || classID <= 0 {
 		classID = u.ClassID
 	}
-	if classID != u.ClassID {
+	if u.Username == "#anonymous#" {
+		// Anonymous has no class of its own; it may follow any class the poller
+		// maintains, but must name it explicitly.
+		if classID <= 0 {
+			p.forbidden(w)
+			return
+		}
+		if ok, _ := p.store.PoolContains(school, classID); !ok {
+			p.forbidden(w)
+			return
+		}
+	} else if classID != u.ClassID {
 		p.forbidden(w)
 		return
 	}
@@ -1194,12 +1205,12 @@ func (p *Proxy) handleTimetableChanges(w http.ResponseWriter, r *http.Request) {
 // Every stream also carries the caller's private student-events counter.
 // Heartbeats every 30s.
 func (p *Proxy) handleTimetableStream(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUser(r)
+	school := p.requestSchool(r)
+	u := p.sessionUserFor(r, school, "changes")
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	school := p.requestSchool(r)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {

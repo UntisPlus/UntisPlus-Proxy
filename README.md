@@ -225,6 +225,29 @@ subject (the element families gated by recon/boosted/staff), or school-wide for
 editor/boosted/admin — and `GET /api/notifications/options` lists exactly what
 the caller may watch. Both list endpoints return only the caller's own rows.
 
+### Anonymous access
+
+The dashboard's **Anonymous access** table decides what the school-wide
+read-only `#anonymous#` session may do. The login itself is on by default; the
+opt-in surfaces are off so an existing deployment keeps its historical
+read-only behaviour:
+
+| Toggle | Effect when enabled |
+|---|---|
+| **login** | Upstream `#anonymous#` login and raw class timetable reads. Turning it off overrides every other toggle. |
+| **ntfy** | Create / list / test / delete ntfy subscriptions for pooled classes. |
+| **webhooks** | Create / list / test / delete webhook subscriptions for pooled classes. |
+| **calendar** | Mint and manage public ICS tokens for pooled classes. |
+| **live changes** | Poll `/api/timetable/changes` and open `/api/timetable/stream` for pooled classes. |
+
+Anonymous sessions never create a stored user. They share one `#anonymous#`
+owner per school, so subscriptions and calendar tokens created anonymously are
+visible to other anonymous sessions of that school; that is the cost of having
+no account. Anonymous targets are limited to classes the change poller actually
+maintains, and personal/teacher/room/subject targets stay unavailable. The
+dashboard API is `POST /admin/schools/{school}/anonymous/{login|ntfy|webhooks|calendar|changes}`
+with `{"enabled":true|false}`.
+
 Full reference: [`docs/ADMIN-WEBHOOKS-NTFY.md`](docs/ADMIN-WEBHOOKS-NTFY.md).
 
 ---

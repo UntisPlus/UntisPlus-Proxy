@@ -78,14 +78,14 @@ func (p *Proxy) resolveNotifTarget(school string, u *store.User, canAll bool, re
 }
 
 func (p *Proxy) handleSubsWebhooks(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUser(r)
-	if u == nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
 	school := r.URL.Query().Get("school")
 	if school == "" {
 		school = p.opts.School
+	}
+	u := p.sessionUserFor(r, school, "webhooks")
+	if u == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
 	}
 
 	canAll := p.isEditor(u.Username) || p.isBoosted(u.Username) || p.isAdmin(u.Username)
@@ -235,14 +235,14 @@ func (p *Proxy) handleSubsWebhooks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Proxy) handleSubsNtfy(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUser(r)
-	if u == nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		return
-	}
 	school := r.URL.Query().Get("school")
 	if school == "" {
 		school = p.opts.School
+	}
+	u := p.sessionUserFor(r, school, "ntfy")
+	if u == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
 	}
 
 	canAll := p.isEditor(u.Username) || p.isBoosted(u.Username) || p.isAdmin(u.Username)
@@ -406,6 +406,12 @@ func (p *Proxy) handleSubsNtfy(w http.ResponseWriter, r *http.Request) {
 func (p *Proxy) canSubscribeClass(school string, u *store.User, classID int64, privileged bool) bool {
 	if classID == 0 {
 		return privileged
+	}
+	if u.Username == "#anonymous#" {
+		// Anonymous has no class of its own, so it may watch any class the
+		// poller actually maintains. A non-pooled class would never fire.
+		ok, _ := p.store.PoolContains(school, classID)
+		return ok
 	}
 	if classID == u.ClassID {
 		return true

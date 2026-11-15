@@ -172,6 +172,20 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
     && jsq("a'b" + String.fromCharCode(34)).indexOf(String.fromCharCode(34))<0,
     'jsq does not neutralise quotes or tags for an inline handler');
 
+  // Anonymous access matrix: the login switch is always operable, while the
+  // opt-in surfaces are disabled until it is on. This mirrors the proxy, where
+  // a disabled login wins over every capability flag.
+  schoolList=[{name:'schuldorf',anonymous:false,anonNtfy:true}];
+  renderAnonymous();
+  let anonRow=_sel('__q').children[0];
+  must(anonRow._html.indexOf('disabled title="enable anonymous login first"')>=0,
+    'anonymous feature buttons stay clickable while login is off');
+  schoolList=[{name:'schuldorf',anonymous:true,anonNtfy:true,anonWebhooks:false,anonCalendar:false,anonChanges:true}];
+  renderAnonymous();
+  anonRow=_sel('__q').children[0];
+  must(anonRow._html.indexOf('setSchoolAnonFeature')>=0, 'anonymous feature toggles missing');
+  must(anonRow._html.indexOf('disabled title=')<0, 'login-on row kept the feature buttons disabled');
+
   console.log('check-admin-ui: all admin UI checks passed');
 })().catch(function(e){ console.error('FAIL: ' + (e && e.stack || e)); process.exit(1); });
 `;

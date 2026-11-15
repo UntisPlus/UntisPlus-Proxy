@@ -57,16 +57,11 @@ func tokenExpired(tok *store.ClassToken) bool {
 
 // handleCalendarToken creates (or returns the existing) calendar subscription
 // token. It supports class, personal/student, teacher, room, and subject
-// timetables. It requires a valid session.
+// timetables. It requires a valid session, or an anonymous session when the
+// school enables the calendar capability.
 func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	u := p.sessionUser(r)
-	if u == nil {
-		w.WriteHeader(http.StatusUnauthorized)
-		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 		return
 	}
 	var req struct {
@@ -87,6 +82,14 @@ func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 	school := req.School
 	if school == "" {
 		school = p.opts.School
+	}
+	// Resolve identity after the body so the capability check uses the same
+	// school the token will be minted for.
+	u := p.sessionUserFor(r, school, "calendar")
+	if u == nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+		return
 	}
 	if !p.schoolAdmitted(school) {
 		w.Header().Set("Content-Type", "application/json")
@@ -447,32 +450,34 @@ func (p *Proxy) requestSchool(r *http.Request) string {
 // handleCalendarOptions lists the calendar targets the signed-in user can
 // subscribe to, mirroring what they can already see in the app.
 func (p *Proxy) handleCalendarOptions(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUser(r)
+	school := p.requestSchool(r)
+	u := p.sessionUserFor(r, school, "calendar")
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 		return
 	}
-	p.writeJSON(w, p.subscriptionOptions(p.requestSchool(r), u, true))
+	p.writeJSON(w, p.subscriptionOptions(school, u, true))
 }
 
 // handleNotificationOptions lists the timetable targets the signed-in user may
 // watch with a webhook or ntfy subscription. It is the same catalog as the
 // calendar options, minus the Technik aggregate the poller cannot deliver.
 func (p *Proxy) handleNotificationOptions(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUser(r)
+	school := p.requestSchool(r)
+	u := p.sessionUserForAny(r, school, "ntfy", "webhooks")
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 		return
 	}
-	p.writeJSON(w, p.subscriptionOptions(p.requestSchool(r), u, false))
+	p.writeJSON(w, p.subscriptionOptions(school, u, false))
 }
 
 // handleCalendarTokens lists only the tokens the requesting user created, so
 // the self-service page is scoped to its owner.
 func (p *Proxy) handleCalendarTokens(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUser(r)
+	u := p.sessionUserFor(r, p.requestSchool(r), "calendar")
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
@@ -502,12 +507,18 @@ func (p *Proxy) calendarOwnedToken(r *http.Request, u *store.User) (*store.Class
 	if tok.CreatedBy != u.Username {
 		return nil, false
 	}
+	// All anonymous users share the "#anonymous#" creator name, so a token is
+	// only theirs when it belongs to the school this request targets. Without
+	// this check an anonymous session could manage another school's feed.
+	if u.Username == "#anonymous#" && tok.School != p.requestSchool(r) {
+		return nil, false
+	}
 	return tok, true
 }
 
 // handleCalendarDelete revokes one of the caller's own calendar subscriptions.
 func (p *Proxy) handleCalendarDelete(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUser(r)
+	u := p.sessionUserFor(r, p.requestSchool(r), "calendar")
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
@@ -529,7 +540,7 @@ func (p *Proxy) handleCalendarDelete(w http.ResponseWriter, r *http.Request) {
 // handleCalendarUpdate changes the lookahead window of one of the caller's own
 // calendar subscriptions. Days are clamped exactly like mint.
 func (p *Proxy) handleCalendarUpdate(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUser(r)
+	u := p.sessionUserFor(r, p.requestSchool(r), "calendar")
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
@@ -567,7 +578,7 @@ func (p *Proxy) handleCalendarUpdate(w http.ResponseWriter, r *http.Request) {
 // value stops working immediately; the response carries the new URL, which is
 // the only way a subscriber learns it.
 func (p *Proxy) handleCalendarRotate(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUser(r)
+	u := p.sessionUserFor(r, p.requestSchool(r), "calendar")
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
