@@ -69,6 +69,68 @@ func TestSchoolBlockingAndAllowNew(t *testing.T) {
 	}
 }
 
+// TestSchoolAnonymousSwitch covers the per-school anonymous login switch: it is
+// enabled by default, an unknown school follows allow-new, and an upsert must
+// not silently flip a disabled switch back on.
+func TestSchoolAnonymousSwitch(t *testing.T) {
+	st := openTestStore(t)
+
+	if ok, err := st.AnonymousAllowed("other"); err != nil || !ok {
+		t.Fatalf("AnonymousAllowed unknown default = (%v, %v), want (true, nil)", ok, err)
+	}
+	if err := st.SetAllowNewSchools(false); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := st.AnonymousAllowed("other"); err != nil || ok {
+		t.Fatalf("AnonymousAllowed unknown after allow-new off = (%v, %v), want (false, nil)", ok, err)
+	}
+	if err := st.SetAllowNewSchools(true); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := st.UpsertSchool("other"); err != nil {
+		t.Fatalf("upsert school: %v", err)
+	}
+	info, err := st.SchoolInfo("other")
+	if err != nil || info == nil || !info.Anonymous {
+		t.Fatalf("new school anonymous = (%+v, %v), want enabled", info, err)
+	}
+	if err := st.SetSchoolAnonymous("other", false); err != nil {
+		t.Fatalf("disable anonymous: %v", err)
+	}
+	info, err = st.SchoolInfo("other")
+	if err != nil || info == nil || info.Anonymous {
+		t.Fatalf("SchoolInfo after disable = (%+v, %v), want anonymous off", info, err)
+	}
+	if ok, err := st.AnonymousAllowed("other"); err != nil || ok {
+		t.Fatalf("AnonymousAllowed after disable = (%v, %v), want (false, nil)", ok, err)
+	}
+
+	// A login bumps last_seen via UpsertSchool; that must not turn anonymous
+	// back on behind the admin's back.
+	if err := st.UpsertSchool("other"); err != nil {
+		t.Fatal(err)
+	}
+	info, err = st.SchoolInfo("other")
+	if err != nil || info == nil || info.Anonymous {
+		t.Fatalf("anonymous flag was cleared by upsert: (%+v, %v)", info, err)
+	}
+	schools, err := st.ListSchools()
+	if err != nil {
+		t.Fatalf("ListSchools: %v", err)
+	}
+	if len(schools) != 1 || schools[0].Anonymous {
+		t.Fatalf("ListSchools = %+v, want one school with anonymous off", schools)
+	}
+
+	if err := st.SetSchoolAnonymous("other", true); err != nil {
+		t.Fatalf("enable anonymous: %v", err)
+	}
+	if ok, err := st.AnonymousAllowed("other"); err != nil || !ok {
+		t.Fatalf("AnonymousAllowed after enable = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
 // TestOutageNtfyCRUD: re-adding the same scope/topic/server is idempotent, and
 // deletion only removes the requested row.
 func TestOutageNtfyCRUD(t *testing.T) {

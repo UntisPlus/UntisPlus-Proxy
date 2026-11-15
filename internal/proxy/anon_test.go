@@ -44,6 +44,27 @@ func TestKeyLoginAnonymousSkipsReplayKey(t *testing.T) {
 	if u, _ := st.GetUser("#anonymous#"); u != nil {
 		t.Fatalf("anonymous login persisted a user row: %+v", u)
 	}
+
+	if err := st.SetSchoolAnonymous("testschool", false); err != nil {
+		t.Fatalf("disable anonymous: %v", err)
+	}
+	f.mu.Lock()
+	f.loginAuth = nil
+	f.mu.Unlock()
+	blocked := httptest.NewRequest(http.MethodPost,
+		"/WebUntis/jsonrpc_intern.do?m=getUserData2017&school=testschool",
+		strings.NewReader(loginBody(t, "#anonymous#", "0")))
+	blockedRec := httptest.NewRecorder()
+	p.handleJSONRPCIntern(blockedRec, blocked)
+	if code := errCode(t, blockedRec); code != -8504 {
+		t.Fatalf("disabled anonymous login error = %d, want -8504 (body %s)", code, blockedRec.Body.String())
+	}
+	f.mu.Lock()
+	auth = f.loginAuth
+	f.mu.Unlock()
+	if auth != nil {
+		t.Fatalf("disabled anonymous login still reached upstream with %v", auth)
+	}
 }
 
 // TestAnonymousClassTimetableForwardedRaw is the regression test for the
@@ -117,5 +138,19 @@ func TestAnonymousClassTimetableForwardedRaw(t *testing.T) {
 	}
 	if u, _ := st.GetUser("#anonymous#"); u != nil {
 		t.Fatalf("timetable persisted an anonymous user row: %+v", u)
+	}
+
+	// Disabling anonymous closes both the login and the raw forwarding path: an
+	// already-issued anonymous session must not keep reading timetables.
+	if err := st.SetSchoolAnonymous("testschool", false); err != nil {
+		t.Fatalf("disable anonymous: %v", err)
+	}
+	disabled := internReq(t, p, "getTimetable2017", "",
+		internBody("getTimetable2017", param))
+	if code := errCode(t, disabled); code != -8509 {
+		t.Fatalf("disabled anonymous timetable error = %d, want -8509 (body %s)", code, disabled.Body.String())
+	}
+	if got := f.TimetableCalls(); got != 2 {
+		t.Fatalf("disabled anonymous request reached upstream (%d timetable calls, want 2)", got)
 	}
 }

@@ -299,6 +299,14 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 		p.writeJSONRPCError(w, req.ID, "no username specified", -8502)
 		return
 	}
+	// The anonymous account is a session, not a replayable user. Never forward
+	// a stored placeholder secret or a caller-supplied key for it, and never
+	// persist one: upstream validates the anonymous login on its own.
+	isAnon := auth.User == "#anonymous#"
+	if isAnon && !p.anonymousAllowed(school) {
+		p.writeJSONRPCError(w, req.ID, "anonymous login disabled for this school", -8504)
+		return
+	}
 	if p.loginRateLimited(w, r, school, auth.User) {
 		p.writeJSONRPCError(w, req.ID, "too many login attempts, try again later", -8504)
 		return
@@ -309,10 +317,6 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 			otp = s
 		}
 	}
-	// The anonymous account is a session, not a replayable user. Never forward
-	// a stored placeholder secret or a caller-supplied key for it, and never
-	// persist one: upstream validates the anonymous login on its own.
-	isAnon := auth.User == "#anonymous#"
 	extra := map[string]any{}
 	replayKey := ""
 	if !isAnon {
@@ -784,6 +788,10 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 	// owner account or the shared class cache: a warmed cache entry may belong
 	// to a class the anonymous account is not allowed to read.
 	if requesterName == "#anonymous#" {
+		if !p.anonymousAllowed(school) {
+			p.writeJSONRPCError(w, id, "anonymous access disabled for this school", -8509)
+			return
+		}
 		b, status, _, err := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
 		if err != nil {
 			p.writeJSONRPCError(w, id, "no right for timetable", -8509)

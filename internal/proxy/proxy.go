@@ -795,6 +795,18 @@ func (p *Proxy) isAdmin(username string) bool {
 	return ok
 }
 
+// anonymousAllowed reports whether a school may use the upstream "#anonymous#"
+// login and the raw timetable forwarding that follows it. Unknown schools follow
+// the auto-registration decision, so only an explicit per-school switch (or a
+// deployment that stopped accepting new schools) turns it off.
+func (p *Proxy) anonymousAllowed(school string) bool {
+	if school == "" {
+		school = p.opts.School
+	}
+	ok, err := p.store.AnonymousAllowed(school)
+	return err == nil && ok
+}
+
 // isBoosted reports whether a user effectively gets Boosted raw timetable
 // forwarding (holds the boosted flag).
 func (p *Proxy) isBoosted(username string) bool {

@@ -521,6 +521,26 @@ func (p *Proxy) adminSchools(w http.ResponseWriter, r *http.Request, parts []str
 		p.audit(r, name, "school.block", name, "blocked="+strconv.FormatBool(blocked))
 		p.writeJSON(w, map[string]any{"school": name, "blocked": blocked})
 		return
+	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "anonymous":
+		name := strings.TrimSpace(parts[0])
+		if name == "" {
+			p.writeJSON(w, map[string]any{"error": "school required"})
+			return
+		}
+		var req struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Enabled == nil {
+			p.writeJSON(w, map[string]any{"error": "enabled required"})
+			return
+		}
+		if err := p.store.SetSchoolAnonymous(name, *req.Enabled); err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.audit(r, name, "school.anonymous", name, "enabled="+strconv.FormatBool(*req.Enabled))
+		p.writeJSON(w, map[string]any{"school": name, "anonymous": *req.Enabled})
+		return
 	case r.Method == http.MethodDelete && len(parts) == 1:
 		name := strings.TrimSpace(parts[0])
 		if name == "" {
@@ -557,14 +577,15 @@ func (p *Proxy) adminSchools(w http.ResponseWriter, r *http.Request, parts []str
 		return
 	}
 	type schoolOut struct {
-		Name     string `json:"name"`
-		AddedAt  int64  `json:"addedAt"`
-		LastSeen int64  `json:"lastSeen"`
-		Blocked  bool   `json:"blocked"`
+		Name      string `json:"name"`
+		AddedAt   int64  `json:"addedAt"`
+		LastSeen  int64  `json:"lastSeen"`
+		Blocked   bool   `json:"blocked"`
+		Anonymous bool   `json:"anonymous"`
 	}
 	out := make([]schoolOut, 0, len(schools))
 	for _, sc := range schools {
-		out = append(out, schoolOut{sc.Name, sc.AddedAt.Unix(), sc.LastSeen.Unix(), sc.Blocked})
+		out = append(out, schoolOut{sc.Name, sc.AddedAt.Unix(), sc.LastSeen.Unix(), sc.Blocked, sc.Anonymous})
 	}
 	p.writeJSON(w, map[string]any{"schools": out, "allowNew": allowNew, "defaultSchool": p.opts.School})
 }

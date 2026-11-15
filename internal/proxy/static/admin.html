@@ -69,7 +69,7 @@
       allow new schools to auto-register
     </label>
   </div>
-  <table id="schools"><thead><tr><th>school</th><th>added</th><th>last seen</th><th>status</th><th></th></tr></thead><tbody></tbody></table>
+  <table id="schools"><thead><tr><th>school</th><th>added</th><th>last seen</th><th>status</th><th>anonymous</th><th></th></tr></thead><tbody></tbody></table>
 </section>
 
 <section>
@@ -911,7 +911,10 @@ async function loadSchools(){
               '<button class="mini danger" onclick="delSchool('+n+')">del</button>';
     }
     tr.innerHTML='<td>'+esc(s.name)+'</td><td>'+new Date(s.addedAt*1000||0).toLocaleDateString()+'</td><td>'+new Date(s.lastSeen*1000||0).toLocaleString()+'</td>'+
-      '<td>'+(s.blocked?'<span style="color:#ff6b6b">blocked</span>':'active')+'</td><td>'+actions+'</td>';
+      '<td>'+(s.blocked?'<span style="color:#ff6b6b">blocked</span>':'active')+'</td>'+
+      '<td><button class="mini '+(s.anonymous?'danger':'')+'" onclick="setSchoolAnonymous('+n+','+(!s.anonymous)+')">'+(s.anonymous?'disable':'enable')+'</button> '+
+      (s.anonymous?'<span style="font-size:.72rem;color:#7dd3a0">enabled</span>':'<span style="font-size:.72rem;color:#9aa0ae">disabled</span>')+'</td>'+
+      '<td>'+actions+'</td>';
     tb.appendChild(tr);
   }
 }
@@ -925,6 +928,12 @@ async function setSchoolBlocked(name, blocked){
   const d=await api('POST','schools/'+encodeURIComponent(name)+(blocked?'/block':'/unblock'));
   if(d.error){ log('school access: '+d.error); return; }
   log((blocked?'blocked ':'unblocked ')+name);
+  loadSchools(); renderCards();
+}
+async function setSchoolAnonymous(name, enabled){
+  const d=await api('POST','schools/'+encodeURIComponent(name)+'/anonymous',{enabled:enabled});
+  if(d.error){ log('anonymous access: '+d.error); return; }
+  log('anonymous login '+(enabled?'enabled':'disabled')+' for '+name);
   loadSchools(); renderCards();
 }
 async function delSchool(name){

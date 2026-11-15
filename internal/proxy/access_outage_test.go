@@ -296,6 +296,20 @@ func TestAdminSchoolAccessAPI(t *testing.T) {
 		t.Fatalf("unblock response = %s", res.Body.String())
 	}
 
+	res = adminRequest(t, p, "bob", http.MethodPost, "/admin/schools/other/anonymous", `{"enabled":false}`)
+	if !strings.Contains(res.Body.String(), `"anonymous":false`) {
+		t.Fatalf("anonymous disable response = %s", res.Body.String())
+	}
+	info, _ = st.SchoolInfo("other")
+	if info == nil || info.Anonymous {
+		t.Fatalf("school anonymous still enabled: %+v", info)
+	}
+
+	res = adminRequest(t, p, "bob", http.MethodPost, "/admin/schools/other/anonymous", `{"enabled":true}`)
+	if !strings.Contains(res.Body.String(), `"anonymous":true`) {
+		t.Fatalf("anonymous enable response = %s", res.Body.String())
+	}
+
 	res = adminRequest(t, p, "bob", http.MethodPost, "/admin/schools/settings", `{"allowNew":false}`)
 	if !strings.Contains(res.Body.String(), `"allowNew":false`) {
 		t.Fatalf("settings response = %s", res.Body.String())

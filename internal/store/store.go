@@ -589,6 +589,12 @@ func Open(path string) (*Store, error) {
 	if err := addColumnIfMissing(db, "schools", "blocked", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return nil, err
 	}
+	// migration: per-school anonymous login switch. Enabled by default so the
+	// behaviour of existing deployments does not change until an admin turns it
+	// off for a school.
+	if err := addColumnIfMissing(db, "schools", "anonymous", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return nil, err
+	}
 	// migration: add admin flag column to users
 	if err := addColumnIfMissing(db, "users", "admin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return nil, err
@@ -1330,6 +1336,10 @@ type School struct {
 	// Blocked refuses every public request for this school. The row and its
 	// data stay, so unblocking is a single flag flip rather than a re-import.
 	Blocked bool
+	// Anonymous permits the upstream "#anonymous#" read-only login. It is on
+	// by default so existing deployments keep working, but an admin can turn
+	// it off for a school that should require a real account.
+	Anonymous bool
 }
 
 // SettingSchoolsAllowNew is the settings key that decides whether an unknown
@@ -1362,7 +1372,7 @@ func (s *Store) SetAllowNewSchools(allow bool) error {
 
 // ListSchools returns every registered school, most recently seen first.
 func (s *Store) ListSchools() ([]*School, error) {
-	rows, err := s.db.Query(`SELECT school, added_at, last_seen, blocked FROM schools ORDER BY last_seen DESC, school`)
+	rows, err := s.db.Query(`SELECT school, added_at, last_seen, blocked, anonymous FROM schools ORDER BY last_seen DESC, school`)
 	if err != nil {
 		return nil, err
 	}
@@ -1370,12 +1380,13 @@ func (s *Store) ListSchools() ([]*School, error) {
 	var out []*School
 	for rows.Next() {
 		var sc School
-		var a, ls, blocked int64
-		if err := rows.Scan(&sc.Name, &a, &ls, &blocked); err != nil {
+		var a, ls, blocked, anonymous int64
+		if err := rows.Scan(&sc.Name, &a, &ls, &blocked, &anonymous); err != nil {
 			return nil, err
 		}
 		sc.AddedAt, sc.LastSeen = time.Unix(a, 0), time.Unix(ls, 0)
 		sc.Blocked = blocked != 0
+		sc.Anonymous = anonymous != 0
 		out = append(out, &sc)
 	}
 	return out, rows.Err()
@@ -1384,9 +1395,9 @@ func (s *Store) ListSchools() ([]*School, error) {
 // SchoolInfo returns one registered school, or nil when it is unknown.
 func (s *Store) SchoolInfo(school string) (*School, error) {
 	var sc School
-	var a, ls, blocked int64
-	err := s.db.QueryRow(`SELECT school, added_at, last_seen, blocked FROM schools WHERE school=?`, school).
-		Scan(&sc.Name, &a, &ls, &blocked)
+	var a, ls, blocked, anonymous int64
+	err := s.db.QueryRow(`SELECT school, added_at, last_seen, blocked, anonymous FROM schools WHERE school=?`, school).
+		Scan(&sc.Name, &a, &ls, &blocked, &anonymous)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1395,6 +1406,7 @@ func (s *Store) SchoolInfo(school string) (*School, error) {
 	}
 	sc.AddedAt, sc.LastSeen = time.Unix(a, 0), time.Unix(ls, 0)
 	sc.Blocked = blocked != 0
+	sc.Anonymous = anonymous != 0
 	return &sc, nil
 }
 
@@ -1427,6 +1439,36 @@ func (s *Store) SetSchoolBlocked(school string, blocked bool) error {
 		ON CONFLICT(school) DO UPDATE SET blocked=excluded.blocked`,
 		school, now, now, b)
 	return err
+}
+
+// SetSchoolAnonymous enables or disables the anonymous login for a school. It
+// creates the row when needed, exactly like SetSchoolBlocked, so the decision
+// can be made before the school ever logs in.
+func (s *Store) SetSchoolAnonymous(school string, enabled bool) error {
+	a := 0
+	if enabled {
+		a = 1
+	}
+	now := time.Now().Unix()
+	_, err := s.db.Exec(`INSERT INTO schools (school, added_at, last_seen, anonymous) VALUES (?,?,?,?)
+		ON CONFLICT(school) DO UPDATE SET anonymous=excluded.anonymous`,
+		school, now, now, a)
+	return err
+}
+
+// AnonymousAllowed reports whether a school may use the anonymous login. An
+// unknown school follows the auto-registration decision, so a deployment that
+// accepts new schools keeps accepting their anonymous logins until an admin
+// turns the switch off.
+func (s *Store) AnonymousAllowed(school string) (bool, error) {
+	info, err := s.SchoolInfo(school)
+	if err != nil {
+		return false, err
+	}
+	if info == nil {
+		return s.AllowNewSchools()
+	}
+	return info.Anonymous, nil
 }
 
 // DeleteSchool removes a school registration. Its pool, users, tokens and other
