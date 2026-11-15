@@ -511,6 +511,29 @@ func (p *Proxy) markPooledElementsDisplayableInner(school string, body []byte, u
 	requester, _ := p.store.GetUser(username)
 	isStudent := requester != nil && requester.PersonType == 5
 	boosted := p.isBoosted(username)
+	// The shared "#anonymous#" session has no stored account, so it cannot hold
+	// recon or boosted. Give it the pooled classes on top of whatever upstream
+	// exposes to the anonymous account: a school that hides every class from
+	// #anonymous# would otherwise show an empty picker, while a school that
+	// already marks its classes displayable must keep them.
+	if username == "#anonymous#" {
+		if items, ok := md["klassen"].([]any); ok {
+			for _, item := range items {
+				ci, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				if idf, ok := ci["id"].(float64); ok && pooled[int64(idf)] {
+					ci["displayable"] = true
+				}
+			}
+		}
+		out, err := json.Marshal(m)
+		if err != nil {
+			return body
+		}
+		return out
+	}
 	if !isStudent {
 		out, err := json.Marshal(m)
 		if err != nil {
@@ -783,29 +806,41 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 		return
 	}
 	// Anonymous is a real upstream session but deliberately not a stored user.
-	// Forward the request raw with its own auth block so upstream applies the
-	// anonymous account's read permissions. Never route it through the pool, an
-	// owner account or the shared class cache: a warmed cache entry may belong
-	// to a class the anonymous account is not allowed to read.
+	// A pooled class is served from the pool's student owners, exactly like a
+	// real student would get it, so a school whose #anonymous# account has no
+	// timetable right still works for the classes the proxy knows.
+	// Any other target (and any non-pooled class) is forwarded raw and left to
+	// upstream's anonymous permissions, which is what makes a school with wider
+	// anonymous class visibility keep working.
+	var requester *store.User
 	if requesterName == "#anonymous#" {
 		if !p.anonymousAllowed(school) {
 			p.writeJSONRPCError(w, id, "anonymous access disabled for this school", -8509)
 			return
 		}
-		b, status, _, err := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
-		if err != nil {
-			p.writeJSONRPCError(w, id, "no right for timetable", -8509)
+		if pr.Type == "CLASS" {
+			if pooled, err := p.store.PoolContains(school, pr.ID); err == nil && pooled {
+				requester = &store.User{Username: requesterName, School: school, PersonType: 5}
+			}
+		}
+		if requester == nil {
+			b, status, _, err := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
+			if err != nil {
+				p.writeJSONRPCError(w, id, "no right for timetable", -8509)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(status)
+			_, _ = w.Write(b)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(status)
-		_, _ = w.Write(b)
-		return
-	}
-	requester, err := p.store.GetUser(requesterName)
-	if err != nil || requester == nil {
-		p.writeJSONRPCError(w, id, "not logged in", -8520)
-		return
+	} else {
+		var err error
+		requester, err = p.store.GetUser(requesterName)
+		if err != nil || requester == nil {
+			p.writeJSONRPCError(w, id, "not logged in", -8520)
+			return
+		}
 	}
 
 	// boost: serve ALL timetables (class/teacher/room/subject AND the user's own

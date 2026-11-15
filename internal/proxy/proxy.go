@@ -823,14 +823,14 @@ func (p *Proxy) anonymousSessionUser(r *http.Request, school string) *store.User
 	return &store.User{Username: "#anonymous#", School: school, PersonType: 5}
 }
 
-// anonymousFeature reports whether one opt-in anonymous capability is enabled.
-// The master login switch always wins: a disabled login cuts every surface,
-// even if an individual flag was left on.
+// anonymousFeature reports whether one global anonymous capability is enabled
+// for this school. The per-school login switch always wins: a disabled login
+// cuts every surface even if the capability is enabled deployment-wide.
 func (p *Proxy) anonymousFeature(school, feature string) bool {
 	if !p.anonymousAllowed(school) {
 		return false
 	}
-	ok, err := p.store.AnonymousFeature(school, feature)
+	ok, err := p.store.AnonymousFeature(feature)
 	return err == nil && ok
 }
 

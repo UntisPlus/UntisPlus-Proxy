@@ -98,6 +98,8 @@ func (p *Proxy) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		p.adminTokens(w, r, parts[1:])
 	case parts[0] == "schools":
 		p.adminSchools(w, r, parts[1:])
+	case parts[0] == "anonymous":
+		p.adminAnonymous(w, r, parts[1:])
 	case parts[0] == "search" && r.Method == http.MethodGet:
 		p.adminSearch(w, r)
 	case parts[0] == "webhooks":
@@ -542,36 +544,6 @@ func (p *Proxy) adminSchools(w http.ResponseWriter, r *http.Request, parts []str
 		p.audit(r, name, "school.anonymous", name, "enabled="+strconv.FormatBool(*req.Enabled))
 		p.writeJSON(w, map[string]any{"school": name, "anonymous": *req.Enabled})
 		return
-	case r.Method == http.MethodPost && len(parts) == 3 && parts[1] == "anonymous":
-		name := strings.TrimSpace(parts[0])
-		feature := strings.TrimSpace(parts[2])
-		if name == "" {
-			p.writeJSON(w, map[string]any{"error": "school required"})
-			return
-		}
-		if feature == "" {
-			p.writeJSON(w, map[string]any{"error": "feature required"})
-			return
-		}
-		var req struct {
-			Enabled *bool `json:"enabled"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Enabled == nil {
-			p.writeJSON(w, map[string]any{"error": "enabled required"})
-			return
-		}
-		if err := p.store.SetSchoolAnonymousFeature(name, feature, *req.Enabled); err != nil {
-			if errors.Is(err, store.ErrUnknownAnonymousFeature) {
-				p.writeJSON(w, map[string]any{"error": "unknown anonymous feature"})
-				return
-			}
-			p.writeJSON(w, map[string]any{"error": "store error"})
-			return
-		}
-		p.audit(r, name, "school.anonymous."+feature, name,
-			"feature="+feature+" enabled="+strconv.FormatBool(*req.Enabled))
-		p.writeJSON(w, map[string]any{"school": name, "feature": feature, "enabled": *req.Enabled})
-		return
 	case r.Method == http.MethodDelete && len(parts) == 1:
 		name := strings.TrimSpace(parts[0])
 		if name == "" {
@@ -608,22 +580,59 @@ func (p *Proxy) adminSchools(w http.ResponseWriter, r *http.Request, parts []str
 		return
 	}
 	type schoolOut struct {
-		Name         string `json:"name"`
-		AddedAt      int64  `json:"addedAt"`
-		LastSeen     int64  `json:"lastSeen"`
-		Blocked      bool   `json:"blocked"`
-		Anonymous    bool   `json:"anonymous"`
-		AnonNtfy     bool   `json:"anonNtfy"`
-		AnonWebhooks bool   `json:"anonWebhooks"`
-		AnonCalendar bool   `json:"anonCalendar"`
-		AnonChanges  bool   `json:"anonChanges"`
+		Name      string `json:"name"`
+		AddedAt   int64  `json:"addedAt"`
+		LastSeen  int64  `json:"lastSeen"`
+		Blocked   bool   `json:"blocked"`
+		Anonymous bool   `json:"anonymous"`
 	}
 	out := make([]schoolOut, 0, len(schools))
 	for _, sc := range schools {
-		out = append(out, schoolOut{sc.Name, sc.AddedAt.Unix(), sc.LastSeen.Unix(), sc.Blocked,
-			sc.Anonymous, sc.AnonNtfy, sc.AnonWebhooks, sc.AnonCalendar, sc.AnonChanges})
+		out = append(out, schoolOut{sc.Name, sc.AddedAt.Unix(), sc.LastSeen.Unix(), sc.Blocked, sc.Anonymous})
 	}
 	p.writeJSON(w, map[string]any{"schools": out, "allowNew": allowNew, "defaultSchool": p.opts.School})
+}
+
+// adminAnonymous serves the deployment-wide anonymous capability matrix.
+// GET reports it; POST /admin/anonymous/{feature} flips one entry. The login
+// switch stays per school and lives under /admin/schools/{school}/anonymous,
+// because it is the one capability that can sensibly differ per school.
+func (p *Proxy) adminAnonymous(w http.ResponseWriter, r *http.Request, parts []string) {
+	switch {
+	case r.Method == http.MethodGet && len(parts) == 0:
+		features, err := p.store.AnonymousFeatures()
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.writeJSON(w, map[string]any{"features": features})
+		return
+	case r.Method == http.MethodPost && len(parts) == 1:
+		feature := strings.TrimSpace(parts[0])
+		if feature == "" {
+			p.writeJSON(w, map[string]any{"error": "feature required"})
+			return
+		}
+		var req struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Enabled == nil {
+			p.writeJSON(w, map[string]any{"error": "enabled required"})
+			return
+		}
+		if err := p.store.SetAnonymousFeature(feature, *req.Enabled); err != nil {
+			if errors.Is(err, store.ErrUnknownAnonymousFeature) {
+				p.writeJSON(w, map[string]any{"error": "unknown anonymous feature"})
+				return
+			}
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.audit(r, "", "anonymous.feature", feature, "enabled="+strconv.FormatBool(*req.Enabled))
+		p.writeJSON(w, map[string]any{"feature": feature, "enabled": *req.Enabled})
+		return
+	}
+	p.writeJSON(w, map[string]any{"error": "not found"})
 }
 
 func (p *Proxy) adminWebhooks(w http.ResponseWriter, r *http.Request, parts []string) {

@@ -595,14 +595,6 @@ func Open(path string) (*Store, error) {
 	if err := addColumnIfMissing(db, "schools", "anonymous", "INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return nil, err
 	}
-	// migration: opt-in anonymous capabilities. Off by default: before these
-	// switches existed every self-service endpoint required a stored user, so
-	// keeping them off preserves the behaviour of existing deployments.
-	for _, col := range []string{"anon_ntfy", "anon_webhooks", "anon_calendar", "anon_changes"} {
-		if err := addColumnIfMissing(db, "schools", col, "INTEGER NOT NULL DEFAULT 0"); err != nil {
-			return nil, err
-		}
-	}
 	// migration: add admin flag column to users
 	if err := addColumnIfMissing(db, "users", "admin", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return nil, err
@@ -1348,34 +1340,34 @@ type School struct {
 	// by default so existing deployments keep working, but an admin can turn
 	// it off for a school that should require a real account.
 	Anonymous bool
-	// The remaining anonymous flags are opt-in capabilities on top of the
-	// login. They default to off so an anonymous session keeps its historical
-	// read-only timetable behaviour until an admin enables a surface.
-	AnonNtfy     bool
-	AnonWebhooks bool
-	AnonCalendar bool
-	AnonChanges  bool
 }
 
 // ErrUnknownAnonymousFeature is returned when an admin asks to toggle a
-// capability that does not exist. Keeping the whitelist here means the SQL
-// column name is never built from arbitrary request input.
+// capability that does not exist.
 var ErrUnknownAnonymousFeature = errors.New("unknown anonymous feature")
 
-// anonymousFeatureColumn maps the public capability names onto their schools
-// column. Only names in this list may reach SQL.
-func anonymousFeatureColumn(feature string) (string, bool) {
+// Global anonymous capabilities. They are deployment-wide on purpose: an
+// anonymous session is one shared identity, so a per-school capability matrix
+// invited cross-school fallbacks (the calendar mint resolving its school
+// differently from every other endpoint). The per-school login switch remains
+// the one school-level control: a capability only applies to a school whose
+// anonymous login is enabled.
+const (
+	SettingAnonNtfy     = "anonymous_ntfy"
+	SettingAnonWebhooks = "anonymous_webhooks"
+	SettingAnonChanges  = "anonymous_changes"
+)
+
+// anonymousFeatureKey maps the public capability names onto their settings
+// key. "login" is deliberately not here: it stays per school.
+func anonymousFeatureKey(feature string) (string, bool) {
 	switch feature {
-	case "login":
-		return "anonymous", true
 	case "ntfy":
-		return "anon_ntfy", true
+		return SettingAnonNtfy, true
 	case "webhooks":
-		return "anon_webhooks", true
-	case "calendar":
-		return "anon_calendar", true
+		return SettingAnonWebhooks, true
 	case "changes":
-		return "anon_changes", true
+		return SettingAnonChanges, true
 	}
 	return "", false
 }
@@ -1410,9 +1402,7 @@ func (s *Store) SetAllowNewSchools(allow bool) error {
 
 // ListSchools returns every registered school, most recently seen first.
 func (s *Store) ListSchools() ([]*School, error) {
-	rows, err := s.db.Query(`SELECT school, added_at, last_seen, blocked, anonymous,
-		anon_ntfy, anon_webhooks, anon_calendar, anon_changes
-		FROM schools ORDER BY last_seen DESC, school`)
+	rows, err := s.db.Query(`SELECT school, added_at, last_seen, blocked, anonymous FROM schools ORDER BY last_seen DESC, school`)
 	if err != nil {
 		return nil, err
 	}
@@ -1420,18 +1410,13 @@ func (s *Store) ListSchools() ([]*School, error) {
 	var out []*School
 	for rows.Next() {
 		var sc School
-		var a, ls, blocked, anonymous, anonNtfy, anonWebhooks, anonCalendar, anonChanges int64
-		if err := rows.Scan(&sc.Name, &a, &ls, &blocked, &anonymous,
-			&anonNtfy, &anonWebhooks, &anonCalendar, &anonChanges); err != nil {
+		var a, ls, blocked, anonymous int64
+		if err := rows.Scan(&sc.Name, &a, &ls, &blocked, &anonymous); err != nil {
 			return nil, err
 		}
 		sc.AddedAt, sc.LastSeen = time.Unix(a, 0), time.Unix(ls, 0)
 		sc.Blocked = blocked != 0
 		sc.Anonymous = anonymous != 0
-		sc.AnonNtfy = anonNtfy != 0
-		sc.AnonWebhooks = anonWebhooks != 0
-		sc.AnonCalendar = anonCalendar != 0
-		sc.AnonChanges = anonChanges != 0
 		out = append(out, &sc)
 	}
 	return out, rows.Err()
@@ -1440,12 +1425,9 @@ func (s *Store) ListSchools() ([]*School, error) {
 // SchoolInfo returns one registered school, or nil when it is unknown.
 func (s *Store) SchoolInfo(school string) (*School, error) {
 	var sc School
-	var a, ls, blocked, anonymous, anonNtfy, anonWebhooks, anonCalendar, anonChanges int64
-	err := s.db.QueryRow(`SELECT school, added_at, last_seen, blocked, anonymous,
-		anon_ntfy, anon_webhooks, anon_calendar, anon_changes
-		FROM schools WHERE school=?`, school).
-		Scan(&sc.Name, &a, &ls, &blocked, &anonymous,
-			&anonNtfy, &anonWebhooks, &anonCalendar, &anonChanges)
+	var a, ls, blocked, anonymous int64
+	err := s.db.QueryRow(`SELECT school, added_at, last_seen, blocked, anonymous FROM schools WHERE school=?`, school).
+		Scan(&sc.Name, &a, &ls, &blocked, &anonymous)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1455,10 +1437,6 @@ func (s *Store) SchoolInfo(school string) (*School, error) {
 	sc.AddedAt, sc.LastSeen = time.Unix(a, 0), time.Unix(ls, 0)
 	sc.Blocked = blocked != 0
 	sc.Anonymous = anonymous != 0
-	sc.AnonNtfy = anonNtfy != 0
-	sc.AnonWebhooks = anonWebhooks != 0
-	sc.AnonCalendar = anonCalendar != 0
-	sc.AnonChanges = anonChanges != 0
 	return &sc, nil
 }
 
@@ -1497,27 +1475,14 @@ func (s *Store) SetSchoolBlocked(school string, blocked bool) error {
 // creates the row when needed, exactly like SetSchoolBlocked, so the decision
 // can be made before the school ever logs in.
 func (s *Store) SetSchoolAnonymous(school string, enabled bool) error {
-	return s.SetSchoolAnonymousFeature(school, "login", enabled)
-}
-
-// SetSchoolAnonymousFeature toggles one anonymous capability. "login" is the
-// master switch; the other names are the opt-in self-service surfaces. An
-// unknown name yields ErrUnknownAnonymousFeature rather than a no-op, so a typo
-// in the dashboard cannot silently leave a feature disabled.
-func (s *Store) SetSchoolAnonymousFeature(school, feature string, enabled bool) error {
-	column, ok := anonymousFeatureColumn(feature)
-	if !ok {
-		return ErrUnknownAnonymousFeature
-	}
-	v := 0
+	a := 0
 	if enabled {
-		v = 1
+		a = 1
 	}
 	now := time.Now().Unix()
-	// column is from the fixed whitelist above, never from raw request input.
-	_, err := s.db.Exec(`INSERT INTO schools (school, added_at, last_seen, `+column+`) VALUES (?,?,?,?)
-		ON CONFLICT(school) DO UPDATE SET `+column+`=excluded.`+column,
-		school, now, now, v)
+	_, err := s.db.Exec(`INSERT INTO schools (school, added_at, last_seen, anonymous) VALUES (?,?,?,?)
+		ON CONFLICT(school) DO UPDATE SET anonymous=excluded.anonymous`,
+		school, now, now, a)
 	return err
 }
 
@@ -1536,32 +1501,47 @@ func (s *Store) AnonymousAllowed(school string) (bool, error) {
 	return info.Anonymous, nil
 }
 
-// AnonymousFeature reports whether one opt-in anonymous capability is enabled.
-// An unknown school has no row yet and therefore no opt-in capabilities; the
-// master login switch is still governed by AnonymousAllowed so a brand new
-// school can log in before an admin configures it.
-func (s *Store) AnonymousFeature(school, feature string) (bool, error) {
-	if feature == "login" {
-		return s.AnonymousAllowed(school)
+// SetAnonymousFeature stores one global anonymous capability. The names are
+// whitelisted so a typo cannot silently create a dead setting.
+func (s *Store) SetAnonymousFeature(feature string, enabled bool) error {
+	key, ok := anonymousFeatureKey(feature)
+	if !ok {
+		return ErrUnknownAnonymousFeature
 	}
-	if _, ok := anonymousFeatureColumn(feature); !ok {
+	v := "0"
+	if enabled {
+		v = "1"
+	}
+	return s.SetSetting(key, v)
+}
+
+// AnonymousFeature reports whether one global anonymous capability is enabled.
+// A missing setting means off, preserving the historical read-only behaviour
+// of existing deployments.
+func (s *Store) AnonymousFeature(feature string) (bool, error) {
+	key, ok := anonymousFeatureKey(feature)
+	if !ok {
 		return false, ErrUnknownAnonymousFeature
 	}
-	info, err := s.SchoolInfo(school)
-	if err != nil || info == nil {
+	v, set, err := s.GetSetting(key)
+	if err != nil {
 		return false, err
 	}
-	switch feature {
-	case "ntfy":
-		return info.AnonNtfy, nil
-	case "webhooks":
-		return info.AnonWebhooks, nil
-	case "calendar":
-		return info.AnonCalendar, nil
-	case "changes":
-		return info.AnonChanges, nil
+	return set && v != "0", nil
+}
+
+// AnonymousFeatures returns the whole global capability matrix. This is what
+// the dashboard renders, so it never has to know the settings keys.
+func (s *Store) AnonymousFeatures() (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, feature := range []string{"ntfy", "webhooks", "changes"} {
+		on, err := s.AnonymousFeature(feature)
+		if err != nil {
+			return nil, err
+		}
+		out[feature] = on
 	}
-	return false, ErrUnknownAnonymousFeature
+	return out, nil
 }
 
 // DeleteSchool removes a school registration. Its pool, users, tokens and other

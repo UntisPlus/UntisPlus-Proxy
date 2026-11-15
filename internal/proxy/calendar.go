@@ -57,8 +57,9 @@ func tokenExpired(tok *store.ClassToken) bool {
 
 // handleCalendarToken creates (or returns the existing) calendar subscription
 // token. It supports class, personal/student, teacher, room, and subject
-// timetables. It requires a valid session, or an anonymous session when the
-// school enables the calendar capability.
+// timetables. It requires a stored account: an anonymous session is a
+// throwaway identity, and a public ICS token would outlive it and bypass the
+// anonymous login switch, so anonymous callers are always refused.
 func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -79,13 +80,25 @@ func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	school := req.School
+	// The app sends ?school=, not a body field. Resolve the query parameter
+	// first and refuse a body that names a different school: falling back to the
+	// deployment default here silently minted tokens for the wrong school (and
+	// let an anonymous session use another school's enabled capabilities).
+	querySchool := strings.TrimSpace(r.URL.Query().Get("school"))
+	bodySchool := strings.TrimSpace(req.School)
+	if querySchool != "" && bodySchool != "" && querySchool != bodySchool {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"school mismatch"}`))
+		return
+	}
+	school := bodySchool
+	if school == "" {
+		school = querySchool
+	}
 	if school == "" {
 		school = p.opts.School
 	}
-	// Resolve identity after the body so the capability check uses the same
-	// school the token will be minted for.
-	u := p.sessionUserFor(r, school, "calendar")
+	u := p.calendarUser(r)
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
@@ -290,6 +303,7 @@ func (p *Proxy) calendarTokenName(tok *store.ClassToken) string {
 func (p *Proxy) calendarTokenView(r *http.Request, tok *store.ClassToken) map[string]any {
 	resp := map[string]any{
 		"type":      strings.ToLower(tok.ElementType),
+		"school":    tok.School,
 		"id":        tok.ElementID,
 		"name":      p.calendarTokenName(tok),
 		"token":     tok.Token,
@@ -451,7 +465,7 @@ func (p *Proxy) requestSchool(r *http.Request) string {
 // subscribe to, mirroring what they can already see in the app.
 func (p *Proxy) handleCalendarOptions(w http.ResponseWriter, r *http.Request) {
 	school := p.requestSchool(r)
-	u := p.sessionUserFor(r, school, "calendar")
+	u := p.calendarUser(r)
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
@@ -477,7 +491,7 @@ func (p *Proxy) handleNotificationOptions(w http.ResponseWriter, r *http.Request
 // handleCalendarTokens lists only the tokens the requesting user created, so
 // the self-service page is scoped to its owner.
 func (p *Proxy) handleCalendarTokens(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUserFor(r, p.requestSchool(r), "calendar")
+	u := p.calendarUser(r)
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
@@ -493,6 +507,19 @@ func (p *Proxy) handleCalendarTokens(w http.ResponseWriter, r *http.Request) {
 		out = append(out, p.calendarTokenView(r, tok))
 	}
 	p.writeJSON(w, out)
+}
+
+// calendarUser resolves the caller for the owner-scoped calendar endpoints.
+// An anonymous session is refused outright: a public ICS token outlives the
+// session and would bypass the per-school anonymous login switch, so calendar
+// links always require a stored account. Returning nil keeps the handlers' 401
+// path unchanged.
+func (p *Proxy) calendarUser(r *http.Request) *store.User {
+	u := p.sessionUser(r)
+	if u == nil || u.Username == "#anonymous#" {
+		return nil
+	}
+	return u
 }
 
 // calendarOwnedToken loads the token named in the request path and confirms the
@@ -518,7 +545,7 @@ func (p *Proxy) calendarOwnedToken(r *http.Request, u *store.User) (*store.Class
 
 // handleCalendarDelete revokes one of the caller's own calendar subscriptions.
 func (p *Proxy) handleCalendarDelete(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUserFor(r, p.requestSchool(r), "calendar")
+	u := p.calendarUser(r)
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
@@ -540,7 +567,7 @@ func (p *Proxy) handleCalendarDelete(w http.ResponseWriter, r *http.Request) {
 // handleCalendarUpdate changes the lookahead window of one of the caller's own
 // calendar subscriptions. Days are clamped exactly like mint.
 func (p *Proxy) handleCalendarUpdate(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUserFor(r, p.requestSchool(r), "calendar")
+	u := p.calendarUser(r)
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
@@ -578,7 +605,7 @@ func (p *Proxy) handleCalendarUpdate(w http.ResponseWriter, r *http.Request) {
 // value stops working immediately; the response carries the new URL, which is
 // the only way a subscriber learns it.
 func (p *Proxy) handleCalendarRotate(w http.ResponseWriter, r *http.Request) {
-	u := p.sessionUserFor(r, p.requestSchool(r), "calendar")
+	u := p.calendarUser(r)
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))

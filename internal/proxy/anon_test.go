@@ -70,7 +70,8 @@ func TestKeyLoginAnonymousSkipsReplayKey(t *testing.T) {
 // TestAnonymousClassTimetableForwardedRaw is the regression test for the
 // reported failure: anonymous login succeeds, but the following class
 // getTimetable2017 used to fail with -8520 because keyLogin had not persisted
-// "#anonymous#" and the handler required store.GetUser to succeed.
+// "#anonymous#" and the handler required store.GetUser to succeed. The class
+// below is not in the pool, so it keeps the raw upstream path.
 func TestAnonymousClassTimetableForwardedRaw(t *testing.T) {
 	f := &fakeUpstream{}
 	f.setTimetable(t, []map[string]any{{
@@ -152,5 +153,120 @@ func TestAnonymousClassTimetableForwardedRaw(t *testing.T) {
 	}
 	if got := f.TimetableCalls(); got != 2 {
 		t.Fatalf("disabled anonymous request reached upstream (%d timetable calls, want 2)", got)
+	}
+}
+
+// TestAnonymousPooledClassServedFromOwner: a pooled class is served through the
+// pool's student owner even when upstream's own #anonymous# account has no
+// timetable right. This is what makes a school that hides its classes from
+// #anonymous# work once anonymous login is enabled, without turning anonymous
+// into an account.
+func TestAnonymousPooledClassServedFromOwner(t *testing.T) {
+	f := &fakeUpstream{}
+	f.setTimetable(t, []map[string]any{{
+		"id":            1,
+		"startDateTime": "2026-11-09T08:00:00Z",
+		"endDateTime":   "2026-11-09T08:45:00Z",
+	}})
+	p, st := newFakeProxyUpstream(t, f)
+	seedSessionUser(t, st, "owner", 5, 7, 5000)
+
+	login := httptest.NewRequest(http.MethodPost,
+		"/WebUntis/jsonrpc_intern.do?m=getUserData2017&school=testschool",
+		strings.NewReader(loginBody(t, "#anonymous#", "0")))
+	loginRec := httptest.NewRecorder()
+	p.handleJSONRPCIntern(loginRec, login)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("anonymous login status = %d, body %s", loginRec.Code, loginRec.Body.String())
+	}
+	sid := findCookie(loginRec, "JSESSIONID")
+	if sid == "" {
+		t.Fatal("anonymous login did not set a proxy session cookie")
+	}
+
+	req := httptest.NewRequest(http.MethodPost,
+		"/WebUntis/jsonrpc_intern.do?m=getTimetable2017&school=testschool",
+		strings.NewReader(internBody("getTimetable2017",
+			ttParam(5000, "CLASS", "2026-11-09", "2026-11-15", "#anonymous#"))))
+	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: sid})
+	rec := httptest.NewRecorder()
+	p.handleJSONRPCIntern(rec, req)
+	if code := errCode(t, rec); code != 0 {
+		t.Fatalf("pooled class returned error code %d, body %s", code, rec.Body.String())
+	}
+	if got := len(cachedPeriods(t, rec)); got != 1 {
+		t.Fatalf("periods = %d, want 1 (body %s)", got, rec.Body.String())
+	}
+
+	// The class must be fetched as its pooled owner, never as #anonymous#: the
+	// whole point is that upstream would deny the anonymous account.
+	var sent struct {
+		Params []struct {
+			Auth struct {
+				User string `json:"user"`
+			} `json:"auth"`
+		} `json:"params"`
+	}
+	forwards := f.Forwards()
+	if len(forwards) != 1 {
+		t.Fatalf("upstream forwards = %d, want 1", len(forwards))
+	}
+	if err := json.Unmarshal(forwards[0].Body, &sent); err != nil {
+		t.Fatalf("decode forwarded body: %v", err)
+	}
+	if len(sent.Params) != 1 || sent.Params[0].Auth.User != "owner" {
+		t.Fatalf("forwarded auth user = %+v, want owner", sent.Params)
+	}
+	if u, _ := st.GetUser("#anonymous#"); u != nil {
+		t.Fatalf("anonymous class read persisted a user row: %+v", u)
+	}
+}
+
+// TestAnonymousMasterDataPromotesPooledClasses: upstream may hide every class
+// from #anonymous#, which left the app with an empty picker. The login rewrite
+// must expose the pooled classes while keeping whatever upstream already
+// exposes to the anonymous account.
+func TestAnonymousMasterDataPromotesPooledClasses(t *testing.T) {
+	f := &fakeUpstream{}
+	f.userDataBody = `{"jsonrpc":"2.0","id":"upstream","result":{"masterData":{"klassen":[
+		{"id":5000,"name":"5a","displayable":false},
+		{"id":6000,"name":"6b","displayable":false},
+		{"id":7000,"name":"7c","displayable":true}]}}}`
+	p, st := newFakeProxyUpstream(t, f)
+	seedSessionUser(t, st, "owner", 5, 7, 5000)
+
+	login := httptest.NewRequest(http.MethodPost,
+		"/WebUntis/jsonrpc_intern.do?m=getUserData2017&school=testschool",
+		strings.NewReader(loginBody(t, "#anonymous#", "0")))
+	rec := httptest.NewRecorder()
+	p.handleJSONRPCIntern(rec, login)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("anonymous login status = %d, body %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Result struct {
+			MasterData struct {
+				Klassen []struct {
+					ID          int64 `json:"id"`
+					Displayable bool  `json:"displayable"`
+				} `json:"klassen"`
+			} `json:"masterData"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode login body: %v", err)
+	}
+	got := map[int64]bool{}
+	for _, k := range resp.Result.MasterData.Klassen {
+		got[k.ID] = k.Displayable
+	}
+	if !got[5000] {
+		t.Fatalf("pooled class 5000 not displayable: %v", got)
+	}
+	if got[6000] {
+		t.Fatalf("non-pooled class 6000 became displayable: %v", got)
+	}
+	if !got[7000] {
+		t.Fatalf("upstream-displayable class 7000 was hidden: %v", got)
 	}
 }

@@ -172,19 +172,20 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
     && jsq("a'b" + String.fromCharCode(34)).indexOf(String.fromCharCode(34))<0,
     'jsq does not neutralise quotes or tags for an inline handler');
 
-  // Anonymous access matrix: the login switch is always operable, while the
-  // opt-in surfaces are disabled until it is on. This mirrors the proxy, where
-  // a disabled login wins over every capability flag.
-  schoolList=[{name:'schuldorf',anonymous:false,anonNtfy:true}];
+  // Anonymous access matrix is deployment-wide: three global capability rows,
+  // each rendered from the flags the API returned.
+  anonFeatures={ntfy:false,webhooks:false,changes:false};
   renderAnonymous();
-  let anonRow=_sel('__q').children[0];
-  must(anonRow._html.indexOf('disabled title="enable anonymous login first"')>=0,
-    'anonymous feature buttons stay clickable while login is off');
-  schoolList=[{name:'schuldorf',anonymous:true,anonNtfy:true,anonWebhooks:false,anonCalendar:false,anonChanges:true}];
+  let anonRows=_sel('__q').children;
+  must(anonRows.length===3, 'expected 3 anonymous capability rows, got '+anonRows.length);
+  must(anonRows[0]._html.indexOf('setAnonFeature')>=0, 'anonymous ntfy toggle missing');
+  must(anonRows[0]._html.indexOf('>off<')>=0, 'disabled capability did not render off');
+  anonFeatures={ntfy:true,webhooks:false,changes:true};
   renderAnonymous();
-  anonRow=_sel('__q').children[0];
-  must(anonRow._html.indexOf('setSchoolAnonFeature')>=0, 'anonymous feature toggles missing');
-  must(anonRow._html.indexOf('disabled title=')<0, 'login-on row kept the feature buttons disabled');
+  anonRows=_sel('__q').children;
+  must(anonRows[0]._html.indexOf('>on<')>=0, 'enabled capability did not render on');
+  must(anonRows[2]._html.indexOf('>on<')>=0, 'enabled live-changes capability did not render on');
+  must(anonRows[0]._html.indexOf('setAnonFeature')>=0, 'anonymous toggles disappeared after reload');
 
   console.log('check-admin-ui: all admin UI checks passed');
 })().catch(function(e){ console.error('FAIL: ' + (e && e.stack || e)); process.exit(1); });

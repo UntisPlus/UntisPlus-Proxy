@@ -70,17 +70,18 @@
       allow new schools to auto-register
     </label>
   </div>
-  <table id="schools"><thead><tr><th>school</th><th>added</th><th>last seen</th><th>status</th><th></th></tr></thead><tbody></tbody></table>
+  <table id="schools"><thead><tr><th>school</th><th>added</th><th>last seen</th><th>status</th><th>anonymous login</th><th></th></tr></thead><tbody></tbody></table>
 </section>
 
 <section>
-  <h2>Anonymous access <button class="mini" onclick="loadSchools()">refresh</button></h2>
+  <h2>Anonymous access <button class="mini" onclick="loadAnonymous()">refresh</button></h2>
   <p style="font-size:.78rem;color:#9aa0ae;margin:0 0 .5rem">
-    The anonymous login is one shared read-only account per school. Enable only the
-    self-service surfaces you want to expose. Turning the login off cuts every surface
-    below, even if a feature toggle is left on.
+    Deployment-wide switches for the shared read-only <code>#anonymous#</code> account.
+    They apply only to schools whose <strong>anonymous login</strong> is enabled above; a
+    disabled login cuts every capability here. Anonymous sessions can never create
+    calendar links, because a public ICS token would outlive the session.
   </p>
-  <table id="anon"><thead><tr><th>school</th><th>login</th><th>ntfy</th><th>webhooks</th><th>calendar</th><th>live changes</th></tr></thead><tbody></tbody></table>
+  <table id="anon"><thead><tr><th>capability</th><th>state</th></tr></thead><tbody></tbody></table>
 </section>
 
 <section>
@@ -923,38 +924,43 @@ async function loadSchools(){
     }
     tr.innerHTML='<td>'+esc(s.name)+'</td><td>'+new Date(s.addedAt*1000||0).toLocaleDateString()+'</td><td>'+new Date(s.lastSeen*1000||0).toLocaleString()+'</td>'+
       '<td>'+(s.blocked?'<span style="color:#ff6b6b">blocked</span>':'active')+'</td>'+
+      '<td><button class="mini '+(s.anonymous?'danger':'')+'" onclick="setSchoolAnonymous('+n+','+(!s.anonymous)+')">'+
+      (s.anonymous?'disable':'enable')+'</button> <span style="font-size:.7rem;color:'+(s.anonymous?'#7dd3a0':'#9aa0ae')+'">'+
+      (s.anonymous?'enabled':'disabled')+'</span></td>'+
       '<td>'+actions+'</td>';
     tb.appendChild(tr);
   }
-  renderAnonymous();
 }
 
-// renderAnonymous draws the effective anonymous policy: the login switch is
-// always operable, while the opt-in surfaces are dimmed until the login is on.
-// The proxy applies the same precedence (login off wins), so the UI cannot
-// suggest a capability that is not actually in effect.
+let anonFeatures = {};
+
+// renderAnonymous draws the global capability matrix. The login switch is per
+// school and lives in the Schools table, so this view stays honest about what
+// the deployment allows without pretending a capability can differ per school.
 function renderAnonymous(){
   const tb=$('anon').querySelector('tbody'); if(!tb) return;
+  const labels = {
+    ntfy:['ntfy push','create/list ntfy subscriptions for pooled classes'],
+    webhooks:['webhooks','create/list webhook subscriptions for pooled classes'],
+    changes:['live changes','poll the change diff and open the SSE stream for pooled classes'],
+  };
   tb.innerHTML='';
-  for(const s of schoolList){
+  for(const feature of ['ntfy','webhooks','changes']){
+    const on=!!anonFeatures[feature];
     const tr=document.createElement('tr');
-    const n=jsq(s.name);
-    const login='<button class="mini '+(s.anonymous?'danger':'')+'" onclick="setSchoolAnonymous('+n+','+(!s.anonymous)+')">'+
-      (s.anonymous?'disable':'enable')+'</button>';
-    const cap=function(feature,on,label){
-      const dis=!s.anonymous;
-      return '<button class="mini '+(on?'danger':'')+'" '+(dis?'disabled title="enable anonymous login first"':'')+
-        ' onclick="setSchoolAnonFeature('+n+',\''+feature+'\','+(!on)+')">'+(on?'on':'off')+'</button>'+
-        ' <span style="font-size:.7rem;color:'+(on?'#7dd3a0':'#9aa0ae')+'">'+label+'</span>';
-    };
-    tr.innerHTML='<td>'+esc(s.name)+'</td>'+
-      '<td>'+login+' <span style="font-size:.7rem;color:'+(s.anonymous?'#7dd3a0':'#9aa0ae')+'">'+(s.anonymous?'enabled':'disabled')+'</span></td>'+
-      '<td>'+cap('ntfy',!!s.anonNtfy,'push')+'</td>'+
-      '<td>'+cap('webhooks',!!s.anonWebhooks,'hooks')+'</td>'+
-      '<td>'+cap('calendar',!!s.anonCalendar,'ics')+'</td>'+
-      '<td>'+cap('changes',!!s.anonChanges,'live')+'</td>';
+    const meta=labels[feature];
+    tr.innerHTML='<td>'+esc(meta[0])+'<div style="font-size:.7rem;color:#9aa0ae">'+esc(meta[1])+'</div></td>'+
+      '<td><button class="mini '+(on?'danger':'')+'" onclick="setAnonFeature(\''+feature+'\','+(!on)+')">'+
+      (on?'on':'off')+'</button></td>';
     tb.appendChild(tr);
   }
+}
+
+async function loadAnonymous(){
+  const d=await api('GET','anonymous');
+  if(d.error){ log('anonymous: '+d.error); return; }
+  anonFeatures=d.features||{};
+  renderAnonymous();
 }
 async function addSchool(){ const n=$('sName').value.trim(); if(!n) return; await api('POST','schools/'+encodeURIComponent(n)); $('sName').value=''; log('registered '+n); loadSchools(); renderCards(); }
 async function toggleAllowNew(v){
@@ -974,11 +980,11 @@ async function setSchoolAnonymous(name, enabled){
   log('anonymous login '+(enabled?'enabled':'disabled')+' for '+name);
   loadSchools(); renderCards();
 }
-async function setSchoolAnonFeature(name, feature, enabled){
-  const d=await api('POST','schools/'+encodeURIComponent(name)+'/anonymous/'+encodeURIComponent(feature),{enabled:enabled});
+async function setAnonFeature(feature, enabled){
+  const d=await api('POST','anonymous/'+encodeURIComponent(feature),{enabled:enabled});
   if(d.error){ log('anonymous '+feature+': '+d.error); return; }
-  log('anonymous '+feature+' '+(enabled?'enabled':'disabled')+' for '+name);
-  loadSchools(); renderCards();
+  log('anonymous '+feature+' '+(enabled?'enabled':'disabled')+' for the deployment');
+  loadAnonymous();
 }
 async function delSchool(name){
   if(!confirm('remove school "'+name+'"? This does not delete its users or pool.')) return;
@@ -1145,7 +1151,8 @@ async function refreshAll(){
   const mark = new Date().toTimeString().slice(0,8);
   const hint = $('refreshHint'); if(hint) hint.textContent = 'last refresh '+mark;
   const jobs = {users:loadUsers, webhooks:loadWebhooks,
-                ntfy:loadNtfy, outage:loadOutageNtfy, tokens:loadTokens, pool:loadPool, roommap:loadRoomMap, audit:loadAudit};
+                ntfy:loadNtfy, outage:loadOutageNtfy, tokens:loadTokens, pool:loadPool, roommap:loadRoomMap, audit:loadAudit,
+                anonymous:loadAnonymous};
   // The school list has to land before the cards render, because rendering the
   // cards is what fills the school selectors.
   try { await loadSchools(); } catch(e){ log('schools: '+e); }

@@ -227,26 +227,32 @@ the caller may watch. Both list endpoints return only the caller's own rows.
 
 ### Anonymous access
 
-The dashboard's **Anonymous access** table decides what the school-wide
-read-only `#anonymous#` session may do. The login itself is on by default; the
-opt-in surfaces are off so an existing deployment keeps its historical
-read-only behaviour:
+The proxy's read-only `#anonymous#` account is controlled by two layers:
 
-| Toggle | Effect when enabled |
+- **Per school:** the **anonymous login** switch in the Schools table. On by
+  default; turning it off refuses the upstream `#anonymous#` login and every
+  capability for that school.
+- **Deployment-wide:** the **Anonymous access** switches. They are off by
+  default, so an existing deployment keeps its historical read-only behaviour.
+
+| Capability | Effect when enabled |
 |---|---|
-| **login** | Upstream `#anonymous#` login and raw class timetable reads. Turning it off overrides every other toggle. |
 | **ntfy** | Create / list / test / delete ntfy subscriptions for pooled classes. |
 | **webhooks** | Create / list / test / delete webhook subscriptions for pooled classes. |
-| **calendar** | Mint and manage public ICS tokens for pooled classes. |
 | **live changes** | Poll `/api/timetable/changes` and open `/api/timetable/stream` for pooled classes. |
 
+Anonymous sessions can **never mint calendar links**. A public ICS token is a
+credential that outlives the session and would bypass the anonymous login
+switch, so the calendar endpoints require a stored account. The dashboard API
+for the global switches is `GET /admin/anonymous` and
+`POST /admin/anonymous/{ntfy|webhooks|changes}` with `{"enabled":true|false}`;
+the per-school login is `POST /admin/schools/{school}/anonymous`.
+
 Anonymous sessions never create a stored user. They share one `#anonymous#`
-owner per school, so subscriptions and calendar tokens created anonymously are
-visible to other anonymous sessions of that school; that is the cost of having
-no account. Anonymous targets are limited to classes the change poller actually
-maintains, and personal/teacher/room/subject targets stay unavailable. The
-dashboard API is `POST /admin/schools/{school}/anonymous/{login|ntfy|webhooks|calendar|changes}`
-with `{"enabled":true|false}`.
+owner per school, so subscriptions created anonymously are visible to other
+anonymous sessions of that school; that is the cost of having no account.
+Anonymous targets are limited to classes the change poller actually maintains,
+and personal/teacher/room/subject targets stay unavailable.
 
 Full reference: [`docs/ADMIN-WEBHOOKS-NTFY.md`](docs/ADMIN-WEBHOOKS-NTFY.md).
 

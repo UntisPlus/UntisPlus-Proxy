@@ -1,9 +1,11 @@
 package proxy
 
-// Anonymous self-service capabilities are opt-in per school. These tests pin
-// the gate: a feature that is off (or whose school has the anonymous login off)
-// keeps returning 401, and an enabled feature admits the synthetic
-// "#anonymous#" user without ever creating a stored account.
+// Anonymous self-service capabilities are deployment-wide switches layered on
+// top of the per-school anonymous login. These tests pin the gate: a feature
+// that is off (or whose school has the anonymous login off) keeps returning
+// 401, and an enabled feature admits the synthetic "#anonymous#" user without
+// ever creating a stored account. Calendar links are never available to an
+// anonymous session.
 
 import (
 	"encoding/json"
@@ -48,7 +50,7 @@ func TestAnonymousNtfyGate(t *testing.T) {
 		t.Fatalf("disabled ntfy code = %d, want 401", rec.Code)
 	}
 
-	if err := st.SetSchoolAnonymousFeature("testschool", "ntfy", true); err != nil {
+	if err := st.SetAnonymousFeature("ntfy", true); err != nil {
 		t.Fatal(err)
 	}
 	rec = httptest.NewRecorder()
@@ -70,7 +72,7 @@ func TestAnonymousNtfyGate(t *testing.T) {
 		t.Fatalf("anonymous subscription persisted a user row: %+v", u)
 	}
 
-	// The master login switch wins even when the capability is still on.
+	// The per-school login switch wins even when the global capability is on.
 	if err := st.SetSchoolAnonymous("testschool", false); err != nil {
 		t.Fatal(err)
 	}
@@ -91,7 +93,7 @@ func TestAnonymousWebhooksGate(t *testing.T) {
 		t.Fatalf("disabled webhooks code = %d, want 401", rec.Code)
 	}
 
-	if err := st.SetSchoolAnonymousFeature("testschool", "webhooks", true); err != nil {
+	if err := st.SetAnonymousFeature("webhooks", true); err != nil {
 		t.Fatal(err)
 	}
 	rec = httptest.NewRecorder()
@@ -105,53 +107,76 @@ func TestAnonymousWebhooksGate(t *testing.T) {
 	}
 }
 
-func TestAnonymousCalendarGate(t *testing.T) {
+// TestAnonymousCalendarForbidden pins the security decision: a calendar link is
+// a public credential that outlives the session, so an anonymous session never
+// mints or manages one, even when every other capability is on.
+func TestAnonymousCalendarForbidden(t *testing.T) {
 	p, st := newTestProxy(t)
 	seedPooledClass(t, st)
-
-	rec := httptest.NewRecorder()
-	p.handleCalendarOptions(rec, anonReq(t, p, http.MethodGet, "/api/calendar/options?school=testschool", ""))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("disabled calendar options code = %d, want 401", rec.Code)
-	}
-
-	if err := st.SetSchoolAnonymousFeature("testschool", "calendar", true); err != nil {
+	if err := st.SetAnonymousFeature("ntfy", true); err != nil {
 		t.Fatal(err)
 	}
-	rec = httptest.NewRecorder()
-	p.handleCalendarOptions(rec, anonReq(t, p, http.MethodGet, "/api/calendar/options?school=testschool", ""))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("enabled calendar options code = %d, body %s", rec.Code, rec.Body.String())
+	if err := st.SetAnonymousFeature("webhooks", true); err != nil {
+		t.Fatal(err)
 	}
-	var opts map[string]any
-	_ = json.Unmarshal(rec.Body.Bytes(), &opts)
-	if classes := calOptionIDs(t, opts, "class"); !classes[5000] {
-		t.Fatalf("anonymous calendar classes = %v, want pooled 5000", classes)
-	}
-	if _, ok := opts["personal"]; ok {
-		t.Fatalf("anonymous calendar options offered a personal target: %v", opts)
+	if err := st.SetAnonymousFeature("changes", true); err != nil {
+		t.Fatal(err)
 	}
 
-	rec = httptest.NewRecorder()
-	p.handleCalendarToken(rec, anonReq(t, p, http.MethodPost, "/api/calendar/token",
-		`{"school":"testschool","classId":5000}`))
+	for _, tc := range []struct {
+		name string
+		req  *http.Request
+		call func(http.ResponseWriter, *http.Request)
+	}{
+		{"options", anonReq(t, p, http.MethodGet, "/api/calendar/options?school=testschool", ""), p.handleCalendarOptions},
+		{"tokens", anonReq(t, p, http.MethodGet, "/api/calendar/tokens?school=testschool", ""), p.handleCalendarTokens},
+		{"mint query school", anonReq(t, p, http.MethodPost, "/api/calendar/token?school=testschool", `{"classId":5000}`), p.handleCalendarToken},
+		{"mint body school", anonReq(t, p, http.MethodPost, "/api/calendar/token", `{"school":"testschool","classId":5000}`), p.handleCalendarToken},
+	} {
+		rec := httptest.NewRecorder()
+		tc.call(rec, tc.req)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("%s code = %d, want 401 (body %s)", tc.name, rec.Code, rec.Body.String())
+		}
+	}
+	if tokens, err := st.ListClassTokensByUser("#anonymous#"); err != nil || len(tokens) != 0 {
+		t.Fatalf("anonymous calendar call created a token: %v, %v", tokens, err)
+	}
+}
+
+// TestCalendarMintUsesQuerySchool guards the regression that made anonymity
+// look broken: the app sends ?school= and no body school. The handler used to
+// fall back to the deployment default, silently minting for the wrong school.
+func TestCalendarMintUsesQuerySchool(t *testing.T) {
+	p, st := newTestProxy(t)
+	seedPooledClass(t, st)
+	// Make the default school different from the request school so a fallback
+	// cannot masquerade as correct behaviour.
+	p.opts.School = "defaultschool"
+
+	req := httptest.NewRequest(http.MethodPost, "/api/calendar/token?school=testschool",
+		strings.NewReader(`{"classId":5000}`))
+	sess := p.sessions.New("owner", 0)
+	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: sess.ID})
+	rec := httptest.NewRecorder()
+	p.handleCalendarToken(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("anonymous calendar mint code = %d, body %s", rec.Code, rec.Body.String())
+		t.Fatalf("calendar mint with query school code = %d, body %s", rec.Code, rec.Body.String())
 	}
 	var tok map[string]any
 	_ = json.Unmarshal(rec.Body.Bytes(), &tok)
-	if tok["createdBy"] != "#anonymous#" {
-		t.Fatalf("anonymous calendar token = %v", tok)
+	if tok["school"] != "testschool" {
+		t.Fatalf("calendar token school = %v, want testschool", tok["school"])
 	}
 
-	if err := st.SetSchoolAnonymous("testschool", false); err != nil {
-		t.Fatal(err)
-	}
+	// A body that disagrees with the query is a caller bug, not a coin flip.
+	req = httptest.NewRequest(http.MethodPost, "/api/calendar/token?school=testschool",
+		strings.NewReader(`{"school":"defaultschool","classId":5000}`))
+	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: p.sessions.New("owner", 0).ID})
 	rec = httptest.NewRecorder()
-	p.handleCalendarToken(rec, anonReq(t, p, http.MethodPost, "/api/calendar/token",
-		`{"school":"testschool","classId":5000}`))
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("calendar mint with anonymous login off code = %d, want 401", rec.Code)
+	p.handleCalendarToken(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("mismatched school code = %d, want 400 (body %s)", rec.Code, rec.Body.String())
 	}
 }
 
@@ -166,7 +191,7 @@ func TestAnonymousChangesGate(t *testing.T) {
 		t.Fatalf("disabled changes code = %d, want 401", rec.Code)
 	}
 
-	if err := st.SetSchoolAnonymousFeature("testschool", "changes", true); err != nil {
+	if err := st.SetAnonymousFeature("changes", true); err != nil {
 		t.Fatal(err)
 	}
 	rec = httptest.NewRecorder()
@@ -197,7 +222,7 @@ func TestAnonymousNotificationOptionsEitherSwitch(t *testing.T) {
 		t.Fatalf("disabled notification options code = %d, want 401", rec.Code)
 	}
 
-	if err := st.SetSchoolAnonymousFeature("testschool", "ntfy", true); err != nil {
+	if err := st.SetAnonymousFeature("ntfy", true); err != nil {
 		t.Fatal(err)
 	}
 	rec = httptest.NewRecorder()

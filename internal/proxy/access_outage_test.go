@@ -310,18 +310,22 @@ func TestAdminSchoolAccessAPI(t *testing.T) {
 		t.Fatalf("anonymous enable response = %s", res.Body.String())
 	}
 
-	res = adminRequest(t, p, "bob", http.MethodPost, "/admin/schools/other/anonymous/ntfy", `{"enabled":true}`)
+	res = adminRequest(t, p, "bob", http.MethodPost, "/admin/anonymous/ntfy", `{"enabled":true}`)
 	if !strings.Contains(res.Body.String(), `"feature":"ntfy"`) || !strings.Contains(res.Body.String(), `"enabled":true`) {
 		t.Fatalf("anonymous ntfy enable response = %s", res.Body.String())
 	}
-	if ok, err := st.AnonymousFeature("other", "ntfy"); err != nil || !ok {
+	if ok, err := st.AnonymousFeature("ntfy"); err != nil || !ok {
 		t.Fatalf("ntfy flag = (%v, %v), want true", ok, err)
 	}
-	res = adminRequest(t, p, "bob", http.MethodPost, "/admin/schools/other/anonymous/calendar", `{"enabled":true}`)
-	if !strings.Contains(res.Body.String(), `"feature":"calendar"`) {
-		t.Fatalf("anonymous calendar enable response = %s", res.Body.String())
+	res = adminRequest(t, p, "bob", http.MethodGet, "/admin/anonymous", "")
+	if !strings.Contains(res.Body.String(), `"ntfy":true`) {
+		t.Fatalf("anonymous matrix response = %s", res.Body.String())
 	}
-	res = adminRequest(t, p, "bob", http.MethodPost, "/admin/schools/other/anonymous/nope", `{"enabled":true}`)
+	res = adminRequest(t, p, "bob", http.MethodPost, "/admin/anonymous/calendar", `{"enabled":true}`)
+	if !strings.Contains(res.Body.String(), "unknown anonymous feature") {
+		t.Fatalf("calendar feature response = %s", res.Body.String())
+	}
+	res = adminRequest(t, p, "bob", http.MethodPost, "/admin/anonymous/nope", `{"enabled":true}`)
 	if !strings.Contains(res.Body.String(), "unknown anonymous feature") {
 		t.Fatalf("unknown feature response = %s", res.Body.String())
 	}
@@ -337,9 +341,6 @@ func TestAdminSchoolAccessAPI(t *testing.T) {
 	res = adminRequest(t, p, "bob", http.MethodGet, "/admin/schools", "")
 	if !strings.Contains(res.Body.String(), `"allowNew":false`) {
 		t.Fatalf("schools response does not report the switch: %s", res.Body.String())
-	}
-	if !strings.Contains(res.Body.String(), `"anonNtfy":true`) {
-		t.Fatalf("schools response does not report the anonymous feature flags: %s", res.Body.String())
 	}
 }
 
