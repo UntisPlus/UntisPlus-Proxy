@@ -109,6 +109,16 @@ func (p *Proxy) runOutageAlerts(now time.Time, tr *outageAlertTracker) {
 		down, detail := p.outageCondition(o.School, now)
 		if down {
 			if _, ok := tr.since[o.ID]; !ok {
+				// First detection: do extra verification probes before starting the
+				// debounce timer, to avoid false alerts from transient packet loss.
+				if !p.confirmOutageCondition(o.School, now) {
+					continue
+				}
+				// Re-evaluate after probes so the detail reflects current state.
+				down, detail = p.outageCondition(o.School, now)
+				if !down {
+					continue
+				}
 				tr.since[o.ID] = now
 			}
 			if !tr.down[o.ID] && now.Sub(tr.since[o.ID]) >= outageAlertDebounce {
@@ -143,6 +153,83 @@ func (p *Proxy) runOutageAlerts(now time.Time, tr *outageAlertTracker) {
 			delete(tr.down, id)
 		}
 	}
+}
+
+// confirmOutageCondition reports whether a down condition for the given scope
+// is confirmed after extra verification probes. It is used on first detection to
+// avoid false alerts from transient packet loss or brief blips. When no extra
+// probes are configured, the condition is accepted as-is.
+func (p *Proxy) confirmOutageCondition(scope string, now time.Time) bool {
+	if p.outageVerifyPings <= 0 {
+		return true
+	}
+	if scope != "" {
+		return p.confirmSchoolOutage(scope, now)
+	}
+	schools, err := p.store.ListSchools()
+	if err != nil {
+		return true
+	}
+	confirmed := false
+	for _, sc := range schools {
+		if sc.Name == "" || sc.Blocked {
+			continue
+		}
+		down, _ := p.schoolPollOutage(sc.Name, now)
+		if !down {
+			continue
+		}
+		if p.confirmSchoolOutage(sc.Name, now) {
+			confirmed = true
+		}
+	}
+	return confirmed
+}
+
+// confirmSchoolOutage performs extra upstream probe attempts for a school that
+// appears down by poll state. It returns true only if all probe attempts fail
+// (outage confirmed). If any probe succeeds, the school is considered reachable
+// and poll health is refreshed so the transient failure does not trigger an
+// alert; in that case it returns false.
+func (p *Proxy) confirmSchoolOutage(school string, now time.Time) bool {
+	attempts := p.outageVerifyPings
+	if attempts <= 0 {
+		return true
+	}
+	for i := 0; i < attempts; i++ {
+		if i > 0 {
+			time.Sleep(2 * time.Second)
+		}
+		if p.probeSchool(school) {
+			st := p.stateFor(school)
+			st.pollMu.Lock()
+			t := time.Now()
+			if t.After(st.lastPollOK) {
+				st.lastPollOK = t
+			}
+			if t.After(st.lastPoll) {
+				st.lastPoll = t
+			}
+			st.pollMu.Unlock()
+			log.Printf("[outage] %s: probe %d/%d succeeded after initial failure", school, i+1, attempts)
+			return false
+		}
+		log.Printf("[outage] %s: probe %d/%d failed", school, i+1, attempts)
+	}
+	return true
+}
+
+// probeSchool performs one lightweight upstream probe for a school by fetching
+// a pooled class timetable. It returns true if the probe reached upstream
+// successfully.
+func (p *Proxy) probeSchool(school string) bool {
+	pool, err := p.store.Pool(school)
+	if err != nil || len(pool) == 0 {
+		return false
+	}
+	start, end := pollWindow(time.Now())
+	_, err = p.classPeriodsFresh(school, pool[0].ID, start, end)
+	return err == nil
 }
 
 // StartOutageAlertLoop watches poll health and delivers outage/recovery alerts

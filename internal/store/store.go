@@ -703,8 +703,27 @@ func Open(path string) (*Store, error) {
 		ON ntfy_topics (school, created_by, element_type, element_id, topic, base_url)`); err != nil {
 		return nil, err
 	}
+	if err := migrateV2AccessSchema(db); err != nil {
+		return nil, err
+	}
+	// Seed shipped default permissions for fresh installs (v1.15 compat): recon on,
+	// others off. INSERT OR IGNORE preserves explicit admin choices (including
+	// cleared/disabled defaults stored as "0") across restarts.
+	for _, kv := range []struct{ key, value string }{
+		{SettingDefaultPermRecon, "1"},
+		{SettingDefaultPermBoosted, "0"},
+		{SettingDefaultPermEditor, "0"},
+		{SettingDefaultPermTechniker, "0"},
+	} {
+		if _, err := db.Exec(`INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)`, kv.key, kv.value); err != nil {
+			return nil, err
+		}
+	}
 	st := &Store{db: db}
 	if err := st.normalizeUsernames(); err != nil {
+		return nil, err
+	}
+	if err := st.migrateV2AccessData(); err != nil {
 		return nil, err
 	}
 	return st, nil
@@ -761,6 +780,11 @@ func (s *Store) normalizeUsernames() error {
 		return err
 	}
 	merged := 0
+	type mergedPerms struct {
+		school string
+		perms  map[string]bool
+	}
+	toSync := map[string]mergedPerms{}
 	for _, key := range order {
 		g := groups[key]
 		if len(g) == 1 && g[0].Username == key {
@@ -827,6 +851,17 @@ func (s *Store) normalizeUsernames() error {
 				tx.Rollback()
 				return err
 			}
+			// clear v2 rows for any case variant username
+			for _, q := range []string{
+				`DELETE FROM user_cap_groups WHERE username=?`,
+				`DELETE FROM user_cap_grants WHERE username=?`,
+				`DELETE FROM user_cap_prefs WHERE username=?`,
+			} {
+				if _, err := tx.Exec(q, m.Username); err != nil {
+					tx.Rollback()
+					return err
+				}
+			}
 		}
 
 		// Reinsert one canonical lowercase account with the best profile data.
@@ -862,10 +897,37 @@ func (s *Store) normalizeUsernames() error {
 				return err
 			}
 		}
+		toSync[key] = mergedPerms{school: best.School, perms: perms}
 		merged += len(g)
 	}
 	if err := tx.Commit(); err != nil {
 		return err
+	}
+	// Rebuild v2 effective grants for merged users from their canonicalized perm rows.
+	for user, mp := range toSync {
+		_ = s.v2ClearUserAll(mp.school, user)
+		// also clear by empty school in case school changed; keep simple by clearing canonical username across scopes
+		_, _ = s.db.Exec(`DELETE FROM user_cap_groups WHERE username=?`, norm(user))
+		_, _ = s.db.Exec(`DELETE FROM user_cap_grants WHERE username=?`, norm(user))
+		_, _ = s.db.Exec(`DELETE FROM user_cap_prefs WHERE username=?`, norm(user))
+		for _, f := range []string{FeatureRecon, FeatureBoosted, FeatureEditor, FeatureTechniker} {
+			if mp.perms[f] {
+				_ = s.v2ApplyDirectFeature(user, f, true)
+			} else {
+				// apply explicit false only for recon? v2ApplyDirectFeature handles false semantics
+				// (recon false adds denies; techniker false adds denies; others mostly remove groups)
+				// only meaningful if previously set, but safe to be explicit for compat where needed.
+				if f == FeatureRecon || f == FeatureTechniker {
+					// don't force denies on merge unless present as explicit false? perms map only has true entries from loadPerms?
+					// loadPerms stores allowed bool for rows present; absent means no explicit row.
+				}
+			}
+		}
+		// apply explicit false/denies for known v1 features that had rows? loadPerms stored value v!=0 for each row.
+		// but we lost row presence distinction except value; re-query not needed: if a feature was explicitly denied in v1 perms,
+		// perms[f] is false but row existed - loadPerms sets out[f]=v!=0 so false means explicit deny only if row existed.
+		// We need to know row existence; adjust: rebuild from DB for canonical user.
+		_ = s.v2SyncUserFromPermRows(user)
 	}
 	log.Printf("merged %d case-insensitive duplicate account(s)", merged)
 	return nil
@@ -1064,7 +1126,7 @@ const (
 var BoostFeatures = []string{FeatureBoosted, FeatureEditor}
 
 // HasPerm reports whether a user has an explicit per-user permission row set to
-// allowed. Global switches do not count.
+// allowed. Global switches do not count. (v1 compat mirror)
 func (s *Store) HasPerm(username, feature string) (bool, error) {
 	var v int
 	row := s.db.QueryRow(`SELECT allowed FROM perms WHERE username=? AND feature=?`, norm(username), feature)
@@ -1078,55 +1140,49 @@ func (s *Store) HasPerm(username, feature string) (bool, error) {
 }
 
 // ReconAccess reports whether a user may use reconstruction of teacher/room/
-// subject timetables. A per-user override wins if one exists; otherwise the
-// global switch applies; default is deny.
+// subject timetables. v2: resolved from effective fine-grained capabilities
+// (per-user override/direct grants, groups, role defaults, server gates, prefs).
 func (s *Store) ReconAccess(username, elType string) (bool, error) {
-	_ = elType
-	var v int
-	row := s.db.QueryRow(`SELECT allowed FROM perms WHERE username=? AND feature=?`, norm(username), FeatureRecon)
-	if err := row.Scan(&v); err == nil {
-		return v != 0, nil
+	if norm(username) == globalPermUser {
+		v, err := s.HasPerm(globalPermUser, FeatureRecon)
+		return v, err
 	}
-	row = s.db.QueryRow(`SELECT allowed FROM perms WHERE username=? AND feature=?`, globalPermUser, FeatureRecon)
-	if err := row.Scan(&v); err == nil {
-		return v != 0, nil
-	}
-	return false, nil
+	return s.v2ReconAccess(username, elType), nil
 }
 
 // BoostedAccess reports whether a user effectively gets Boosted raw timetable
-// forwarding (they hold the boosted flag).
+// forwarding (v2 effective).
 func (s *Store) BoostedAccess(username string) (bool, error) {
-	for _, f := range BoostFeatures {
-		if ok, err := s.HasPerm(username, f); err == nil && ok {
-			return true, nil
-		}
-	}
-	return false, nil
+	return s.v2BoostedAccess(username), nil
 }
 
-// EditorAccess reports whether a user holds the editor flag (absence/lesson/
-// subject write methods).
+// EditorAccess reports whether a user holds the editor flag (v2 effective).
 func (s *Store) EditorAccess(username string) (bool, error) {
-	return s.HasPerm(username, FeatureEditor)
+	return s.v2EditorAccess(username), nil
 }
 
 // SetReconType sets the global switch for reconstruction across all users.
 func (s *Store) SetReconType(elType string, allowed bool) error {
 	_ = elType
-	return s.setPerm(globalPermUser, FeatureRecon, allowed)
+	if err := s.setPermRow(globalPermUser, FeatureRecon, allowed); err != nil {
+		return err
+	}
+	return s.v2SetGlobalReconRoleDefaults(allowed)
 }
 
 // SetReconOverride grants or revokes reconstruction for a single user, taking
 // precedence over the global switch.
 func (s *Store) SetReconOverride(username, elType string, allowed bool) error {
 	_ = elType
-	return s.setPerm(username, FeatureRecon, allowed)
+	if err := s.SetPerm(username, FeatureRecon, allowed); err != nil {
+		return err
+	}
+	return nil
 }
 
 // SetBoostedFlag grants or revokes the boosted (raw teacher forwarding) flag.
 func (s *Store) SetBoostedFlag(username string, allowed bool) error {
-	return s.setPerm(username, FeatureBoosted, allowed)
+	return s.SetPerm(username, FeatureBoosted, allowed)
 }
 
 // SetPerm grants or revokes an arbitrary per-user permission feature.
@@ -1134,57 +1190,78 @@ func (s *Store) SetPerm(username, feature string, allowed bool) error {
 	return s.setPerm(username, feature, allowed)
 }
 
-func (s *Store) setPerm(username, elType string, allowed bool) error {
+func (s *Store) setPermRow(username, feature string, allowed bool) error {
 	username = norm(username)
-	// Reconstruction is mutually exclusive with Boosted: granting one side
-	// revokes the other side for the same user. The global switch ("*") is not a
-	// real user, so exclusion only applies to per-user overrides. Editor is
-	// independent and never triggers the exclusion.
-	if username != globalPermUser && allowed {
-		switch elType {
-		case FeatureRecon:
-			// Granting reconstruction revokes boosted.
-			_ = s.setPermFalse(username, FeatureBoosted)
-		case FeatureBoosted:
-			// Granting boosted revokes reconstruction.
-			_ = s.setPermFalse(username, FeatureRecon)
-		}
-	}
 	v := 0
 	if allowed {
 		v = 1
 	}
 	_, err := s.db.Exec(`INSERT INTO perms (username, feature, allowed) VALUES (?,?,?)
 		ON CONFLICT(username, feature) DO UPDATE SET allowed=excluded.allowed`,
-		username, elType, v)
+		username, feature, v)
 	return err
+}
+
+func (s *Store) setPerm(username, feature string, allowed bool) error {
+	username = norm(username)
+	if username != globalPermUser && allowed {
+		switch feature {
+		case FeatureRecon:
+			_ = s.setPerm(username, FeatureBoosted, false)
+		case FeatureBoosted:
+			_ = s.setPerm(username, FeatureRecon, false)
+		}
+	}
+	if err := s.setPermRow(username, feature, allowed); err != nil {
+		return err
+	}
+	if username == globalPermUser {
+		if feature == FeatureRecon {
+			return s.v2SetGlobalReconRoleDefaults(allowed)
+		}
+		return nil
+	}
+	return s.v2ApplyDirectFeature(username, feature, allowed)
 }
 
 func (s *Store) setPermFalse(username, feature string) error {
-	username = norm(username)
-	_, err := s.db.Exec(`INSERT INTO perms (username, feature, allowed) VALUES (?,?,0)
-		ON CONFLICT(username, feature) DO UPDATE SET allowed=0`, username, feature)
-	return err
+	if err := s.setPermRow(username, feature, false); err != nil {
+		return err
+	}
+	if norm(username) == globalPermUser {
+		return nil
+	}
+	return s.v2ApplyDirectFeature(username, feature, false)
 }
 
-// ClearReconOverrides removes any per-user reconstruction overrides for a
-// username so they fall back to the global switches again.
+// ClearReconOverrides removes any per-user permission overrides for a username
+// so they fall back to the global/default switches again (v1 compat behavior).
 func (s *Store) ClearReconOverrides(username string) (int64, error) {
+	username = norm(username)
 	res, err := s.db.Exec(`DELETE FROM perms WHERE username=? AND username<>?`,
-		norm(username), globalPermUser)
+		username, globalPermUser)
 	if err != nil {
 		return 0, err
 	}
+	school := s.v2UserSchool(username)
+	_ = s.v2ClearUserAll(school, username)
 	n, _ := res.RowsAffected()
 	return n, nil
 }
 
 // RevokeAll clears every permission row (global switches and per-user
-// overrides), returning every user to the default state of class-pool-only.
+// overrides), returning every user to the default state (v1 compat).
 func (s *Store) RevokeAll() (int64, error) {
 	res, err := s.db.Exec(`DELETE FROM perms`)
 	if err != nil {
 		return 0, err
+	}
+	// clear v2 assignments/grants and global recon role defaults; keep groups/role mappings.
+	_, _ = s.db.Exec(`DELETE FROM user_cap_groups`)
+	_, _ = s.db.Exec(`DELETE FROM user_cap_grants`)
+	_, _ = s.db.Exec(`DELETE FROM user_cap_prefs`)
+	if gid, ok, _ := s.groupIDByName("", V2GroupRecon); ok {
+		_, _ = s.db.Exec(`DELETE FROM role_default_groups WHERE school='' AND group_id=?`, gid)
 	}
 	n, _ := res.RowsAffected()
 	return n, nil
@@ -1622,16 +1699,16 @@ func (s *Store) SetDefaultPerm(feature string, allowed bool) error {
 	if err := s.SetSetting(key, v); err != nil {
 		return err
 	}
-	if !allowed {
-		return nil
+	if allowed {
+		switch feature {
+		case FeatureRecon:
+			_ = s.SetSetting(SettingDefaultPermBoosted, "0")
+		case FeatureBoosted:
+			_ = s.SetSetting(SettingDefaultPermRecon, "0")
+		}
 	}
-	switch feature {
-	case FeatureRecon:
-		return s.SetSetting(SettingDefaultPermBoosted, "0")
-	case FeatureBoosted:
-		return s.SetSetting(SettingDefaultPermRecon, "0")
-	}
-	return nil
+	// update v2 default-new-user group grants and role defaults
+	return s.v2SetDefaultNewUserGroup(feature, allowed)
 }
 
 // ClearDefaultPerms removes every default, so newly seen users start with no
@@ -1643,6 +1720,10 @@ func (s *Store) ClearDefaultPerms() error {
 			return err
 		}
 	}
+	if id, ok, _ := s.groupIDByName("", V2GroupDefaultNewUser); ok {
+		_, _ = s.db.Exec(`DELETE FROM cap_group_grants WHERE group_id=?`, id)
+		_, _ = s.db.Exec(`DELETE FROM role_default_groups WHERE group_id=?`, id)
+	}
 	return nil
 }
 
@@ -1653,11 +1734,16 @@ func (s *Store) applyDefaultPerms(username string) error {
 	if err != nil {
 		return err
 	}
+	// Apply to v2 (per-user groups/direct grants) and keep v1 explicit perm rows
+	// for compat/admin visibility. Defaults are applied only on first insert.
 	for _, feature := range []string{FeatureRecon, FeatureBoosted, FeatureEditor, FeatureTechniker} {
 		if !defaults[feature] {
 			continue
 		}
-		if err := s.setPerm(username, feature, true); err != nil {
+		if err := s.setPermRow(norm(username), feature, true); err != nil {
+			return err
+		}
+		if err := s.v2ApplyDirectFeature(username, feature, true); err != nil {
 			return err
 		}
 	}

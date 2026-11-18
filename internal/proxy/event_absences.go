@@ -233,7 +233,7 @@ func (p *Proxy) eventPeriodDataFor(school, username string, periodID int64) (map
 		}
 		absences = append(absences, studentAbsenceJSON(person, appt, row))
 	}
-	return eventPeriodData(periodID, eventTopicJSON(periodID, ev), appt.Checked, studentIDs, absences), appt.Roster, true
+	return eventPeriodData(periodID, eventTopicJSON(periodID, ev), appt.Checked, studentIDs, absences, p.hasTechnikManage(username)), appt.Roster, true
 }
 
 // eventTopicJSON is the lesson topic the app's detail view shows. The event title
@@ -254,10 +254,15 @@ func eventTopicJSON(periodID int64, ev store.StudentEvent) map[string]any {
 // emptyEventPeriodData is a valid PeriodData for a period whose event could not
 // be resolved, so the app still receives an entry instead of an absent one.
 func emptyEventPeriodData(periodID int64) map[string]any {
-	return eventPeriodData(periodID, nil, false, []any{}, []any{})
+	return eventPeriodData(periodID, nil, false, []any{}, []any{}, false)
 }
 
-func eventPeriodData(periodID int64, topic map[string]any, checked bool, studentIDs, absences []any) map[string]any {
+func eventPeriodData(periodID int64, topic map[string]any, checked bool, studentIDs, absences []any, canManage bool) map[string]any {
+	caps := []any{readStudAbsenceCap, readLessonTopicCap, "READ_HOMEWORK", "READ_CLASSROLE", "READ_PERIODINFO"}
+	if canManage {
+		caps = append([]any{readStudAbsenceCap, writeStudAbsenceCap, readLessonTopicCap, "READ_HOMEWORK", "READ_CLASSROLE", "READ_PERIODINFO"}, nil)[:0]
+		caps = []any{readStudAbsenceCap, writeStudAbsenceCap, readLessonTopicCap, "READ_HOMEWORK", "READ_CLASSROLE", "READ_PERIODINFO"}
+	}
 	return map[string]any{
 		"ttId":                   periodID,
 		"absenceChecked":         checked,
@@ -272,10 +277,7 @@ func eventPeriodData(periodID int64, topic map[string]any, checked bool, student
 		"seatingPlan":            nil,
 		"classRoles":             nil,
 		"channel":                nil,
-		"can": []any{
-			readStudAbsenceCap, writeStudAbsenceCap, readLessonTopicCap,
-			"READ_HOMEWORK", "READ_CLASSROLE", "READ_PERIODINFO",
-		},
+		"can":                    caps,
 	}
 }
 
@@ -289,12 +291,18 @@ func (p *Proxy) handleEventAbsenceCall(w http.ResponseWriter, id json.RawMessage
 	switch strings.ToLower(method) {
 	case "getperioddata2017":
 		return p.serveEventPeriodData(w, id, school, username, body)
-	case "createimmediateabsence2017":
-		return p.createEventAbsence(w, id, school, username, body)
-	case "deleteabsence2017":
-		return p.deleteEventAbsence(w, id, school, username, body)
-	case "submitabsenceschecked2017":
-		return p.submitEventAbsencesChecked(w, id, school, username, body)
+	case "createimmediateabsence2017", "deleteabsence2017", "submitabsenceschecked2017":
+		if !p.hasTechnikManage(username) {
+			return false
+		}
+		switch strings.ToLower(method) {
+		case "createimmediateabsence2017":
+			return p.createEventAbsence(w, id, school, username, body)
+		case "deleteabsence2017":
+			return p.deleteEventAbsence(w, id, school, username, body)
+		default:
+			return p.submitEventAbsencesChecked(w, id, school, username, body)
+		}
 	}
 	return false
 }

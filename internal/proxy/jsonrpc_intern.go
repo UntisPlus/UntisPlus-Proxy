@@ -91,16 +91,16 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 			if m == "" {
 				m = req.Method
 			}
-			// Write methods are gated per editor flag; reading your own
-			// absences is always allowed.
+			// Write methods are gated by fine-grained v2 capabilities; reading your
+			// own absences is always allowed.
 			username := extractAuthUser(body)
 			// A techniker's absence register on a proxy event is answered here,
-			// before the editor gate, because it writes a local note rather than
-			// an Untis record. A call for a real period falls through unchanged.
+			// before the write gate, because it writes a local note rather than an
+			// Untis record. A call for a real period falls through unchanged.
 			if p.handleEventAbsenceCall(w, req.ID, school, m, username, body) {
 				return
 			}
-			if username != "" && isWriteMethod(m) && !p.isEditor(username) {
+			if username != "" && isWriteMethod(m) && !p.hasWriteCapability(username, school, m) {
 				p.writeJSONRPCError(w, req.ID, "method not allowed", -32601)
 				return
 			}
@@ -149,13 +149,13 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 			m = req.Method
 		}
 		// See the auth-block branch: a techniker's register on a proxy event is
-		// local and answered before the editor gate.
+		// local and answered before the write gate.
 		if p.handleEventAbsenceCall(w, req.ID, school, m, user.Username, body) {
 			return
 		}
-		// Write methods are gated per editor flag; reading your own
+		// Write methods are gated by fine-grained v2 capabilities; reading your own
 		// absences is always allowed.
-		if isWriteMethod(m) && !p.isEditor(user.Username) {
+		if isWriteMethod(m) && !p.hasWriteCapability(user.Username, school, m) {
 			p.writeJSONRPCError(w, req.ID, "method not allowed", -32601)
 			return
 		}
@@ -472,9 +472,7 @@ func (p *Proxy) markPooledElementsDisplayableInner(school string, body []byte, u
 	if err := json.Unmarshal(body, &m); err != nil {
 		return body
 	}
-	// One pool read instead of a PoolContains query per class. The login path
-	// and every cached timetable hit go through this rewrite, and with a few
-	// hundred classes the per-class queries dominated both.
+	// One pool read instead of a PoolContains query per class.
 	pooled := map[int64]bool{}
 	if classes, err := p.store.Pool(school); err == nil {
 		for _, c := range classes {
@@ -482,7 +480,8 @@ func (p *Proxy) markPooledElementsDisplayableInner(school string, body []byte, u
 		}
 	}
 	if len(pooled) == 0 {
-		return body
+		// Even without pooled classes, boosted/recon element visibility may be relevant;
+		// continue with empty pooled map.
 	}
 	result, _ := m["result"].(map[string]any)
 	md, _ := result["masterData"].(map[string]any)
@@ -498,86 +497,74 @@ func (p *Proxy) markPooledElementsDisplayableInner(school string, body []byte, u
 			if !ok {
 				continue
 			}
-			// Stamp the flag explicitly (true AND false): upstream often serves
-			// every element with displayAllowed=true, and promote-only rewriting
-			// would leave un-granted elements selectable.
 			ci[flag] = want(int64(idf))
 		}
 	}
-	// Teacher accounts (non-students) behave like the stock WebUntis API:
-	// leave their teacher/room/subject displayAllowed flags untouched. For
-	// students, reconstructed elements are only made displayable to users who
-	// hold the recon permission; boosted users see every element.
-	requester, _ := p.store.GetUser(username)
-	isStudent := requester != nil && requester.PersonType == 5
-	boosted := p.isBoosted(username)
-	// The shared "#anonymous#" session has no stored account, so it cannot hold
-	// recon or boosted. Give it the pooled classes on top of whatever upstream
-	// exposes to the anonymous account: a school that hides every class from
-	// #anonymous# would otherwise show an empty picker, while a school that
-	// already marks its classes displayable must keep them.
+
+	// v2: anonymous sessions never receive proxy-pooled or reconstructed supplements.
 	if username == "#anonymous#" {
-		// Promote a pooled class only when the operator enabled the class
-		// fallback and recon has fresh coverage for that class. Existing
-		// upstream-displayable classes are never cleared: the proxy index is a
-		// fallback, not a replacement for what the anonymous account can see.
-		if p.anonymousFeature(school, "classes") {
-			target := reconHorizon()
-			refresh := p.reconRefreshDays()
-			horizons := p.reconHorizons(school)
-			covered := map[int64]bool{}
-			for id, until := range horizons {
-				covered[id] = until != "" && !reconStale(until, target, refresh)
-			}
-			if items, ok := md["klassen"].([]any); ok {
-				for _, item := range items {
-					ci, ok := item.(map[string]any)
-					if !ok {
-						continue
-					}
-					if idf, ok := ci["id"].(float64); ok && pooled[int64(idf)] && covered[int64(idf)] {
-						ci["displayable"] = true
-					}
-				}
-			}
-		}
 		out, err := json.Marshal(m)
 		if err != nil {
 			return body
 		}
 		return out
 	}
-	if !isStudent {
+
+	requester, _ := p.store.GetUser(username)
+	// Non-student/teacher/staff accounts: keep stock upstream display flags untouched
+	// (they are served raw through their own/upstream behavior in v2-compatible paths).
+	if requester == nil || requester.PersonType != 5 {
 		out, err := json.Marshal(m)
 		if err != nil {
 			return body
 		}
 		return out
 	}
-	if boosted {
-		// Boosted users can serve every class/teacher/room/subject raw via the
-		// saved teacher accounts, so make all of them selectable.
-		setDisplayable("klassen", func(id int64) bool { return true }, "displayable")
-		setDisplayable("teachers", func(id int64) bool { return true }, "displayAllowed")
-		setDisplayable("rooms", func(id int64) bool { return true }, "displayAllowed")
-		setDisplayable("subjects", func(id int64) bool { return true }, "displayAllowed")
-		out, err := json.Marshal(m)
-		if err != nil {
-			return body
+
+	st := p.stateFor(school)
+	canPoolView := p.canViewPool(requester, school)
+	classBoosted := p.canViewClassBoosted(requester, school)
+	teacherBoosted := p.canViewTeacherBoosted(requester, school)
+	roomBoosted := p.canViewRoomBoosted(requester, school)
+	subjectBoosted := p.canViewSubjectBoosted(requester, school)
+	teacherRecon := p.canViewTeacherRecon(requester, school)
+	roomRecon := p.canViewRoomRecon(requester, school)
+	subjectRecon := p.canViewSubjectRecon(requester, school)
+
+	// Pooled classes are visible if pooled view capability is effective (or legacy baseline),
+	// or if class boosted-raw is effective (all classes selectable). Own class remains visible
+	// if upstream already marked it, but we still normalize explicitly here.
+	setDisplayable("klassen", func(id int64) bool {
+		if classBoosted {
+			return true
 		}
-		return out
-	}
-	can, _ := p.store.ReconAccess(username, "TEACHER")
-	// Everyone (Basic and Recon alike) can at least see the pooled classes.
-	setDisplayable("klassen", func(id int64) bool { return pooled[id] }, "displayable")
+		if pooled[id] && canPoolView {
+			return true
+		}
+		// preserve own class visibility as a safe baseline
+		if id == requester.ClassID && id > 0 {
+			return true
+		}
+		return false
+	}, "displayable")
+
 	setDisplayable("teachers", func(id int64) bool {
-		return can && p.stateFor(school).recon.has("TEACHER", id)
+		if teacherBoosted {
+			return true
+		}
+		return teacherRecon && st.recon.has("TEACHER", id)
 	}, "displayAllowed")
 	setDisplayable("rooms", func(id int64) bool {
-		return can && p.stateFor(school).recon.has("ROOM", id)
+		if roomBoosted {
+			return true
+		}
+		return roomRecon && st.recon.has("ROOM", id)
 	}, "displayAllowed")
 	setDisplayable("subjects", func(id int64) bool {
-		return can && p.stateFor(school).recon.has("SUBJECT", id)
+		if subjectBoosted {
+			return true
+		}
+		return subjectRecon && st.recon.has("SUBJECT", id)
 	}, "displayAllowed")
 
 	out, err := json.Marshal(m)
@@ -835,56 +822,41 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 		p.writeJSONRPCError(w, id, "not logged in", -8520)
 		return
 	}
-	// Anonymous is a real upstream session but deliberately not a stored user.
-	// A pooled class is served from the pool's student owners, exactly like a
-	// real student would get it, so a school whose #anonymous# account has no
-	// timetable right still works for the classes the proxy knows.
-	// Any other target (and any non-pooled class) is forwarded raw and left to
-	// upstream's anonymous permissions, which is what makes a school with wider
-	// anonymous class visibility keep working.
+	// v2: anonymous is upstream-detected/stock and never receives proxy-pooled
+	// or reconstructed supplements. Forward only upstream-allowed anonymous class
+	// timetable requests raw; deny other target types/surfaces.
 	var requester *store.User
 	if requesterName == "#anonymous#" {
-		if !p.anonymousAllowed(school) {
-			p.writeJSONRPCError(w, id, "anonymous access disabled for this school", -8509)
+		if !p.anonymousAllowed(school) || !p.anonymousFeature(school, "classes") || !strings.EqualFold(pr.Type, "CLASS") || pr.ID <= 0 {
+			p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 			return
 		}
-		if pr.Type == "CLASS" {
-			// The pooled-class fallback needs both the operator's global
-			// capability and recon coverage through the requested end date.
-			// Anything else is raw-forwarded, leaving upstream's anonymous
-			// permissions in charge exactly like before the fallback existed.
-			if pooled, err := p.store.PoolContains(school, pr.ID); err == nil && pooled &&
-				p.anonymousFeature(school, "classes") &&
-				p.reconCoversClass(school, pr.ID, normalizeTimetableDate(pr.EndDate)) {
-				requester = &store.User{Username: requesterName, School: school, PersonType: 5}
-			}
-		}
-		if requester == nil {
-			b, status, _, err := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
-			if err != nil {
-				p.writeJSONRPCError(w, id, "no right for timetable", -8509)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(status)
-			_, _ = w.Write(b)
+		anon := &store.User{Username: "#anonymous#", School: school, PersonType: 5}
+		if !p.canSubscribeTarget(anon, school, "CLASS", pr.ID) {
+			p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 			return
 		}
-	} else {
-		var err error
-		requester, err = p.store.GetUser(requesterName)
-		if err != nil || requester == nil {
-			p.writeJSONRPCError(w, id, "not logged in", -8520)
+		b, status, _, err := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
+		if err != nil {
+			p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 			return
 		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(b)
+		return
+	}
+	requester, err := p.store.GetUser(requesterName)
+	if err != nil || requester == nil {
+		p.writeJSONRPCError(w, id, "not logged in", -8520)
+		return
 	}
 
-	// boost: serve ALL timetables (class/teacher/room/subject AND the user's own
-	// personal student timetable) raw from the saved teacher accounts. This gives
-	// boosted users teacher-grade visibility — e.g. unlimited future weeks on
-	// their own timetable, which a student account caps at ~1 week. If no
-	// teacher account is saved, fall back to the pool path below.
-	if p.isBoosted(requesterName) {
+	// v2: serve boosted-raw for this specific target/mode when the effective
+	// capability allows it and a boosted source account is available. Other
+	// allowed modes (reconstructed/pooled/upstream) may still apply below.
+	ownReq := p.ownsTimetable(requester, pr)
+	if p.canBoostedRawForTimetable(requester, school, pr.Type, ownReq) {
 		if p.serveRawFromBoostedSource(w, r, school, id, requesterName, requester, pr, body) {
 			return
 		}
@@ -914,6 +886,10 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 		// validated by upstream directly, so even a session-only account
 		// (no replayable key) can read its own timetable.
 		if requester.PersonType == 5 && requester.PersonID == pr.ID {
+			if !p.canViewPersonalUpstream(requester, school) && !p.canViewPersonalBoosted(requester, school) {
+				p.writeJSONRPCError(w, id, "no right for timetable", -8509)
+				return
+			}
 			b, status, _, err := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
 			if err != nil {
 				p.writeJSONRPCError(w, id, "no right for timetable", -8509)
@@ -934,11 +910,15 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 			w.WriteHeader(status)
 			_, _ = w.Write(b)
 			return
-		} // Another student's id: resolve it to their class and serve it via
-		// the pool, which requires a replayable owner.
-		u, err := p.store.UserByPersonID(pr.ID)
-		if err == nil && u != nil {
-			classID = u.ClassID
+		}
+		// Another student's id: resolve it to their class and serve it via the pool
+		// only when explicit class pooled/boosted access applies. (No direct v2 cap
+		// for arbitrary other-student personal timetables; deny by default.)
+		if p.canViewClassAs(requester, school, 0, false) {
+			u, err := p.store.UserByPersonID(pr.ID)
+			if err == nil && u != nil {
+				classID = u.ClassID
+			}
 		}
 	case "CLASS":
 		classID = pr.ID
@@ -947,14 +927,15 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 		// class timetable. The periods are the whole class's, so they are cached
 		// viewer-neutrally; only the decoration below is per student.
 		if requester.PersonType == 5 && pr.ID == requester.ClassID {
+			if !p.canViewClassAs(requester, school, pr.ID, true) && !p.canViewClassBoosted(requester, school) {
+				p.writeJSONRPCError(w, id, "no right for timetable", -8509)
+				return
+			}
 			if b, ok := p.cachedClassBody(school, classID, pr.StartDate, pr.EndDate); ok {
 				p.writeClassTimetable(w, school, requesterName, id, b, pr, true, true, http.StatusOK)
 				return
 			}
 			key := classTimetableCacheKey(school, classID, pr.StartDate, pr.EndDate)
-			// The flight key includes the requester because this path's upstream
-			// authentication is the requester's own: a bad auth block must not
-			// deny a classmate the fetch. The cache it fills is still shared.
 			b, status, err := p.fetchClassBody(key, key+"|"+requesterName, func() ([]byte, int, error) {
 				bb, st, _, e := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
 				return bb, st, e
@@ -963,11 +944,6 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 				p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 				return
 			}
-			// A client asking for its own class is asking for its own timetable,
-			// so personal events and the synthetic Technik class ride along,
-			// keyed by the session user and never by anything in the request. A
-			// classmate in the same class sends the same request and gets their
-			// own events, never anyone else's.
 			p.writeClassTimetable(w, school, requesterName, id, b, pr, true, false, status)
 			return
 		}
@@ -987,6 +963,10 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 	}
 
 	if classID == 0 {
+		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
+		return
+	}
+	if !p.canViewClassAs(requester, school, classID, false) {
 		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 		return
 	}
@@ -1055,10 +1035,13 @@ func (p *Proxy) withRequesterMasterData(school, username string, b []byte) []byt
 }
 
 // serveRawFromBoostedSource serves timetable requests (CLASS/STUDENT/TEACHER/
-// ROOM/SUBJECT) raw from the saved teacher accounts when the requester is
-// boosted. It picks the first available teacher source account and forwards the
-// request with rewritten auth to that account.
+// ROOM/SUBJECT) raw from the saved teacher accounts when the requester has the
+// effective boosted-raw capability for this specific target/mode.
 func (p *Proxy) serveRawFromBoostedSource(w http.ResponseWriter, r *http.Request, school string, id json.RawMessage, requesterName string, requester *store.User, pr timetableParams, body []byte) bool {
+	ownReq := p.ownsTimetable(requester, pr)
+	if !p.canBoostedRawForTimetable(requester, school, pr.Type, ownReq) {
+		return false
+	}
 	owner := p.boostedSource(school)
 	if owner == nil {
 		return false
@@ -1292,9 +1275,9 @@ func (p *Proxy) serveElementTimetable(w http.ResponseWriter, r *http.Request, sc
 		md = p.rewrittenMasterData(school, requesterName)
 		eventPeriods = p.elementEventPeriods(school, pr.Type, pr.ID, pr.StartDate, pr.EndDate, p.schoolLocation(school), md)
 	}
-	// Reconstructed teacher/room/subject timetables are gated per element type
-	// (individual override or global switch); nothing is enabled by default.
-	allowed, _ := p.store.ReconAccess(requester.Username, pr.Type)
+	// Reconstructed teacher/room/subject timetables are gated by per-target v2
+	// reconstructed capabilities and recon availability/coverage.
+	allowed := p.canViewElementRecon(requester, school, pr.Type)
 	reconReady := allowed && p.stateFor(school).recon.has(pr.Type, pr.ID) &&
 		pr.StartDate != "" && pr.EndDate != ""
 	if !reconReady && len(eventPeriods) == 0 {

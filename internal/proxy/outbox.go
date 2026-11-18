@@ -161,7 +161,7 @@ func (p *Proxy) sendOutboxRow(row store.OutboxRow) error {
 			log.Printf("[outbox] webhook %d for %s no longer exists, dropping", row.DestID, row.School)
 			return nil
 		}
-		if !h.Enabled {
+		if !h.Enabled || !p.webhookDeliveryAuthorized(row.School, h) {
 			return nil
 		}
 		return p.postWebhookOnce(h, row.Payload, outboxSummary(row.Payload))
@@ -172,7 +172,7 @@ func (p *Proxy) sendOutboxRow(row store.OutboxRow) error {
 			log.Printf("[outbox] ntfy topic %d for %s no longer exists, dropping", row.DestID, row.School)
 			return nil
 		}
-		if !t.Enabled {
+		if !t.Enabled || !p.ntfyDeliveryAuthorized(row.School, t) {
 			return nil
 		}
 		var payload struct {

@@ -81,7 +81,7 @@ func TestSubsRejectsSSRFTargets(t *testing.T) {
 	// newTestProxy allows private targets for the loopback delivery tests; turn
 	// the guard back on for this one.
 	allowPrivateTargets = false
-	if err := st.UpsertUser(&store.User{Username: "carla", Method: "key", ClassID: 5000}); err != nil {
+	if err := st.UpsertUser(&store.User{Username: "carla", Method: "key", PersonType: 5, ClassID: 5000, School: "testschool"}); err != nil {
 		t.Fatalf("add carla: %v", err)
 	}
 	for _, url := range []string{

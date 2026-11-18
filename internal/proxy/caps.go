@@ -102,7 +102,22 @@ func (p *Proxy) capsInPeriod(username string, pd map[string]any) {
 	can, _ := pd["can"].([]any)
 	can = p.viewerCaps(username, can)
 	if isSyntheticEventPeriod(pd) && p.hasTechniker(username) {
-		can = withAbsenceCaps(can)
+		if p.hasTechnikManage(username) {
+			can = withAbsenceCaps(can)
+		} else {
+			// View-only technikers can see event period/register data but must not
+			// be offered write controls by the client.
+			hasRead := false
+			for _, c := range can {
+				if s, ok := c.(string); ok && s == readStudAbsenceCap {
+					hasRead = true
+					break
+				}
+			}
+			if !hasRead {
+				can = append(can, readStudAbsenceCap)
+			}
+		}
 	}
 	pd["can"] = can
 }

@@ -33,7 +33,7 @@ func newTestProxy(t *testing.T) (*Proxy, *store.Store) {
 		t.Fatalf("set admin: %v", err)
 	}
 	_ = st.SetDefaultSchool("testschool")
-	p := New(st, untis.New(untis.Config{Server: "school.example.com", School: "testschool"}), session.NewManager(5*time.Minute), Options{School: "testschool"})
+	p := New(st, untis.New(untis.Config{Server: "school.example.com", School: "testschool"}), session.NewManager(5*time.Minute), Options{School: "testschool", OutageVerifyPings: -1})
 	return p, st
 }
 

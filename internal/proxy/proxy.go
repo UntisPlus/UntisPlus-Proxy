@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"untis-proxy/internal/access"
 	"untis-proxy/internal/session"
 	"untis-proxy/internal/store"
 	"untis-proxy/internal/untis"
@@ -42,6 +43,12 @@ type Options struct {
 	// request range and return every stored event. Off by default because the
 	// response grows with the whole event history.
 	TechnikFullHistory bool
+	// OutageVerifyPings is how many extra upstream probe attempts the outage
+	// detector makes when a school's poll health first appears down, to confirm
+	// the failure is not a transient packet loss or blip before starting the
+	// alert debounce. Zero means use the default (5); negative disables extra
+	// verification probes.
+	OutageVerifyPings int
 }
 
 type Proxy struct {
@@ -95,6 +102,11 @@ type Proxy struct {
 	// clears only the account counter.
 	loginAccountLimit *attemptLimiter
 	loginIPLimit      *attemptLimiter
+
+	// outageVerifyPings is the number of extra upstream probe attempts made by
+	// the outage detector when a school first appears down, to avoid false
+	// alerts from transient packet loss or blips.
+	outageVerifyPings int
 }
 
 // RequestRescan makes the next recon sweep re-enumerate every pooled class
@@ -178,6 +190,14 @@ func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *
 		loginAccountLimit: newAttemptLimiter(loginMax, loginWindow),
 		loginIPLimit:      newAttemptLimiter(loginMax*3, loginWindow),
 	}
+	verifyPings := opts.OutageVerifyPings
+	switch {
+	case verifyPings == 0:
+		verifyPings = 5
+	case verifyPings < 0:
+		verifyPings = 0
+	}
+	p.outageVerifyPings = verifyPings
 	// The raw masterData of every known school survives a restart, so the first
 	// timetable request after a restart (before a fresh login) still resolves
 	// real element names and ids. Entries that do not parse are dropped: serving
@@ -798,13 +818,20 @@ func (p *Proxy) isAdmin(username string) bool {
 // anonymousAllowed reports whether a school may use the upstream "#anonymous#"
 // login and the raw timetable forwarding that follows it. Unknown schools follow
 // the auto-registration decision, so only an explicit per-school switch (or a
-// deployment that stopped accepting new schools) turns it off.
+// deployment that stopped accepting new schools) turns it off. An explicit admin
+// anon-profile override can force anonymous login disabled for the school.
 func (p *Proxy) anonymousAllowed(school string) bool {
 	if school == "" {
 		school = p.opts.School
 	}
 	ok, err := p.store.AnonymousAllowed(school)
-	return err == nil && ok
+	if err != nil || !ok {
+		return false
+	}
+	if prof, err := p.store.GetSchoolAnonProfile(school); err == nil && prof != nil && prof.Source == "override" && !prof.LoginOK {
+		return false
+	}
+	return true
 }
 
 // anonymousSessionUser returns the synthetic read-only user for an anonymous
@@ -823,13 +850,34 @@ func (p *Proxy) anonymousSessionUser(r *http.Request, school string) *store.User
 	return &store.User{Username: "#anonymous#", School: school, PersonType: 5}
 }
 
-// anonymousFeature reports whether one global anonymous capability is enabled
-// for this school. The per-school login switch always wins: a disabled login
-// cuts every surface even if the capability is enabled deployment-wide.
+// anonymousFeature reports whether an anonymous proxy capability is allowed for
+// this school. v2: per-school login and (when present) per-school
+// profile/override decisions take precedence, with legacy global feature toggles
+// as a compatibility fallback until detection/admin migration is complete.
 func (p *Proxy) anonymousFeature(school, feature string) bool {
 	if !p.anonymousAllowed(school) {
 		return false
 	}
+	if school == "" {
+		school = p.opts.School
+	}
+	// Opportunistic lazy detection/refresh (non-blocking) for stale/missing profiles.
+	p.EnsureSchoolAnonProfile(school)
+
+	payload, prof, err := p.store.GetSchoolAnonProfilePayload(school)
+	if err == nil && prof != nil {
+		// Explicit admin/detected capability override in profile payload wins over legacy fallback.
+		if v, ok := payload.Capabilities[feature]; ok {
+			return v
+		}
+		// A successful upstream detection for this school is authoritative for the
+		// "classes" stock-forwarding surface when no explicit capability key is
+		// present (older profile payloads).
+		if feature == "classes" && prof.LoginOK && prof.Source == "detect" {
+			return len(payload.ClassesDisplayable) > 0
+		}
+	}
+	// Legacy global fallback for proxy capabilities (ntfy/webhooks/changes/classes).
 	ok, err := p.store.AnonymousFeature(feature)
 	return err == nil && ok
 }
@@ -863,16 +911,30 @@ func (p *Proxy) sessionUserForAny(r *http.Request, school string, features ...st
 	return p.sessionUser(r)
 }
 
-// isBoosted reports whether a user effectively gets Boosted raw timetable
-// forwarding (holds the boosted flag).
+// isBoosted reports whether a user effectively gets boosted/raw timetable or
+// class-scoped boosted behavior under v2 effective permissions (with legacy compat).
 func (p *Proxy) isBoosted(username string) bool {
+	if username == "" || username == "#anonymous#" {
+		return false
+	}
+	u, err := p.store.GetUser(username)
+	if err == nil && u != nil {
+		return p.isBoostedV2(u, p.userSchool(u, u.School))
+	}
 	ok, _ := p.store.BoostedAccess(username)
 	return ok
 }
 
-// isEditor reports whether a user holds the editor flag (absence/lesson/subject
-// write methods).
+// isEditor reports whether a user effectively holds write/editor capabilities
+// under v2 effective permissions (with legacy compat).
 func (p *Proxy) isEditor(username string) bool {
+	if username == "" || username == "#anonymous#" {
+		return false
+	}
+	u, err := p.store.GetUser(username)
+	if err == nil && u != nil {
+		return p.isEditorV2(u, p.userSchool(u, u.School))
+	}
 	ok, _ := p.store.EditorAccess(username)
 	return ok
 }
@@ -911,11 +973,85 @@ var classScopedMethods = map[string]bool{
 	"putLessonInfo":     true,
 }
 
+// methodWriteCapability returns the fine-grained v2 capability required for a
+// write/mutation method, or "" when it is not a write method. Unknown write
+// methods fall back to "editor" (either write capability) for compatibility.
+func methodWriteCapability(method string) string {
+	m := strings.ToLower(strings.TrimSpace(method))
+	if m == "" || !isWriteMethod(m) {
+		return ""
+	}
+	// Absence/class-register absence writes.
+	if strings.Contains(m, "absence") || m == "setabsenceslist" {
+		return string(access.CapAbsenceWrite)
+	}
+	// Lesson content/info edits and known class-scoped lesson mutations.
+	switch m {
+	case "putlessoninfo", "savelesson", "removelesson", "movelesson", "copylesson",
+		"createlesson", "updatelesson", "deletelesson", "changelesson", "modifylesson":
+		return string(access.CapLessonWrite)
+	}
+	return "editor"
+}
+
+// hasWriteCapability reports whether user can perform method (or any write if
+// method is unclassified/empty write context).
+func (p *Proxy) hasWriteCapability(username, school, method string) bool {
+	if username == "" || username == "#anonymous#" {
+		return false
+	}
+	u, err := p.store.GetUser(username)
+	if err != nil || u == nil {
+		return p.isEditor(username)
+	}
+	sch := p.userSchool(u, school)
+	req := methodWriteCapability(method)
+	switch req {
+	case "":
+		return true
+	case string(access.CapAbsenceWrite):
+		return p.canWriteAbsence(u, sch)
+	case string(access.CapLessonWrite):
+		return p.canWriteLesson(u, sch)
+	default:
+		return p.isEditorV2(u, sch)
+	}
+}
+
+// canUseClassScopedMethod reports whether the user may run a class-scoped
+// method via the boosted teacher source. Read-only class-scoped data fetches
+// used by editor screens require any editor/write capability; writes require the
+// method's specific capability.
+func (p *Proxy) canUseClassScopedMethod(u *store.User, school, method string) bool {
+	if u == nil || u.Username == "#anonymous#" {
+		return false
+	}
+	if isWriteMethod(method) {
+		return p.hasWriteCapability(u.Username, p.userSchool(u, school), method)
+	}
+	// getPeriodData2017 and similar class-scoped reads for editor UI: allow if the
+	// user has editor-class capabilities (either write or legacy boosted/editor
+	// behavior that grants access to class register data).
+	return p.isEditorV2(u, p.userSchool(u, school)) || p.canWriteAbsence(u, p.userSchool(u, school)) || p.canWriteLesson(u, p.userSchool(u, school))
+}
+
 // classScopedOwner returns the teacher account a class-scoped request has to
 // run as, or nil when it should keep the requester's own identity: personal
-// data, boosted users and non-editors never switch.
+// data, users without required capability, and same-identity cases never switch.
 func (p *Proxy) classScopedOwner(school, username, method string) *store.User {
-	if username == "" || !classScopedMethods[method] || !p.isEditor(username) {
+	if username == "" || !classScopedMethods[method] {
+		return nil
+	}
+	u, err := p.store.GetUser(username)
+	if err == nil && u != nil {
+		if !p.canUseClassScopedMethod(u, p.userSchool(u, school), method) {
+			return nil
+		}
+	} else if isWriteMethod(method) {
+		if !p.hasWriteCapability(username, school, method) {
+			return nil
+		}
+	} else if !p.isEditor(username) {
 		return nil
 	}
 	owner := p.boostedSource(school)
@@ -926,8 +1062,7 @@ func (p *Proxy) classScopedOwner(school, username, method string) *store.User {
 }
 
 // isWriteMethod reports whether a JSON-RPC method is a lesson/subject/absence
-// write (mutation) method, gated by the editor flag. Reading your own absences
-// is always allowed.
+// write (mutation) method. Fine-grained capability checks are applied separately.
 func isWriteMethod(method string) bool {
 	m := strings.ToLower(method)
 	for _, prefix := range writeMethodPrefixes {

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"untis-proxy/internal/access"
 	"untis-proxy/internal/store"
 	"untis-proxy/internal/untis"
 )
@@ -135,6 +136,8 @@ Run 'untisctl <command> -h' for per-command flags.
 		cmdPerms(st, flag.Args()[1:])
 	case "anonymous":
 		cmdAnonymous(st, flag.Args()[1:])
+	case "v2":
+		cmdV2(st, flag.Args()[1:])
 	case "users":
 		cmdUsers(st, flag.Args()[1:], *server, *school)
 	case "pool":
@@ -264,7 +267,7 @@ var anonymousFeatureOrder = []string{"classes", "ntfy", "webhooks", "changes"}
 // dashboard's school context and is stored on the school row.
 func cmdAnonymous(st *store.Store, args []string) {
 	if len(args) == 0 {
-		fatal("anonymous requires a subcommand (list|grant|revoke)")
+		fatal("anonymous requires a subcommand (list|grant|revoke|profiles)")
 	}
 	switch args[0] {
 	case "list":
@@ -288,8 +291,560 @@ func cmdAnonymous(st *store.Store, args []string) {
 			fatal("anonymous %s %s: %v", args[0], feature, err)
 		}
 		fmt.Printf("%s anonymous %s\n", past(args[0]), feature)
+	case "profiles":
+		profiles, err := st.ListSchoolAnonProfiles()
+		if err != nil {
+			fatal("list anonymous profiles: %v", err)
+		}
+		if len(profiles) == 0 {
+			fmt.Println("no anonymous profiles stored")
+			return
+		}
+		fmt.Printf("%-20s %-7s %-10s %-20s %-20s %s\n", "SCHOOL", "LOGIN", "SOURCE", "DETECTED", "EXPIRES", "CAPABILITIES")
+		for _, p := range profiles {
+			payload := store.DecodeAnonProfilePayload(p.ProfileJSON)
+			caps := make([]string, 0, len(payload.Capabilities))
+			for k, v := range payload.Capabilities {
+				if v {
+					caps = append(caps, k+"=1")
+				} else {
+					caps = append(caps, k+"=0")
+				}
+			}
+			sort.Strings(caps)
+			fmt.Printf("%-20s %-7v %-10s %-20s %-20s %s\n",
+				p.School, p.LoginOK, p.Source,
+				p.DetectedAt.UTC().Format(time.RFC3339),
+				p.ExpiresAt.UTC().Format(time.RFC3339),
+				strings.Join(caps, ","))
+		}
 	default:
 		fatal("unknown anonymous subcommand %q", args[0])
+	}
+}
+
+func cmdV2(st *store.Store, args []string) {
+	if len(args) == 0 {
+		fatal("v2 requires a subcommand (anon-profile|gates|groups|effective|grants|grant|user-groups|role-defaults|person-type-roles)")
+	}
+	switch args[0] {
+	case "anon-profile", "anon-profiles":
+		cmdV2AnonProfile(st, args[1:])
+	case "gates":
+		cmdV2Gates(st, args[1:])
+	case "groups":
+		cmdV2Groups(st, args[1:])
+	case "effective", "why":
+		cmdV2Effective(st, args[1:])
+	case "grants":
+		cmdV2Grants(st, args[1:])
+	case "grant":
+		cmdV2GrantSet(st, args[1:])
+	case "user-groups":
+		cmdV2UserGroups(st, args[1:])
+	case "role-defaults":
+		cmdV2RoleDefaults(st, args[1:])
+	case "person-type-roles", "role-mappings", "person-type-role":
+		cmdV2PersonTypeRoles(st, args[1:])
+	default:
+		fatal("unknown v2 subcommand %q", args[0])
+	}
+}
+
+func cmdV2Groups(st *store.Store, args []string) {
+	if len(args) == 0 {
+		args = []string{"list"}
+	}
+	switch args[0] {
+	case "list":
+		school := ""
+		if len(args) > 1 {
+			school = args[1]
+		}
+		groups, err := st.ListV2Groups(school)
+		if err != nil {
+			fatal("list v2 groups: %v", err)
+		}
+		if len(groups) == 0 {
+			fmt.Println("no groups")
+			return
+		}
+		fmt.Printf("%-5s %-20s %-30s %s\n", "ID", "SCHOOL", "NAME", "DESCRIPTION")
+		for _, g := range groups {
+			fmt.Printf("%-5d %-20s %-30s %s\n", g.ID, g.School, g.Name, g.Description)
+		}
+	case "show":
+		if len(args) < 2 {
+			fatal("v2 groups show requires GROUP_ID")
+		}
+		id, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil {
+			fatal("invalid group id: %v", err)
+		}
+		g, grants, err := st.GetV2Group(id)
+		if err != nil || g == nil {
+			fatal("group not found: %d", id)
+		}
+		fmt.Printf("id=%d school=%q name=%q description=%q\n", g.ID, g.School, g.Name, g.Description)
+		if len(grants) == 0 {
+			fmt.Println("no grants")
+			return
+		}
+		fmt.Printf("%-45s %s\n", "CAPABILITY", "EFFECT")
+		for _, gr := range grants {
+			eff := "inherit"
+			if gr.Effect > 0 {
+				eff = "allow"
+			} else if gr.Effect < 0 {
+				eff = "deny"
+			}
+			fmt.Printf("%-45s %s(%d)\n", gr.Capability, eff, gr.Effect)
+		}
+	case "create":
+		if len(args) < 3 {
+			fatal("v2 groups create requires SCHOOL NAME [DESCRIPTION...] (use empty school \"\" for global)")
+		}
+		school := args[1]
+		name := args[2]
+		desc := ""
+		if len(args) > 3 {
+			desc = strings.Join(args[3:], " ")
+		}
+		id, err := st.CreateV2Group(school, name, desc)
+		if err != nil {
+			fatal("create group: %v", err)
+		}
+		fmt.Printf("created group id=%d school=%q name=%q\n", id, school, name)
+	case "delete":
+		if len(args) < 2 {
+			fatal("v2 groups delete requires GROUP_ID")
+		}
+		id, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil {
+			fatal("invalid group id: %v", err)
+		}
+		if err := st.DeleteV2Group(id); err != nil {
+			fatal("delete group: %v", err)
+		}
+		fmt.Printf("deleted group %d\n", id)
+	case "grant":
+		// v2 groups grant GROUP_ID CAPABILITY allow|deny|inherit
+		if len(args) < 4 {
+			fatal("v2 groups grant requires GROUP_ID CAPABILITY allow|deny|inherit")
+		}
+		id, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil {
+			fatal("invalid group id: %v", err)
+		}
+		cap := args[2]
+		effect, ok := parseV2EffectArg(args[3])
+		if !ok {
+			fatal("invalid effect %q (use allow|deny|inherit)", args[3])
+		}
+		if err := st.SetV2GroupGrant(id, cap, effect); err != nil {
+			fatal("set group grant: %v", err)
+		}
+		fmt.Printf("set group grant group=%d cap=%s effect=%d\n", id, cap, effect)
+	default:
+		// backward compat: treat single arg as school for list
+		if len(args) == 1 {
+			groups, err := st.ListV2Groups(args[0])
+			if err != nil {
+				fatal("list v2 groups: %v", err)
+			}
+			if len(groups) == 0 {
+				fmt.Println("no groups")
+				return
+			}
+			fmt.Printf("%-5s %-20s %-30s %s\n", "ID", "SCHOOL", "NAME", "DESCRIPTION")
+			for _, g := range groups {
+				fmt.Printf("%-5d %-20s %-30s %s\n", g.ID, g.School, g.Name, g.Description)
+			}
+			return
+		}
+		fatal("unknown v2 groups subcommand %q (use list|show|create|delete|grant)", args[0])
+	}
+}
+
+func parseV2EffectArg(s string) (int, bool) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "allow", "grant", "1", "true":
+		return 1, true
+	case "deny", "revoke", "-1", "false":
+		return -1, true
+	case "inherit", "clear", "0":
+		return 0, true
+	}
+	return 0, false
+}
+
+func cmdV2Effective(st *store.Store, args []string) {
+	if len(args) < 2 {
+		fatal("v2 effective/why requires SCHOOL USERNAME")
+	}
+	school, username := args[0], args[1]
+	u, err := st.GetUser(username)
+	if err != nil || u == nil {
+		fatal("user not found: %s", username)
+	}
+	res, err := st.ResolveEffective(school, u)
+	if err != nil || res == nil {
+		fatal("resolve effective: %v", err)
+	}
+	fmt.Printf("user=%s school=%s role=%s\n", username, school, res.Role)
+	groups, _ := st.ListUserV2Groups(school, username)
+	fmt.Printf("groups:")
+	for _, g := range groups {
+		fmt.Printf(" %s(%d)", g.Name, g.ID)
+	}
+	fmt.Println()
+	if len(res.DirectGrants) > 0 {
+		fmt.Printf("direct_grants:")
+		for _, g := range res.DirectGrants {
+			eff := "inherit"
+			if g.Effect > 0 {
+				eff = "allow"
+			} else if g.Effect < 0 {
+				eff = "deny"
+			}
+			fmt.Printf(" %s=%s", g.Capability, eff)
+		}
+		fmt.Println()
+	}
+	roleDefIDs, _ := st.ListRoleDefaultGroups(school, string(res.Role))
+	if len(roleDefIDs) == 0 {
+		roleDefIDs, _ = st.ListRoleDefaultGroups("", string(res.Role))
+	}
+	if len(roleDefIDs) > 0 {
+		fmt.Printf("role_default_groups(%s):", res.Role)
+		for _, id := range roleDefIDs {
+			fmt.Printf(" %d", id)
+		}
+		fmt.Println()
+	}
+	caps := make([]string, 0, len(res.Decisions))
+	for c := range res.Decisions {
+		caps = append(caps, string(c))
+	}
+	sort.Strings(caps)
+	fmt.Printf("%-45s %-9s %-9s %-9s %-9s %s\n", "CAPABILITY", "SERVER", "ADMIN", "OPT-IN", "EFFECT", "SOURCE")
+	for _, c := range caps {
+		d := res.Decisions[access.Capability(c)]
+		fmt.Printf("%-45s %-9v %-9v %-9v %-9v %s\n", c, d.ServerEnabled, d.AdminAllowed, d.UserOptedIn, d.Effective, d.Source)
+	}
+}
+
+func cmdV2Grants(st *store.Store, args []string) {
+	if len(args) < 2 {
+		fatal("v2 grants requires list SCHOOL USERNAME")
+	}
+	if args[0] == "list" {
+		args = args[1:]
+		if len(args) < 2 {
+			fatal("v2 grants list requires SCHOOL USERNAME")
+		}
+	}
+	school, username := args[0], args[1]
+	grants, err := st.ListUserV2Grants(school, username)
+	if err != nil {
+		fatal("list user grants: %v", err)
+	}
+	if len(grants) == 0 {
+		fmt.Println("no direct user grants")
+		return
+	}
+	fmt.Printf("%-45s %s\n", "CAPABILITY", "EFFECT")
+	for _, g := range grants {
+		eff := "inherit"
+		if g.Effect > 0 {
+			eff = "allow"
+		} else if g.Effect < 0 {
+			eff = "deny"
+		}
+		fmt.Printf("%-45s %s(%d)\n", g.Capability, eff, g.Effect)
+	}
+}
+
+func cmdV2GrantSet(st *store.Store, args []string) {
+	if len(args) < 4 {
+		fatal("v2 grant set requires SCHOOL USERNAME CAPABILITY allow|deny|inherit")
+	}
+	if args[0] == "set" {
+		args = args[1:]
+		if len(args) < 4 {
+			fatal("v2 grant set requires SCHOOL USERNAME CAPABILITY allow|deny|inherit")
+		}
+	}
+	school, username, cap, effStr := args[0], args[1], args[2], strings.ToLower(args[3])
+	effect := 0
+	switch effStr {
+	case "allow", "grant", "1", "true":
+		effect = 1
+	case "deny", "revoke", "-1", "false":
+		effect = -1
+	case "inherit", "clear", "0":
+		effect = 0
+	default:
+		fatal("invalid effect %q (use allow|deny|inherit)", effStr)
+	}
+	if err := st.SetUserV2Grant(school, username, cap, effect); err != nil {
+		fatal("set user grant: %v", err)
+	}
+	fmt.Printf("set direct grant school=%s user=%s cap=%s effect=%d\n", school, username, cap, effect)
+}
+
+func cmdV2UserGroups(st *store.Store, args []string) {
+	if len(args) == 0 {
+		fatal("v2 user-groups requires a subcommand (list|assign|unassign)")
+	}
+	switch args[0] {
+	case "list":
+		if len(args) < 3 {
+			fatal("v2 user-groups list requires SCHOOL USERNAME")
+		}
+		groups, err := st.ListUserV2Groups(args[1], args[2])
+		if err != nil {
+			fatal("list user groups: %v", err)
+		}
+		if len(groups) == 0 {
+			fmt.Println("no user groups")
+			return
+		}
+		for _, g := range groups {
+			fmt.Printf("%d\t%s\t%s\n", g.ID, g.Name, g.Description)
+		}
+	case "assign":
+		if len(args) < 4 {
+			fatal("v2 user-groups assign requires SCHOOL USERNAME GROUP_ID")
+		}
+		gid, err := strconv.ParseInt(args[3], 10, 64)
+		if err != nil {
+			fatal("invalid group id: %v", err)
+		}
+		if err := st.AssignUserV2Group(args[1], args[2], gid); err != nil {
+			fatal("assign user group: %v", err)
+		}
+		fmt.Printf("assigned group %d to %s (%s)\n", gid, args[2], args[1])
+	case "unassign":
+		if len(args) < 4 {
+			fatal("v2 user-groups unassign requires SCHOOL USERNAME GROUP_ID")
+		}
+		gid, err := strconv.ParseInt(args[3], 10, 64)
+		if err != nil {
+			fatal("invalid group id: %v", err)
+		}
+		if err := st.UnassignUserV2Group(args[1], args[2], gid); err != nil {
+			fatal("unassign user group: %v", err)
+		}
+		fmt.Printf("unassigned group %d from %s (%s)\n", gid, args[2], args[1])
+	default:
+		fatal("unknown v2 user-groups subcommand %q", args[0])
+	}
+}
+
+func cmdV2RoleDefaults(st *store.Store, args []string) {
+	if len(args) == 0 {
+		fatal("v2 role-defaults requires a subcommand (list|set|delete)")
+	}
+	switch args[0] {
+	case "list":
+		school, role := "", ""
+		if len(args) > 1 {
+			school = args[1]
+		}
+		if len(args) > 2 {
+			role = args[2]
+		}
+		roles := []string{role}
+		if role == "" {
+			roles = []string{"student", "teacher", "staff", "parent", "unknown", "other"}
+		}
+		fmt.Printf("%-20s %-12s %s\n", "SCHOOL", "ROLE", "GROUP_IDS")
+		for _, r := range roles {
+			ids, err := st.ListRoleDefaultGroups(school, r)
+			if err != nil {
+				fatal("list role defaults: %v", err)
+			}
+			if len(ids) == 0 && role == "" {
+				continue
+			}
+			parts := make([]string, 0, len(ids))
+			for _, id := range ids {
+				parts = append(parts, strconv.FormatInt(id, 10))
+			}
+			fmt.Printf("%-20s %-12s %s\n", school, r, strings.Join(parts, ","))
+		}
+	case "set":
+		if len(args) < 5 {
+			fatal("v2 role-defaults set requires SCHOOL ROLE GROUP_ID PRIORITY")
+		}
+		gid, err := strconv.ParseInt(args[3], 10, 64)
+		if err != nil {
+			fatal("invalid group id: %v", err)
+		}
+		pri, err := strconv.Atoi(args[4])
+		if err != nil {
+			fatal("invalid priority: %v", err)
+		}
+		if err := st.SetRoleDefaultGroup(args[1], args[2], gid, pri); err != nil {
+			fatal("set role default: %v", err)
+		}
+		fmt.Printf("set role default school=%s role=%s group=%d priority=%d\n", args[1], args[2], gid, pri)
+	case "delete", "unset":
+		if len(args) < 4 {
+			fatal("v2 role-defaults delete requires SCHOOL ROLE GROUP_ID")
+		}
+		gid, err := strconv.ParseInt(args[3], 10, 64)
+		if err != nil {
+			fatal("invalid group id: %v", err)
+		}
+		if err := st.DeleteRoleDefaultGroup(args[1], args[2], gid); err != nil {
+			fatal("delete role default: %v", err)
+		}
+		fmt.Printf("deleted role default school=%s role=%s group=%d\n", args[1], args[2], gid)
+	default:
+		fatal("unknown v2 role-defaults subcommand %q (use list|set|delete)", args[0])
+	}
+}
+
+func cmdV2PersonTypeRoles(st *store.Store, args []string) {
+	if len(args) == 0 {
+		fatal("v2 person-type-roles requires a subcommand (list|set|delete)")
+	}
+	switch args[0] {
+	case "list":
+		scope := ""
+		if len(args) > 1 {
+			scope = args[1]
+		}
+		mappings, err := st.ListPersonTypeRoles(scope)
+		if err != nil {
+			fatal("list person type roles: %v", err)
+		}
+		if len(mappings) == 0 {
+			fmt.Println("no person type role mappings")
+			return
+		}
+		fmt.Printf("%-20s %-12s %s\n", "SCOPE", "PERSON_TYPE", "ROLE")
+		for _, m := range mappings {
+			fmt.Printf("%-20s %-12d %s\n", m.Scope, m.PersonType, m.Role)
+		}
+	case "set":
+		if len(args) < 4 {
+			fatal("v2 person-type-roles set requires SCOPE PERSON_TYPE ROLE")
+		}
+		pt, err := strconv.ParseInt(args[2], 10, 64)
+		if err != nil {
+			fatal("invalid person type: %v", err)
+		}
+		if err := st.SetPersonTypeRole(args[1], pt, args[3]); err != nil {
+			fatal("set person type role: %v", err)
+		}
+		fmt.Printf("set person type role scope=%q personType=%d role=%s\n", args[1], pt, access.NormalizeRole(args[3]))
+	case "delete":
+		if len(args) < 3 {
+			fatal("v2 person-type-roles delete requires SCOPE PERSON_TYPE")
+		}
+		pt, err := strconv.ParseInt(args[2], 10, 64)
+		if err != nil {
+			fatal("invalid person type: %v", err)
+		}
+		if err := st.DeletePersonTypeRole(args[1], pt); err != nil {
+			fatal("delete person type role: %v", err)
+		}
+		fmt.Printf("deleted person type role scope=%q personType=%d\n", args[1], pt)
+	default:
+		fatal("unknown v2 person-type-roles subcommand %q (use list|set|delete)", args[0])
+	}
+}
+
+func cmdV2AnonProfile(st *store.Store, args []string) {
+	if len(args) == 0 {
+		fatal("v2 anon-profile requires a subcommand (list|show|clear)")
+	}
+	switch args[0] {
+	case "list":
+		profiles, err := st.ListSchoolAnonProfiles()
+		if err != nil {
+			fatal("list anon profiles: %v", err)
+		}
+		if len(profiles) == 0 {
+			fmt.Println("no anonymous profiles stored")
+			return
+		}
+		for _, p := range profiles {
+			payload := store.DecodeAnonProfilePayload(p.ProfileJSON)
+			fmt.Printf("school=%s login_ok=%v source=%s detected=%s expires=%s classes=%v caps=%v notes=%q\n",
+				p.School, p.LoginOK, p.Source,
+				p.DetectedAt.UTC().Format(time.RFC3339), p.ExpiresAt.UTC().Format(time.RFC3339),
+				payload.ClassesDisplayable, payload.Capabilities, payload.Notes)
+		}
+	case "show":
+		if len(args) < 2 {
+			fatal("v2 anon-profile show requires SCHOOL")
+		}
+		prof, err := st.GetSchoolAnonProfile(args[1])
+		if err != nil {
+			fatal("get anon profile: %v", err)
+		}
+		if prof == nil {
+			fmt.Println("not found")
+			return
+		}
+		payload := store.DecodeAnonProfilePayload(prof.ProfileJSON)
+		b, _ := json.MarshalIndent(map[string]any{
+			"school": prof.School, "loginOk": prof.LoginOK, "source": prof.Source,
+			"detectedAt": prof.DetectedAt.UTC().Format(time.RFC3339), "expiresAt": prof.ExpiresAt.UTC().Format(time.RFC3339),
+			"classesDisplayable": payload.ClassesDisplayable, "capabilities": payload.Capabilities, "notes": payload.Notes,
+		}, "", "  ")
+		fmt.Println(string(b))
+	case "clear":
+		if len(args) < 2 {
+			fatal("v2 anon-profile clear requires SCHOOL")
+		}
+		if err := st.DeleteSchoolAnonProfile(args[1]); err != nil {
+			fatal("delete anon profile: %v", err)
+		}
+		fmt.Printf("cleared anon profile for %s\n", args[1])
+	default:
+		fatal("unknown v2 anon-profile subcommand %q", args[0])
+	}
+}
+
+func cmdV2Gates(st *store.Store, args []string) {
+	if len(args) == 0 {
+		fatal("v2 gates requires a subcommand (list|set)")
+	}
+	switch args[0] {
+	case "list":
+		gates, err := st.ListServerCapGates()
+		if err != nil {
+			fatal("list cap gates: %v", err)
+		}
+		if len(gates) == 0 {
+			fmt.Println("no server cap gates configured")
+			return
+		}
+		fmt.Printf("%-20s %-40s %s\n", "SCOPE", "CAPABILITY", "ENABLED")
+		for _, g := range gates {
+			fmt.Printf("%-20s %-40s %v\n", g.Scope, g.Cap, g.Enabled)
+		}
+	case "set":
+		if len(args) < 4 {
+			fatal("v2 gates set requires SCOPE CAPABILITY true|false")
+		}
+		scope := args[1]
+		cap := args[2]
+		v, err := strconv.ParseBool(args[3])
+		if err != nil {
+			fatal("invalid bool %q", args[3])
+		}
+		if err := st.SetServerCapGate(scope, cap, v); err != nil {
+			fatal("set cap gate: %v", err)
+		}
+		fmt.Printf("set gate scope=%s cap=%s enabled=%v\n", scope, cap, v)
+	default:
+		fatal("unknown v2 gates subcommand %q", args[0])
 	}
 }
 

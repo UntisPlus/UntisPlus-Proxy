@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"untis-proxy/internal/access"
 	"untis-proxy/internal/store"
 )
 
@@ -40,9 +41,30 @@ const technikClassID int64 = syntheticElementBase
 // fallback.
 const defaultSchoolTimezone = "Europe/Berlin"
 
-// hasTechniker reports whether a user holds the techniker permission.
+// hasTechniker reports whether a user holds techniker view or manage access
+// (v2 effective). Use for surfaces where seeing technik data is sufficient.
 func (p *Proxy) hasTechniker(username string) bool {
-	return p.hasPerm(username, store.FeatureTechniker)
+	if username == "" {
+		return false
+	}
+	u, err := p.store.GetUser(username)
+	if err != nil || u == nil {
+		return p.hasPerm(username, store.FeatureTechniker)
+	}
+	return p.store.EffectiveHas(u.School, u, access.CapEventsTechnikView) || p.store.EffectiveHas(u.School, u, access.CapEventsTechnikManage)
+}
+
+// hasTechnikManage reports whether a user can mutate technik-managed surfaces
+// (e.g. local event absence register writes) under v2 effective permissions.
+func (p *Proxy) hasTechnikManage(username string) bool {
+	if username == "" {
+		return false
+	}
+	u, err := p.store.GetUser(username)
+	if err != nil || u == nil {
+		return p.hasPerm(username, store.FeatureTechniker)
+	}
+	return p.store.EffectiveHas(u.School, u, access.CapEventsTechnikManage)
 }
 
 // injectTechnikClass adds the synthetic class to a masterData body when the user

@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"untis-proxy/internal/store"
 )
 
 // TestKeyLoginAnonymousSkipsReplayKey: a stale placeholder secret stored for
@@ -81,6 +83,21 @@ func TestAnonymousClassTimetableForwardedRaw(t *testing.T) {
 		"endDateTime":   "2026-11-09T08:45:00Z",
 	}})
 	p, st := newFakeProxyUpstream(t, f)
+	// v2: anonymous class timetable access requires upstream-exposed/detected (or
+	// explicitly allowed) stock class target and classes feature.
+	if err := st.UpsertSchoolAnonProfile(&store.SchoolAnonProfile{
+		School:  "testschool",
+		LoginOK: true,
+		Source:  "override",
+		ProfileJSON: store.EncodeAnonProfilePayload(store.AnonProfilePayload{
+			ClassesDisplayable: []int64{5000},
+			Capabilities:       map[string]bool{"classes": true},
+		}),
+		DetectedAt: time.Now(),
+		ExpiresAt:  time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed anon profile: %v", err)
+	}
 
 	login := httptest.NewRequest(http.MethodPost,
 		"/WebUntis/jsonrpc_intern.do?m=getUserData2017&school=testschool",
@@ -157,11 +174,9 @@ func TestAnonymousClassTimetableForwardedRaw(t *testing.T) {
 	}
 }
 
-// TestAnonymousPooledClassServedFromOwner: a pooled class is served through the
-// pool's student owner even when upstream's own #anonymous# account has no
-// timetable right. This is what makes a school that hides its classes from
-// #anonymous# work once anonymous login is enabled, without turning anonymous
-// into an account.
+// TestAnonymousPooledClassServedFromOwner: v2 anonymous sessions never receive
+// proxy-pooled/reconstructed supplements. A pooled class request is forwarded
+// upstream as #anonymous# (stock behavior), not served through a pooled owner.
 func TestAnonymousPooledClassServedFromOwner(t *testing.T) {
 	f := &fakeUpstream{}
 	f.setTimetable(t, []map[string]any{{
@@ -171,9 +186,23 @@ func TestAnonymousPooledClassServedFromOwner(t *testing.T) {
 	}})
 	p, st := newFakeProxyUpstream(t, f)
 	seedSessionUser(t, st, "owner", 5, 7, 5000)
-	// The fallback is opt-in and only serves what recon has actually covered.
+	// Legacy toggle must not enable proxy-pooled supplements for anonymous in v2.
+	// Anonymous stock class forwarding requires classes feature/target exposure.
 	if err := st.SetAnonymousFeature("classes", true); err != nil {
 		t.Fatalf("enable anonymous classes: %v", err)
+	}
+	if err := st.UpsertSchoolAnonProfile(&store.SchoolAnonProfile{
+		School:  "testschool",
+		LoginOK: true,
+		Source:  "override",
+		ProfileJSON: store.EncodeAnonProfilePayload(store.AnonProfilePayload{
+			ClassesDisplayable: []int64{5000},
+			Capabilities:       map[string]bool{"classes": true},
+		}),
+		DetectedAt: time.Now(),
+		ExpiresAt:  time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed anon profile: %v", err)
 	}
 	start := time.Now().Format("2006-01-02")
 	end := time.Now().AddDate(0, 0, 6).Format("2006-01-02")
@@ -202,12 +231,8 @@ func TestAnonymousPooledClassServedFromOwner(t *testing.T) {
 	if code := errCode(t, rec); code != 0 {
 		t.Fatalf("pooled class returned error code %d, body %s", code, rec.Body.String())
 	}
-	if got := len(cachedPeriods(t, rec)); got != 1 {
-		t.Fatalf("periods = %d, want 1 (body %s)", got, rec.Body.String())
-	}
 
-	// The class must be fetched as its pooled owner, never as #anonymous#: the
-	// whole point is that upstream would deny the anonymous account.
+	// Forwarded upstream as anonymous (stock), never as pooled owner.
 	var sent struct {
 		Params []struct {
 			Auth struct {
@@ -222,18 +247,17 @@ func TestAnonymousPooledClassServedFromOwner(t *testing.T) {
 	if err := json.Unmarshal(forwards[0].Body, &sent); err != nil {
 		t.Fatalf("decode forwarded body: %v", err)
 	}
-	if len(sent.Params) != 1 || sent.Params[0].Auth.User != "owner" {
-		t.Fatalf("forwarded auth user = %+v, want owner", sent.Params)
+	if len(sent.Params) != 1 || sent.Params[0].Auth.User != "#anonymous#" {
+		t.Fatalf("forwarded auth user = %+v, want #anonymous#", sent.Params)
 	}
 	if u, _ := st.GetUser("#anonymous#"); u != nil {
 		t.Fatalf("anonymous class read persisted a user row: %+v", u)
 	}
 }
 
-// TestAnonymousMasterDataPromotesPooledClasses: upstream may hide every class
-// from #anonymous#, which left the app with an empty picker. The login rewrite
-// must expose the pooled classes while keeping whatever upstream already
-// exposes to the anonymous account.
+// TestAnonymousMasterDataPromotesPooledClasses: v2 anonymous sessions never
+// receive proxy-pooled supplements in masterData; displayable flags stay as
+// upstream exposed them (stock), regardless of legacy anonymous feature toggles.
 func TestAnonymousMasterDataPromotesPooledClasses(t *testing.T) {
 	f := &fakeUpstream{}
 	f.userDataBody = `{"jsonrpc":"2.0","id":"upstream","result":{"masterData":{"klassen":[
@@ -272,8 +296,8 @@ func TestAnonymousMasterDataPromotesPooledClasses(t *testing.T) {
 	for _, k := range resp.Result.MasterData.Klassen {
 		got[k.ID] = k.Displayable
 	}
-	if !got[5000] {
-		t.Fatalf("pooled class 5000 not displayable: %v", got)
+	if got[5000] {
+		t.Fatalf("pooled class 5000 must not be promoted for anonymous in v2: %v", got)
 	}
 	if got[6000] {
 		t.Fatalf("non-pooled class 6000 became displayable: %v", got)
@@ -326,26 +350,28 @@ func TestAnonymousMasterDataStaysStockByDefault(t *testing.T) {
 	}
 }
 
-// TestAnonymousPooledClassRequiresFeatureAndCoverage pins the two conditions
-// for the pooled-class fallback. Either one missing must leave the request on
-// the raw upstream path rather than serving it through the pool.
+// TestAnonymousPooledClassRequiresFeatureAndCoverage: v2 anonymous sessions
+// never receive proxy-pooled supplements; requests are forwarded upstream as
+// #anonymous# (stock) only when classes feature and exposed target allow it.
+// Pool/recon coverage is irrelevant for anonymous stock forwarding.
 func TestAnonymousPooledClassRequiresFeatureAndCoverage(t *testing.T) {
 	start := time.Now().Format("2006-01-02")
 	end := time.Now().AddDate(0, 0, 6).Format("2006-01-02")
 	short := time.Now().AddDate(0, 0, 3).Format("2006-01-02")
 
 	cases := []struct {
-		name      string
-		classes   bool
-		horizon   string
-		endDate   string
-		wantOwner bool
+		name        string
+		classes     bool
+		allowTarget bool
+		horizon     string
+		endDate     string
+		wantOK      bool
 	}{
-		{name: "feature off", classes: false, horizon: end, endDate: end},
-		{name: "never scanned", classes: true, horizon: "", endDate: end},
-		{name: "scan ends before request", classes: true, horizon: short, endDate: end},
-		{name: "covered", classes: true, horizon: end, endDate: end, wantOwner: true},
-		{name: "covered with compact date", classes: true, horizon: end, endDate: strings.ReplaceAll(end, "-", ""), wantOwner: true},
+		{name: "feature off", classes: false, allowTarget: true, horizon: end, endDate: end, wantOK: false},
+		{name: "never scanned", classes: true, allowTarget: true, horizon: "", endDate: end, wantOK: true},
+		{name: "scan ends before request", classes: true, allowTarget: true, horizon: short, endDate: end, wantOK: true},
+		{name: "covered", classes: true, allowTarget: true, horizon: end, endDate: end, wantOK: true},
+		{name: "covered with compact date", classes: true, allowTarget: true, horizon: end, endDate: strings.ReplaceAll(end, "-", ""), wantOK: true},
 	}
 
 	for _, tc := range cases {
@@ -358,10 +384,22 @@ func TestAnonymousPooledClassRequiresFeatureAndCoverage(t *testing.T) {
 			}})
 			p, st := newFakeProxyUpstream(t, f)
 			seedSessionUser(t, st, "owner", 5, 7, 5000)
-			if tc.classes {
-				if err := st.SetAnonymousFeature("classes", true); err != nil {
-					t.Fatalf("enable classes: %v", err)
-				}
+			if err := st.SetAnonymousFeature("classes", tc.classes); err != nil {
+				t.Fatalf("set classes feature: %v", err)
+			}
+			payload := store.AnonProfilePayload{Capabilities: map[string]bool{"classes": tc.classes}}
+			if tc.allowTarget {
+				payload.ClassesDisplayable = []int64{5000}
+			}
+			if err := st.UpsertSchoolAnonProfile(&store.SchoolAnonProfile{
+				School:      "testschool",
+				LoginOK:     true,
+				Source:      "override",
+				ProfileJSON: store.EncodeAnonProfilePayload(payload),
+				DetectedAt:  time.Now(),
+				ExpiresAt:   time.Now().Add(time.Hour),
+			}); err != nil {
+				t.Fatalf("seed anon profile: %v", err)
 			}
 			if tc.horizon != "" {
 				p.stateFor("testschool").recon.setScanHorizon(5000, tc.horizon)
@@ -384,20 +422,29 @@ func TestAnonymousPooledClassRequiresFeatureAndCoverage(t *testing.T) {
 			req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: sid})
 			rec := httptest.NewRecorder()
 			p.handleJSONRPCIntern(rec, req)
+
+			forwards := f.Forwards()
+			if !tc.wantOK {
+				if code := errCode(t, rec); code != -8509 {
+					t.Fatalf("timetable error code = %d, want -8509 (body %s)", code, rec.Body.String())
+				}
+				if len(forwards) != 0 {
+					t.Fatalf("upstream forwards = %d, want 0 (denied by proxy)", len(forwards))
+				}
+				return
+			}
 			if code := errCode(t, rec); code != 0 {
 				t.Fatalf("timetable error code = %d, body %s", code, rec.Body.String())
 			}
-
+			if len(forwards) != 1 {
+				t.Fatalf("upstream forwards = %d, want 1 (body %s)", len(forwards), rec.Body.String())
+			}
 			var sent struct {
 				Params []struct {
 					Auth struct {
 						User string `json:"user"`
 					} `json:"auth"`
 				} `json:"params"`
-			}
-			forwards := f.Forwards()
-			if len(forwards) != 1 {
-				t.Fatalf("upstream forwards = %d, want 1 (body %s)", len(forwards), rec.Body.String())
 			}
 			if err := json.Unmarshal(forwards[0].Body, &sent); err != nil {
 				t.Fatalf("decode forwarded body: %v", err)
@@ -406,12 +453,8 @@ func TestAnonymousPooledClassRequiresFeatureAndCoverage(t *testing.T) {
 			if len(sent.Params) == 1 {
 				authUser = sent.Params[0].Auth.User
 			}
-			want := "#anonymous#"
-			if tc.wantOwner {
-				want = "owner"
-			}
-			if authUser != want {
-				t.Fatalf("forwarded auth user = %q, want %q", authUser, want)
+			if authUser != "#anonymous#" {
+				t.Fatalf("forwarded auth user = %q, want anonymous (v2 stock behavior)", authUser)
 			}
 		})
 	}

@@ -171,7 +171,7 @@ func TestSubsListOwnerScoped(t *testing.T) {
 func TestSubsOwnClassWebhookOnly(t *testing.T) {
 	p, st := newTestProxy(t)
 	// carla is a student of class 5000; no privileged flags.
-	if err := st.UpsertUser(&store.User{Username: "carla", Method: "key", ClassID: 5000}); err != nil {
+	if err := st.UpsertUser(&store.User{Username: "carla", Method: "key", PersonType: 5, ClassID: 5000, School: "testschool"}); err != nil {
 		t.Fatalf("add carla: %v", err)
 	}
 	// own class: allowed
@@ -205,7 +205,7 @@ func TestSubsOwnClassWebhookOnly(t *testing.T) {
 
 func TestSubsEditorCanSubscribeAnyPooledClass(t *testing.T) {
 	p, st := newTestProxy(t)
-	_ = st.UpsertUser(&store.User{Username: "caroline", Method: "key", ClassID: 5000})
+	_ = st.UpsertUser(&store.User{Username: "caroline", Method: "key", PersonType: 5, ClassID: 5000, School: "testschool"})
 	if err := st.SetPerm("caroline", store.FeatureEditor, true); err != nil {
 		t.Fatalf("grant editor: %v", err)
 	}
@@ -228,8 +228,8 @@ func TestSubsEditorCanSubscribeAnyPooledClass(t *testing.T) {
 
 func TestSubsDeleteOwnership(t *testing.T) {
 	p, st := newTestProxy(t)
-	_ = st.UpsertUser(&store.User{Username: "dave", Method: "key", ClassID: 5000})
-	_ = st.UpsertUser(&store.User{Username: "eve", Method: "key", ClassID: 5000})
+	_ = st.UpsertUser(&store.User{Username: "dave", Method: "key", PersonType: 5, ClassID: 5000, School: "testschool"})
+	_ = st.UpsertUser(&store.User{Username: "eve", Method: "key", PersonType: 5, ClassID: 5000, School: "testschool"})
 	id, err := st.AddWebhook(&store.Webhook{School: "testschool", ClassID: 5000, URL: "https://e/h", Enabled: true, CreatedBy: "dave"})
 	if err != nil {
 		t.Fatalf("seed webhook: %v", err)
@@ -256,8 +256,8 @@ func TestSubsDeleteOwnership(t *testing.T) {
 
 func TestSubsWebhookTestRouteOwnerOnly(t *testing.T) {
 	p, st := newTestProxy(t)
-	_ = st.UpsertUser(&store.User{Username: "carla", Method: "key", ClassID: 5000})
-	_ = st.UpsertUser(&store.User{Username: "stranger", Method: "key", ClassID: 9999})
+	_ = st.UpsertUser(&store.User{Username: "carla", Method: "key", PersonType: 5, ClassID: 5000, School: "testschool"})
+	_ = st.UpsertUser(&store.User{Username: "stranger", Method: "key", PersonType: 5, ClassID: 9999, School: "testschool"})
 
 	hits := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -306,8 +306,8 @@ func TestSubsWebhookTestRouteOwnerOnly(t *testing.T) {
 
 func TestSubsNtfyTestRouteAndBaseUrl(t *testing.T) {
 	p, st := newTestProxy(t)
-	_ = st.UpsertUser(&store.User{Username: "carla", Method: "key", ClassID: 5000})
-	_ = st.UpsertUser(&store.User{Username: "stranger", Method: "key", ClassID: 9999})
+	_ = st.UpsertUser(&store.User{Username: "carla", Method: "key", PersonType: 5, ClassID: 5000, School: "testschool"})
+	_ = st.UpsertUser(&store.User{Username: "stranger", Method: "key", PersonType: 5, ClassID: 9999, School: "testschool"})
 
 	gotPath := make(chan string, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

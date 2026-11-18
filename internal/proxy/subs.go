@@ -33,11 +33,9 @@ type notifTargetReq struct {
 }
 
 // resolveNotifTarget maps a notification request onto the (elementType,
-// elementID) pair the change poller matches on, applying the same visibility
-// rules as the calendar mint. classID is the legacy class column, set only for
-// a class target so old readers keep working. ok is false when the request
-// names more than one target or the caller may not watch the one named.
-func (p *Proxy) resolveNotifTarget(school string, u *store.User, canAll bool, req notifTargetReq) (et string, eid, classID int64, ok bool) {
+// elementID) pair the change poller matches on, applying v2 visibility/target
+// access rules. classID is the legacy class column, set only for a class target.
+func (p *Proxy) resolveNotifTarget(school string, u *store.User, _ bool, req notifTargetReq) (et string, eid, classID int64, ok bool) {
 	set := 0
 	for _, on := range []bool{req.ClassID > 0, req.Personal || req.PersonID > 0,
 		req.TeacherID > 0, req.RoomID > 0, req.SubjectID > 0} {
@@ -51,29 +49,42 @@ func (p *Proxy) resolveNotifTarget(school string, u *store.User, canAll bool, re
 	switch {
 	case req.Personal || req.PersonID > 0:
 		pid := req.PersonID
-		if pid == 0 {
+		if pid == 0 && u != nil {
 			pid = u.PersonID
 		}
-		if pid <= 0 || pid != u.PersonID {
+		if pid <= 0 || u == nil || pid != u.PersonID {
+			return "", 0, 0, false
+		}
+		if !p.canSubscribeTarget(u, school, "STUDENT", pid) {
 			return "", 0, 0, false
 		}
 		return "STUDENT", pid, 0, true
 	case req.ClassID > 0:
-		// The synthetic Technik aggregate is not a polled class, so a
-		// notification for it could never fire; reject it rather than store a
-		// subscription that never delivers.
-		if req.ClassID == technikClassID || !p.canSubscribeClass(school, u, req.ClassID, canAll) {
+		if req.ClassID == technikClassID || !p.canSubscribeTarget(u, school, "CLASS", req.ClassID) {
 			return "", 0, 0, false
 		}
 		return "CLASS", req.ClassID, req.ClassID, true
 	case req.TeacherID > 0:
-		return "TEACHER", req.TeacherID, 0, p.canMintElement(u, "TEACHER")
+		if !p.canSubscribeTarget(u, school, "TEACHER", req.TeacherID) {
+			return "", 0, 0, false
+		}
+		return "TEACHER", req.TeacherID, 0, true
 	case req.RoomID > 0:
-		return "ROOM", req.RoomID, 0, p.canMintElement(u, "ROOM")
+		if !p.canSubscribeTarget(u, school, "ROOM", req.RoomID) {
+			return "", 0, 0, false
+		}
+		return "ROOM", req.RoomID, 0, true
 	case req.SubjectID > 0:
-		return "SUBJECT", req.SubjectID, 0, p.canMintElement(u, "SUBJECT")
+		if !p.canSubscribeTarget(u, school, "SUBJECT", req.SubjectID) {
+			return "", 0, 0, false
+		}
+		return "SUBJECT", req.SubjectID, 0, true
 	default:
-		return "", 0, 0, canAll
+		// school-wide
+		if !p.canSubscribeTarget(u, school, "SCHOOL", 0) {
+			return "", 0, 0, false
+		}
+		return "", 0, 0, true
 	}
 }
 
@@ -87,8 +98,12 @@ func (p *Proxy) handleSubsWebhooks(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	if u.Username != "#anonymous#" && !p.canNotifyManageOwn(u, school, "webhooks") && !p.isAdmin(u.Username) {
+		p.forbidden(w)
+		return
+	}
 
-	canAll := p.isEditor(u.Username) || p.isBoosted(u.Username) || p.isAdmin(u.Username)
+	canAll := p.isAdmin(u.Username) || p.editorV2(u.Username) || p.boostedV2(u.Username)
 
 	if r.Method == http.MethodGet {
 		hooks, err := p.store.ListWebhooks(school)
@@ -158,6 +173,10 @@ func (p *Proxy) handleSubsWebhooks(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := validateTargetURL(req.URL, allowPrivateTargets); err != nil {
 			p.writeJSON(w, map[string]any{"error": err.Error()})
+			return
+		}
+		if u.Username != "#anonymous#" && !p.canNotifyCreate(u, school, "webhooks") {
+			p.forbidden(w)
 			return
 		}
 		et, eid, classID, ok := p.resolveNotifTarget(school, u, canAll, req.notifTargetReq)
@@ -244,8 +263,12 @@ func (p *Proxy) handleSubsNtfy(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	if u.Username != "#anonymous#" && !p.canNotifyManageOwn(u, school, "ntfy") && !p.isAdmin(u.Username) {
+		p.forbidden(w)
+		return
+	}
 
-	canAll := p.isEditor(u.Username) || p.isBoosted(u.Username) || p.isAdmin(u.Username)
+	canAll := p.isAdmin(u.Username) || p.editorV2(u.Username) || p.boostedV2(u.Username)
 
 	if r.Method == http.MethodGet {
 		topics, err := p.store.ListNtfyTopics(school)
@@ -359,6 +382,10 @@ func (p *Proxy) handleSubsNtfy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		if u.Username != "#anonymous#" && !p.canNotifyCreate(u, school, "ntfy") {
+			p.forbidden(w)
+			return
+		}
 		et, eid, classID, ok := p.resolveNotifTarget(school, u, canAll, req.notifTargetReq)
 		if !ok {
 			p.forbidden(w)
@@ -401,24 +428,20 @@ func (p *Proxy) handleSubsNtfy(w http.ResponseWriter, r *http.Request) {
 }
 
 // canSubscribeClass reports whether `u` may create a subscription scoped to
-// classID: their own class always, any pooled class when they hold a privileged
-// flag, classId 0 (school-wide) only for privileged users.
+// classID (v2 compat wrapper).
 func (p *Proxy) canSubscribeClass(school string, u *store.User, classID int64, privileged bool) bool {
 	if classID == 0 {
-		return privileged
+		if privileged {
+			return true
+		}
+		return p.canSubscribeTarget(u, school, "SCHOOL", 0)
 	}
-	if u.Username == "#anonymous#" {
-		// Anonymous has no class of its own, so it may watch any class the
-		// poller actually maintains. A non-pooled class would never fire.
+	if u != nil && classID == u.ClassID {
+		return true
+	}
+	if privileged {
 		ok, _ := p.store.PoolContains(school, classID)
 		return ok
 	}
-	if classID == u.ClassID {
-		return true
-	}
-	if !privileged {
-		return false
-	}
-	ok, _ := p.store.PoolContains(school, classID)
-	return ok
+	return p.canSubscribeTarget(u, school, "CLASS", classID)
 }

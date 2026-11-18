@@ -669,6 +669,9 @@ func (p *Proxy) enqueueChange(school, className string, classID, version int64, 
 		if !p.elementMatches(school, et, eid, classID, rows, targets) {
 			continue
 		}
+		if !p.webhookDeliveryAuthorized(school, h) {
+			continue
+		}
 		if err := put("webhook", h.ID, body); err != nil {
 			return err
 		}
@@ -680,6 +683,9 @@ func (p *Proxy) enqueueChange(school, className string, classID, version int64, 
 		}
 		et, eid := t.Target()
 		if !p.elementMatches(school, et, eid, classID, rows, targets) {
+			continue
+		}
+		if !p.ntfyDeliveryAuthorized(school, t) {
 			continue
 		}
 		// Two subscriptions can name the same topic on the same server — for
@@ -696,6 +702,44 @@ func (p *Proxy) enqueueChange(school, className string, classID, version int64, 
 		}
 	}
 	return nil
+}
+
+func (p *Proxy) webhookDeliveryAuthorized(school string, h *store.Webhook) bool {
+	creator := strings.TrimSpace(h.CreatedBy)
+	if creator == "" {
+		return true
+	}
+	et, eid := h.Target()
+	if creator == "#anonymous#" {
+		if !p.anonymousFeature(school, "webhooks") {
+			return false
+		}
+		return p.canSubscribeTarget(&store.User{Username: "#anonymous#", School: school}, school, et, eid)
+	}
+	u, err := p.store.GetUser(creator)
+	if err != nil || u == nil {
+		return false
+	}
+	return p.canNotifyManageOwn(u, school, "webhooks") && p.canSubscribeTarget(u, school, et, eid)
+}
+
+func (p *Proxy) ntfyDeliveryAuthorized(school string, t *store.NtfyTopic) bool {
+	creator := strings.TrimSpace(t.CreatedBy)
+	if creator == "" {
+		return true
+	}
+	et, eid := t.Target()
+	if creator == "#anonymous#" {
+		if !p.anonymousFeature(school, "ntfy") {
+			return false
+		}
+		return p.canSubscribeTarget(&store.User{Username: "#anonymous#", School: school}, school, et, eid)
+	}
+	u, err := p.store.GetUser(creator)
+	if err != nil || u == nil {
+		return false
+	}
+	return p.canNotifyManageOwn(u, school, "ntfy") && p.canSubscribeTarget(u, school, et, eid)
 }
 
 // deliverChange queues one change for delivery and returns once it is durable.
@@ -1135,20 +1179,17 @@ func (p *Proxy) handleTimetableChanges(w http.ResponseWriter, r *http.Request) {
 	}
 	classID, err := strconv.ParseInt(r.URL.Query().Get("classId"), 10, 64)
 	if err != nil || classID <= 0 {
+		if u.Username == "#anonymous#" {
+			p.forbidden(w)
+			return
+		}
 		classID = u.ClassID
 	}
-	if u.Username == "#anonymous#" {
-		// Anonymous has no class of its own; it may follow any class the poller
-		// maintains, but must name it explicitly.
-		if classID <= 0 {
-			p.forbidden(w)
-			return
-		}
-		if ok, _ := p.store.PoolContains(school, classID); !ok {
-			p.forbidden(w)
-			return
-		}
-	} else if classID != u.ClassID {
+	if classID <= 0 {
+		p.forbidden(w)
+		return
+	}
+	if !p.canWatchChangesTarget(u, school, "CLASS", classID, false) {
 		p.forbidden(w)
 		return
 	}
@@ -1252,7 +1293,6 @@ func (p *Proxy) handleTimetableStream(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	canAll := p.isEditor(u.Username) || p.isBoosted(u.Username) || p.isAdmin(u.Username)
 	schoolWide := false
 	if v := r.URL.Query().Get("schoolWide"); v == "true" || v == "1" {
 		schoolWide = true
@@ -1270,22 +1310,27 @@ func (p *Proxy) handleTimetableStream(w http.ResponseWriter, r *http.Request) {
 		// explicit because the parameterless form is the legacy personal default,
 		// and combining it with an element target is a caller bug, not an
 		// invitation to guess which one was meant.
-		if explicit || !canAll {
+		if explicit {
 			p.forbidden(w)
 			return
 		}
-		allowed = true
+		if p.canWatchChangesTarget(u, school, "SCHOOL", 0, true) {
+			et, eid, allowed = "", 0, true
+		}
 	case explicit:
-		et, eid, _, allowed = p.resolveNotifTarget(school, u, canAll, req)
+		et, eid, _, allowed = p.resolveNotifTarget(school, u, false, req)
+		if allowed && !p.canWatchChangesTarget(u, school, et, eid, true) {
+			allowed = false
+		}
 	default:
 		// Backward compatibility: an old app connects with just ?school= and
 		// expects its own timetable. Personal is the same class channel plus the
 		// private student-event signal; a session-only account with no person id
 		// still gets its class stream rather than a 403.
 		switch {
-		case u.PersonID > 0:
+		case u != nil && u.Username != "#anonymous#" && u.PersonID > 0 && p.canWatchChangesTarget(u, school, "STUDENT", u.PersonID, true):
 			et, eid, allowed = "STUDENT", u.PersonID, true
-		case u.ClassID > 0:
+		case u != nil && u.Username != "#anonymous#" && u.ClassID > 0 && p.canWatchChangesTarget(u, school, "CLASS", u.ClassID, true):
 			et, eid, allowed = "CLASS", u.ClassID, true
 		}
 	}

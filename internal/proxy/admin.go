@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"untis-proxy/internal/access"
 	"untis-proxy/internal/store"
 )
 
@@ -116,6 +117,538 @@ func (p *Proxy) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		p.adminRecon(w, r, parts[1:])
 	case parts[0] == "rooms":
 		p.adminRooms(w, r, parts[1:])
+	case parts[0] == "v2":
+		p.adminV2(w, r, parts[1:])
+	default:
+		p.writeJSON(w, map[string]any{"error": "not found"})
+	}
+}
+
+func (p *Proxy) adminV2(w http.ResponseWriter, r *http.Request, parts []string) {
+	if len(parts) == 0 {
+		p.writeJSON(w, map[string]any{"error": "not found"})
+		return
+	}
+	switch parts[0] {
+	case "effective":
+		if r.Method != http.MethodGet {
+			p.writeJSON(w, map[string]any{"error": "not found"})
+			return
+		}
+		school := strings.TrimSpace(r.URL.Query().Get("school"))
+		username := strings.TrimSpace(r.URL.Query().Get("user"))
+		if username == "" {
+			username = strings.TrimSpace(r.URL.Query().Get("username"))
+		}
+		if school == "" || username == "" {
+			p.writeJSON(w, map[string]any{"error": "school and user required"})
+			return
+		}
+		u, err := p.store.GetUser(username)
+		if err != nil || u == nil {
+			p.writeJSON(w, map[string]any{"error": "user not found"})
+			return
+		}
+		res, err := p.store.ResolveEffective(school, u)
+		if err != nil || res == nil {
+			p.writeJSON(w, map[string]any{"error": "resolve failed"})
+			return
+		}
+		caps := make([]string, 0, len(res.Decisions))
+		for c := range res.Decisions {
+			caps = append(caps, string(c))
+		}
+		sort.Strings(caps)
+		decisions := make(map[string]any, len(caps))
+		effective := make([]string, 0)
+		for _, c := range caps {
+			d := res.Decisions[access.Capability(c)]
+			decisions[c] = map[string]any{
+				"server_enabled": d.ServerEnabled,
+				"admin_allowed":  d.AdminAllowed,
+				"user_opted_in":  d.UserOptedIn,
+				"effective":      d.Effective,
+				"toggleable":     d.Toggleable,
+				"source":         d.Source,
+			}
+			if d.Effective {
+				effective = append(effective, c)
+			}
+		}
+		groups, _ := p.store.ListUserV2Groups(school, username)
+		roleDefIDs, _ := p.store.ListRoleDefaultGroups(school, string(res.Role))
+		if len(roleDefIDs) == 0 {
+			roleDefIDs, _ = p.store.ListRoleDefaultGroups("", string(res.Role))
+		}
+		p.writeJSON(w, map[string]any{
+			"school": school, "user": username, "role": res.Role,
+			"groups": groups, "groupIds": res.GroupIDs,
+			"directGrants": res.DirectGrants, "roleDefaultGroupIds": roleDefIDs,
+			"effective": effective, "decisions": decisions,
+		})
+	case "groups":
+		// GET /admin/v2/groups?school=, GET /admin/v2/groups/{id}
+		// POST /admin/v2/groups {school,name,description}
+		// DELETE /admin/v2/groups/{id}
+		// POST|PUT /admin/v2/groups/{id}/grants {capability,effect}
+		switch {
+		case r.Method == http.MethodGet && len(parts) == 1:
+			school := strings.TrimSpace(r.URL.Query().Get("school"))
+			groups, err := p.store.ListV2Groups(school)
+			if err != nil {
+				p.writeJSON(w, map[string]any{"error": "store error"})
+				return
+			}
+			p.writeJSON(w, map[string]any{"groups": groups})
+			return
+		case r.Method == http.MethodGet && len(parts) == 2:
+			id, err := strconv.ParseInt(parts[1], 10, 64)
+			if err != nil {
+				p.writeJSON(w, map[string]any{"error": "bad group id"})
+				return
+			}
+			g, grants, err := p.store.GetV2Group(id)
+			if err != nil || g == nil {
+				p.writeJSON(w, map[string]any{"error": "not found"})
+				return
+			}
+			p.writeJSON(w, map[string]any{"group": g, "grants": grants})
+			return
+		case r.Method == http.MethodPost && len(parts) == 1:
+			var req struct {
+				School      string `json:"school"`
+				Name        string `json:"name"`
+				Description string `json:"description"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				p.writeJSON(w, map[string]any{"error": "bad request"})
+				return
+			}
+			id, err := p.store.CreateV2Group(req.School, req.Name, req.Description)
+			if err != nil {
+				p.writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+			p.audit(r, req.School, "v2.group.create", req.Name, strconv.FormatInt(id, 10))
+			p.writeJSON(w, map[string]any{"ok": true, "id": id, "school": req.School, "name": req.Name})
+			return
+		case r.Method == http.MethodDelete && len(parts) == 2:
+			id, err := strconv.ParseInt(parts[1], 10, 64)
+			if err != nil {
+				p.writeJSON(w, map[string]any{"error": "bad group id"})
+				return
+			}
+			if err := p.store.DeleteV2Group(id); err != nil {
+				p.writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+			p.audit(r, "", "v2.group.delete", strconv.FormatInt(id, 10), "")
+			p.writeJSON(w, map[string]any{"ok": true, "deleted": id})
+			return
+		case (r.Method == http.MethodPost || r.Method == http.MethodPut) && len(parts) == 3 && parts[2] == "grants":
+			id, err := strconv.ParseInt(parts[1], 10, 64)
+			if err != nil {
+				p.writeJSON(w, map[string]any{"error": "bad group id"})
+				return
+			}
+			var req struct {
+				Capability string `json:"capability"`
+				Cap        string `json:"cap"`
+				Effect     any    `json:"effect"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				p.writeJSON(w, map[string]any{"error": "bad request"})
+				return
+			}
+			cap := req.Capability
+			if cap == "" {
+				cap = req.Cap
+			}
+			if cap == "" {
+				p.writeJSON(w, map[string]any{"error": "capability required"})
+				return
+			}
+			effect := 0
+			switch v := req.Effect.(type) {
+			case float64:
+				if v > 0 {
+					effect = 1
+				} else if v < 0 {
+					effect = -1
+				}
+			case string:
+				switch strings.ToLower(strings.TrimSpace(v)) {
+				case "allow", "grant", "1", "true":
+					effect = 1
+				case "deny", "revoke", "-1", "false":
+					effect = -1
+				case "inherit", "clear", "0", "":
+					effect = 0
+				default:
+					p.writeJSON(w, map[string]any{"error": "invalid effect"})
+					return
+				}
+			case bool:
+				if v {
+					effect = 1
+				} else {
+					effect = -1
+				}
+			case nil:
+				effect = 0
+			default:
+				p.writeJSON(w, map[string]any{"error": "invalid effect"})
+				return
+			}
+			if err := p.store.SetV2GroupGrant(id, cap, effect); err != nil {
+				p.writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+			p.audit(r, "", "v2.group.grant.set", strconv.FormatInt(id, 10), cap+"="+strconv.Itoa(effect))
+			p.writeJSON(w, map[string]any{"ok": true, "groupId": id, "capability": cap, "effect": effect})
+			return
+		}
+		p.writeJSON(w, map[string]any{"error": "not found"})
+		return
+	case "grants":
+		if r.Method != http.MethodGet {
+			p.writeJSON(w, map[string]any{"error": "not found"})
+			return
+		}
+		school := strings.TrimSpace(r.URL.Query().Get("school"))
+		username := strings.TrimSpace(r.URL.Query().Get("user"))
+		if username == "" {
+			username = strings.TrimSpace(r.URL.Query().Get("username"))
+		}
+		if school == "" || username == "" {
+			p.writeJSON(w, map[string]any{"error": "school and user required"})
+			return
+		}
+		grants, err := p.store.ListUserV2Grants(school, username)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.writeJSON(w, map[string]any{"school": school, "user": username, "grants": grants})
+	case "grant":
+		if r.Method != http.MethodPost && r.Method != http.MethodPut {
+			p.writeJSON(w, map[string]any{"error": "not found"})
+			return
+		}
+		var req struct {
+			School     string `json:"school"`
+			User       string `json:"user"`
+			Username   string `json:"username"`
+			Capability string `json:"capability"`
+			Effect     any    `json:"effect"` // -1,0,1 or "allow"/"deny"/"inherit"
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			p.writeJSON(w, map[string]any{"error": "bad request"})
+			return
+		}
+		user := req.User
+		if user == "" {
+			user = req.Username
+		}
+		if req.School == "" || user == "" || req.Capability == "" {
+			p.writeJSON(w, map[string]any{"error": "school, user, capability required"})
+			return
+		}
+		effect := 0
+		switch v := req.Effect.(type) {
+		case float64:
+			if v > 0 {
+				effect = 1
+			} else if v < 0 {
+				effect = -1
+			}
+		case string:
+			switch strings.ToLower(strings.TrimSpace(v)) {
+			case "allow", "grant", "1", "true":
+				effect = 1
+			case "deny", "revoke", "-1", "false":
+				effect = -1
+			case "inherit", "clear", "0", "":
+				effect = 0
+			default:
+				p.writeJSON(w, map[string]any{"error": "invalid effect"})
+				return
+			}
+		case bool:
+			if v {
+				effect = 1
+			} else {
+				effect = -1
+			}
+		case nil:
+			effect = 0
+		default:
+			p.writeJSON(w, map[string]any{"error": "invalid effect"})
+			return
+		}
+		if err := p.store.SetUserV2Grant(req.School, user, req.Capability, effect); err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.audit(r, req.School, "v2.grant.set", user, req.Capability+"="+strconv.Itoa(effect))
+		p.writeJSON(w, map[string]any{"ok": true, "school": req.School, "user": user, "capability": req.Capability, "effect": effect})
+	case "user-groups":
+		if r.Method == http.MethodGet {
+			school := strings.TrimSpace(r.URL.Query().Get("school"))
+			username := strings.TrimSpace(r.URL.Query().Get("user"))
+			if username == "" {
+				username = strings.TrimSpace(r.URL.Query().Get("username"))
+			}
+			if school == "" || username == "" {
+				p.writeJSON(w, map[string]any{"error": "school and user required"})
+				return
+			}
+			groups, err := p.store.ListUserV2Groups(school, username)
+			if err != nil {
+				p.writeJSON(w, map[string]any{"error": "store error"})
+				return
+			}
+			p.writeJSON(w, map[string]any{"school": school, "user": username, "groups": groups})
+			return
+		}
+		if r.Method != http.MethodPost {
+			p.writeJSON(w, map[string]any{"error": "not found"})
+			return
+		}
+		action := ""
+		if len(parts) > 1 {
+			action = parts[1]
+		}
+		var req struct {
+			School   string `json:"school"`
+			User     string `json:"user"`
+			Username string `json:"username"`
+			GroupID  int64  `json:"groupId"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			p.writeJSON(w, map[string]any{"error": "bad request"})
+			return
+		}
+		user := req.User
+		if user == "" {
+			user = req.Username
+		}
+		if req.School == "" || user == "" || req.GroupID <= 0 {
+			p.writeJSON(w, map[string]any{"error": "school, user, groupId required"})
+			return
+		}
+		switch action {
+		case "assign":
+			if err := p.store.AssignUserV2Group(req.School, user, req.GroupID); err != nil {
+				p.writeJSON(w, map[string]any{"error": "store error"})
+				return
+			}
+			p.audit(r, req.School, "v2.user_group.assign", user, strconv.FormatInt(req.GroupID, 10))
+		case "unassign":
+			if err := p.store.UnassignUserV2Group(req.School, user, req.GroupID); err != nil {
+				p.writeJSON(w, map[string]any{"error": "store error"})
+				return
+			}
+			p.audit(r, req.School, "v2.user_group.unassign", user, strconv.FormatInt(req.GroupID, 10))
+		default:
+			p.writeJSON(w, map[string]any{"error": "action must be assign or unassign"})
+			return
+		}
+		p.writeJSON(w, map[string]any{"ok": true})
+	case "role-defaults":
+		if r.Method == http.MethodGet {
+			school := strings.TrimSpace(r.URL.Query().Get("school"))
+			role := strings.TrimSpace(r.URL.Query().Get("role"))
+			roles := []string{role}
+			if role == "" {
+				roles = []string{"student", "teacher", "staff", "parent", "unknown", "other"}
+			}
+			out := map[string]any{}
+			for _, rname := range roles {
+				ids, err := p.store.ListRoleDefaultGroups(school, rname)
+				if err != nil {
+					p.writeJSON(w, map[string]any{"error": "store error"})
+					return
+				}
+				if len(ids) > 0 || role != "" {
+					out[rname] = ids
+				}
+			}
+			p.writeJSON(w, map[string]any{"school": school, "roleDefaults": out})
+			return
+		}
+		if r.Method == http.MethodDelete {
+			school := strings.TrimSpace(r.URL.Query().Get("school"))
+			role := strings.TrimSpace(r.URL.Query().Get("role"))
+			gid, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("groupId")), 10, 64)
+			if role == "" || gid <= 0 {
+				p.writeJSON(w, map[string]any{"error": "role and groupId required"})
+				return
+			}
+			if err := p.store.DeleteRoleDefaultGroup(school, role, gid); err != nil {
+				p.writeJSON(w, map[string]any{"error": "store error"})
+				return
+			}
+			p.audit(r, school, "v2.role_default.delete", role, strconv.FormatInt(gid, 10))
+			p.writeJSON(w, map[string]any{"ok": true})
+			return
+		}
+		if r.Method != http.MethodPost && r.Method != http.MethodPut {
+			p.writeJSON(w, map[string]any{"error": "not found"})
+			return
+		}
+		action := ""
+		if len(parts) > 1 {
+			action = parts[1]
+		}
+		if action != "" && action != "set" && action != "delete" {
+			p.writeJSON(w, map[string]any{"error": "not found"})
+			return
+		}
+		var req struct {
+			School   string `json:"school"`
+			Role     string `json:"role"`
+			GroupID  int64  `json:"groupId"`
+			Priority int    `json:"priority"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			p.writeJSON(w, map[string]any{"error": "bad request"})
+			return
+		}
+		if req.Role == "" || req.GroupID <= 0 {
+			p.writeJSON(w, map[string]any{"error": "role and groupId required"})
+			return
+		}
+		if action == "delete" {
+			if err := p.store.DeleteRoleDefaultGroup(req.School, req.Role, req.GroupID); err != nil {
+				p.writeJSON(w, map[string]any{"error": "store error"})
+				return
+			}
+			p.audit(r, req.School, "v2.role_default.delete", req.Role, strconv.FormatInt(req.GroupID, 10))
+			p.writeJSON(w, map[string]any{"ok": true})
+			return
+		}
+		if err := p.store.SetRoleDefaultGroup(req.School, req.Role, req.GroupID, req.Priority); err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.audit(r, req.School, "v2.role_default.set", req.Role, strconv.FormatInt(req.GroupID, 10))
+		p.writeJSON(w, map[string]any{"ok": true})
+	case "gates":
+		if r.Method == http.MethodGet {
+			gates, err := p.store.ListServerCapGates()
+			if err != nil {
+				p.writeJSON(w, map[string]any{"error": "store error"})
+				return
+			}
+			p.writeJSON(w, map[string]any{"gates": gates})
+			return
+		}
+		if r.Method != http.MethodPost && r.Method != http.MethodPut {
+			p.writeJSON(w, map[string]any{"error": "not found"})
+			return
+		}
+		if len(parts) > 1 && parts[1] != "set" {
+			p.writeJSON(w, map[string]any{"error": "not found"})
+			return
+		}
+		var req struct {
+			Scope      string `json:"scope"`
+			Capability string `json:"capability"`
+			Cap        string `json:"cap"`
+			Enabled    *bool  `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Enabled == nil {
+			p.writeJSON(w, map[string]any{"error": "scope, capability/cap and enabled required"})
+			return
+		}
+		cap := req.Capability
+		if cap == "" {
+			cap = req.Cap
+		}
+		if req.Scope == "" || cap == "" {
+			p.writeJSON(w, map[string]any{"error": "scope and capability required"})
+			return
+		}
+		if err := p.store.SetServerCapGate(req.Scope, cap, *req.Enabled); err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.audit(r, req.Scope, "v2.gate.set", cap, strconv.FormatBool(*req.Enabled))
+		p.writeJSON(w, map[string]any{"ok": true, "scope": req.Scope, "capability": cap, "enabled": *req.Enabled})
+	case "person-type-roles", "role-mappings":
+		switch r.Method {
+		case http.MethodGet:
+			scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+			mappings, err := p.store.ListPersonTypeRoles(scope)
+			if err != nil {
+				p.writeJSON(w, map[string]any{"error": "store error"})
+				return
+			}
+			p.writeJSON(w, map[string]any{"mappings": mappings})
+			return
+		case http.MethodPost, http.MethodPut:
+			var req struct {
+				Scope      string `json:"scope"`
+				PersonType int64  `json:"personType"`
+				Role       string `json:"role"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				p.writeJSON(w, map[string]any{"error": "bad request"})
+				return
+			}
+			if strings.TrimSpace(req.Role) == "" {
+				p.writeJSON(w, map[string]any{"error": "role required"})
+				return
+			}
+			if err := p.store.SetPersonTypeRole(req.Scope, req.PersonType, req.Role); err != nil {
+				p.writeJSON(w, map[string]any{"error": err.Error()})
+				return
+			}
+			p.audit(r, req.Scope, "v2.person_type_role.set", strconv.FormatInt(req.PersonType, 10), req.Role)
+			p.writeJSON(w, map[string]any{"ok": true, "scope": req.Scope, "personType": req.PersonType, "role": access.NormalizeRole(req.Role)})
+			return
+		case http.MethodDelete:
+			scope := strings.TrimSpace(r.URL.Query().Get("scope"))
+			ptStr := strings.TrimSpace(r.URL.Query().Get("personType"))
+			if ptStr == "" {
+				ptStr = strings.TrimSpace(r.URL.Query().Get("person_type"))
+			}
+			pt, err := strconv.ParseInt(ptStr, 10, 64)
+			if err != nil {
+				p.writeJSON(w, map[string]any{"error": "personType required"})
+				return
+			}
+			if err := p.store.DeletePersonTypeRole(scope, pt); err != nil {
+				p.writeJSON(w, map[string]any{"error": "store error"})
+				return
+			}
+			p.audit(r, scope, "v2.person_type_role.delete", strconv.FormatInt(pt, 10), "")
+			p.writeJSON(w, map[string]any{"ok": true})
+			return
+		}
+		p.writeJSON(w, map[string]any{"error": "not found"})
+		return
+	case "anon-profiles":
+		if r.Method != http.MethodGet {
+			p.writeJSON(w, map[string]any{"error": "not found"})
+			return
+		}
+		profiles, err := p.store.ListSchoolAnonProfiles()
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		out := make([]map[string]any, 0, len(profiles))
+		for _, prof := range profiles {
+			payload, _, _ := p.store.GetSchoolAnonProfilePayload(prof.School)
+			out = append(out, map[string]any{
+				"school": prof.School, "loginOk": prof.LoginOK, "source": prof.Source,
+				"detectedAt": prof.DetectedAt.Unix(), "expiresAt": prof.ExpiresAt.Unix(),
+				"classesDisplayable": payload.ClassesDisplayable, "capabilities": payload.Capabilities, "notes": payload.Notes,
+			})
+		}
+		p.writeJSON(w, map[string]any{"profiles": out})
 	default:
 		p.writeJSON(w, map[string]any{"error": "not found"})
 	}
@@ -578,6 +1111,146 @@ func (p *Proxy) adminSchools(w http.ResponseWriter, r *http.Request, parts []str
 		}
 		p.audit(r, name, "school.anonymous", name, "enabled="+strconv.FormatBool(*req.Enabled))
 		p.writeJSON(w, map[string]any{"school": name, "anonymous": *req.Enabled})
+		return
+	case r.Method == http.MethodGet && len(parts) == 2 && parts[1] == "anon-profile":
+		name := strings.TrimSpace(parts[0])
+		if name == "" {
+			p.writeJSON(w, map[string]any{"error": "school required"})
+			return
+		}
+		payload, prof, err := p.store.GetSchoolAnonProfilePayload(name)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		if prof == nil {
+			p.writeJSON(w, map[string]any{"school": name, "profile": nil})
+			return
+		}
+		p.writeJSON(w, map[string]any{
+			"school": name,
+			"profile": map[string]any{
+				"loginOk":            prof.LoginOK,
+				"detectedAt":         prof.DetectedAt.Unix(),
+				"expiresAt":          prof.ExpiresAt.Unix(),
+				"source":             prof.Source,
+				"classesDisplayable": payload.ClassesDisplayable,
+				"capabilities":       payload.Capabilities,
+				"notes":              payload.Notes,
+				"profileJson":        prof.ProfileJSON,
+			},
+		})
+		return
+	case r.Method == http.MethodPost && len(parts) == 2 && parts[1] == "anon-profile" && (r.URL.Query().Get("refresh") == "1" || strings.Contains(r.URL.RawQuery, "refresh")):
+		name := strings.TrimSpace(parts[0])
+		if name == "" {
+			p.writeJSON(w, map[string]any{"error": "school required"})
+			return
+		}
+		prof, err := p.RefreshSchoolAnonProfile(name)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		payload, _, _ := p.store.GetSchoolAnonProfilePayload(name)
+		p.audit(r, name, "school.anon_profile.refresh", name, "")
+		p.writeJSON(w, map[string]any{
+			"school": name,
+			"profile": map[string]any{
+				"loginOk":            prof.LoginOK,
+				"detectedAt":         prof.DetectedAt.Unix(),
+				"expiresAt":          prof.ExpiresAt.Unix(),
+				"source":             prof.Source,
+				"classesDisplayable": payload.ClassesDisplayable,
+				"capabilities":       payload.Capabilities,
+				"notes":              payload.Notes,
+			},
+		})
+		return
+	case r.Method == http.MethodPost && len(parts) == 3 && parts[1] == "anon-profile" && parts[2] == "refresh":
+		name := strings.TrimSpace(parts[0])
+		if name == "" {
+			p.writeJSON(w, map[string]any{"error": "school required"})
+			return
+		}
+		prof, err := p.RefreshSchoolAnonProfile(name)
+		if err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		payload, _, _ := p.store.GetSchoolAnonProfilePayload(name)
+		p.audit(r, name, "school.anon_profile.refresh", name, "")
+		p.writeJSON(w, map[string]any{
+			"school": name,
+			"profile": map[string]any{
+				"loginOk":            prof.LoginOK,
+				"detectedAt":         prof.DetectedAt.Unix(),
+				"expiresAt":          prof.ExpiresAt.Unix(),
+				"source":             prof.Source,
+				"classesDisplayable": payload.ClassesDisplayable,
+				"capabilities":       payload.Capabilities,
+				"notes":              payload.Notes,
+			},
+		})
+		return
+	case (r.Method == http.MethodPost || r.Method == http.MethodPut) && len(parts) == 3 && parts[1] == "anon-profile" && parts[2] == "override":
+		name := strings.TrimSpace(parts[0])
+		if name == "" {
+			p.writeJSON(w, map[string]any{"error": "school required"})
+			return
+		}
+		var req struct {
+			LoginOK            *bool           `json:"loginOk"`
+			ClassesDisplayable []int64         `json:"classesDisplayable"`
+			Capabilities       map[string]bool `json:"capabilities"`
+			Notes              *string         `json:"notes"`
+			ProfileJSON        *string         `json:"profileJson"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			p.writeJSON(w, map[string]any{"error": "bad request"})
+			return
+		}
+		existing, _ := p.store.GetSchoolAnonProfile(name)
+		prof := &store.SchoolAnonProfile{School: name, Source: "override", DetectedAt: time.Now(), ExpiresAt: time.Now().Add(365 * 24 * time.Hour)}
+		if existing != nil {
+			prof.LoginOK = existing.LoginOK
+		}
+		if req.LoginOK != nil {
+			prof.LoginOK = *req.LoginOK
+		}
+		payload := store.AnonProfilePayload{Capabilities: map[string]bool{}}
+		if existing != nil && existing.ProfileJSON != "" {
+			payload = store.DecodeAnonProfilePayload(existing.ProfileJSON)
+		}
+		if req.ProfileJSON != nil {
+			payload = store.DecodeAnonProfilePayload(*req.ProfileJSON)
+			prof.ProfileJSON = *req.ProfileJSON
+		}
+		if req.ClassesDisplayable != nil {
+			payload.ClassesDisplayable = req.ClassesDisplayable
+		}
+		if req.Capabilities != nil {
+			if payload.Capabilities == nil {
+				payload.Capabilities = map[string]bool{}
+			}
+			for k, v := range req.Capabilities {
+				payload.Capabilities[k] = v
+			}
+		}
+		if req.Notes != nil {
+			payload.Notes = *req.Notes
+		}
+		if req.ProfileJSON == nil {
+			prof.ProfileJSON = store.EncodeAnonProfilePayload(payload)
+		}
+		if err := p.store.UpsertSchoolAnonProfile(prof); err != nil {
+			p.writeJSON(w, map[string]any{"error": "store error"})
+			return
+		}
+		p.audit(r, name, "school.anon_profile.override", name, "")
+		p.writeJSON(w, map[string]any{"school": name, "ok": true, "profile": map[string]any{
+			"loginOk": prof.LoginOK, "source": prof.Source, "capabilities": payload.Capabilities, "classesDisplayable": payload.ClassesDisplayable, "notes": payload.Notes,
+		}})
 		return
 	case r.Method == http.MethodDelete && len(parts) == 1:
 		name := strings.TrimSpace(parts[0])

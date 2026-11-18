@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"untis-proxy/internal/store"
 )
@@ -39,6 +40,22 @@ func seedPooledClass(t *testing.T, st *store.Store) {
 	}
 }
 
+func seedAnonClassTarget(t *testing.T, st *store.Store, school string, classID int64) {
+	t.Helper()
+	if err := st.UpsertSchoolAnonProfile(&store.SchoolAnonProfile{
+		School:  school,
+		LoginOK: true,
+		Source:  "override",
+		ProfileJSON: store.EncodeAnonProfilePayload(store.AnonProfilePayload{
+			ClassesDisplayable: []int64{classID},
+		}),
+		DetectedAt: time.Now(),
+		ExpiresAt:  time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("seed anon profile: %v", err)
+	}
+}
+
 func TestAnonymousNtfyGate(t *testing.T) {
 	p, st := newTestProxy(t)
 	seedPooledClass(t, st)
@@ -53,6 +70,8 @@ func TestAnonymousNtfyGate(t *testing.T) {
 	if err := st.SetAnonymousFeature("ntfy", true); err != nil {
 		t.Fatal(err)
 	}
+	// v2: anonymous subscriptions require upstream-detected/stock class targets.
+	seedAnonClassTarget(t, st, "testschool", 5000)
 	rec = httptest.NewRecorder()
 	p.handleSubsNtfy(rec, anonReq(t, p, http.MethodGet, "/api/ntfy?school=testschool", ""))
 	if rec.Code != http.StatusOK {
@@ -96,6 +115,8 @@ func TestAnonymousWebhooksGate(t *testing.T) {
 	if err := st.SetAnonymousFeature("webhooks", true); err != nil {
 		t.Fatal(err)
 	}
+	// v2: anonymous subscriptions require upstream-detected/stock class targets.
+	seedAnonClassTarget(t, st, "testschool", 5000)
 	rec = httptest.NewRecorder()
 	p.handleSubsWebhooks(rec, anonReq(t, p, http.MethodPost, "/api/webhooks?school=testschool",
 		`{"classId":5000,"url":"https://example.com/hook"}`))
@@ -183,6 +204,20 @@ func TestCalendarMintUsesQuerySchool(t *testing.T) {
 func TestAnonymousChangesGate(t *testing.T) {
 	p, st := newTestProxy(t)
 	seedPooledClass(t, st)
+	// v2: anonymous class target access requires upstream-detected stock exposure.
+	if err := st.UpsertSchoolAnonProfile(&store.SchoolAnonProfile{
+		School:     "testschool",
+		LoginOK:    true,
+		Source:     "detect",
+		DetectedAt: time.Now(),
+		ExpiresAt:  time.Now().Add(24 * time.Hour),
+		ProfileJSON: store.EncodeAnonProfilePayload(store.AnonProfilePayload{
+			Capabilities:       map[string]bool{},
+			ClassesDisplayable: []int64{5000},
+		}),
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	rec := httptest.NewRecorder()
 	p.handleTimetableChanges(rec, anonReq(t, p, http.MethodGet,
@@ -201,12 +236,12 @@ func TestAnonymousChangesGate(t *testing.T) {
 		t.Fatalf("enabled changes code = %d, body %s", rec.Code, rec.Body.String())
 	}
 
-	// Anonymous may only follow a class the poller maintains.
+	// Anonymous may only follow a class exposed to anonymous upstream in v2.
 	rec = httptest.NewRecorder()
 	p.handleTimetableChanges(rec, anonReq(t, p, http.MethodGet,
 		"/api/timetable/changes?school=testschool&classId=9999&since=-1", ""))
 	if rec.Code != http.StatusForbidden {
-		t.Fatalf("non-pooled class changes code = %d, want 403 (body %s)", rec.Code, rec.Body.String())
+		t.Fatalf("non-exposed class changes code = %d, want 403 (body %s)", rec.Code, rec.Body.String())
 	}
 }
 
@@ -215,6 +250,21 @@ func TestAnonymousChangesGate(t *testing.T) {
 func TestAnonymousNotificationOptionsEitherSwitch(t *testing.T) {
 	p, st := newTestProxy(t)
 	seedPooledClass(t, st)
+	// v2: anonymous target visibility is stock/upstream-detected only (no
+	// proxy-pooled supplements). Simulate upstream exposing the pooled class.
+	if err := st.UpsertSchoolAnonProfile(&store.SchoolAnonProfile{
+		School:     "testschool",
+		LoginOK:    true,
+		Source:     "detect",
+		DetectedAt: time.Now(),
+		ExpiresAt:  time.Now().Add(24 * time.Hour),
+		ProfileJSON: store.EncodeAnonProfilePayload(store.AnonProfilePayload{
+			Capabilities:       map[string]bool{},
+			ClassesDisplayable: []int64{5000},
+		}),
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	rec := httptest.NewRecorder()
 	p.handleNotificationOptions(rec, anonReq(t, p, http.MethodGet, "/api/notifications/options?school=testschool", ""))

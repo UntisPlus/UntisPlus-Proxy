@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"crypto/rand"
+
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"untis-proxy/internal/access"
 
 	"untis-proxy/internal/store"
 )
@@ -151,7 +153,7 @@ func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 		if pid == 0 {
 			pid = u.PersonID
 		}
-		if pid <= 0 || u.PersonID != pid {
+		if !p.canCalendarMintPersonal(u, school, pid) {
 			p.forbidden(w)
 			return
 		}
@@ -181,7 +183,7 @@ func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 	// The synthetic Technik class is not in the pool, so it needs its own
 	// element type. It is only visible (and only subscribable) to a techniker.
 	if req.ClassID == technikClassID {
-		if !p.hasTechniker(u.Username) {
+		if !p.canCalendarMintTechnik(u, school) {
 			p.forbidden(w)
 			return
 		}
@@ -253,7 +255,7 @@ func (p *Proxy) handleCalendarToken(w http.ResponseWriter, r *http.Request) {
 	// Access control mirrors the app's visibility: recon grants the
 	// reconstructed elements, boosted grants everything raw, and a staff
 	// (non-student) account keeps stock WebUntis visibility.
-	if !p.canMintElement(u, elType) {
+	if !p.canCalendarMintElement(u, school, elType) {
 		p.forbidden(w)
 		return
 	}
@@ -324,6 +326,60 @@ func (p *Proxy) calendarTokenView(r *http.Request, tok *store.ClassToken) map[st
 	return resp
 }
 
+func (p *Proxy) calendarTokenAuthorized(tok *store.ClassToken) bool {
+	if tok == nil {
+		return false
+	}
+	creator := strings.TrimSpace(tok.CreatedBy)
+	if creator == "#anonymous#" {
+		return false
+	}
+	// Legacy/unattributed tokens (no creator recorded) remain servable for
+	// backward compatibility; user-created tokens are re-authorized under v2.
+	if creator == "" {
+		return true
+	}
+	u, err := p.store.GetUser(creator)
+	if err != nil || u == nil {
+		return false
+	}
+	school := tok.School
+	et := strings.ToUpper(strings.TrimSpace(tok.ElementType))
+	if et == "" {
+		if tok.PersonID > 0 {
+			et = "STUDENT"
+		} else if tok.ClassID > 0 {
+			et = "CLASS"
+		}
+	}
+	eid := tok.ElementID
+	switch et {
+	case "CLASS":
+		if eid == 0 {
+			eid = tok.ClassID
+		}
+		if eid == technikClassID {
+			et = "TECHNIK"
+		}
+	case "STUDENT":
+		if eid == 0 {
+			eid = tok.PersonID
+		}
+	}
+	switch et {
+	case "STUDENT":
+		return p.canAccessPersonalTarget(u, school, eid) || p.canCalendarMintPersonal(u, school, eid)
+	case "CLASS":
+		return p.canCalendarMintClass(u, school, eid) || p.canAccessClassTarget(u, school, eid)
+	case "TEACHER", "ROOM", "SUBJECT":
+		return p.canCalendarMintElement(u, school, et) && p.canAccessElementTarget(u, school, et)
+	case "TECHNIK":
+		return p.canCalendarMintTechnik(u, school)
+	default:
+		return false
+	}
+}
+
 // writeCalendarResponse writes the standard calendar token JSON response.
 func (p *Proxy) writeCalendarResponse(w http.ResponseWriter, r *http.Request, tok *store.ClassToken) {
 	p.writeJSON(w, p.calendarTokenView(r, tok))
@@ -337,58 +393,75 @@ type subscriptionOption struct {
 	Name string `json:"name"`
 }
 
-// canMintClass reports whether a user may mint a calendar token for a class.
-// The synthetic Technik aggregate needs the techniker permission; staff
-// (non-student) accounts keep stock WebUntis visibility; everyone else needs
-// the class to be in the pool or the boosted flag.
+// canMintClass reports whether a user may mint a calendar token for a class (v2).
 func (p *Proxy) canMintClass(school string, u *store.User, classID int64) bool {
 	if classID == technikClassID {
-		return p.hasTechniker(u.Username)
+		return p.canCalendarMintTechnik(u, school)
 	}
-	if u.PersonType != 5 || p.isBoosted(u.Username) {
-		return true
-	}
-	ok, _ := p.store.PoolContains(school, classID)
-	return ok
+	return p.canCalendarMintClass(u, school, classID)
 }
 
 // canMintElement reports whether a user may mint a calendar token for a
-// teacher/room/subject: recon, boosted, or a staff (non-student) account.
+// teacher/room/subject (v2).
 func (p *Proxy) canMintElement(u *store.User, elType string) bool {
-	if u.PersonType != 5 || p.isBoosted(u.Username) {
-		return true
+	if u == nil {
+		return false
 	}
-	can, _ := p.store.ReconAccess(u.Username, elType)
-	return can
+	return p.canCalendarMintElement(u, u.School, elType)
 }
 
-// subscriptionOptions lists the timetable targets the user can see in the app.
-// It mirrors the masterData display flags the proxy writes at login:
-//   - everyone: the pooled classes, plus the personal timetable
-//   - recon:    the teachers/rooms/subjects the recon scan actually enumerated
-//   - boosted:  every class/teacher/room/subject
-//   - techniker: the synthetic Technik class
-//   - staff (non-student) accounts: stock visibility, i.e. every element
-//
-// includeTechnik controls the synthetic Technik entry: the calendar feed can
-// serve it, the notification poller cannot (it is not a polled class), so only
-// the calendar asks for it.
+// subscriptionOptions returns targets for calendar (calendarCaps=true) or
+// notifications (calendarCaps=false) based on v2 effective capabilities and
+// target accessibility.
 func (p *Proxy) subscriptionOptions(school string, u *store.User, includeTechnik bool) map[string]any {
+	// calendar/options callers historically included Technik when allowed.
+	return p.subscriptionOptionsV2(school, u, includeTechnik, true)
+}
+
+func (p *Proxy) subscriptionOptionsV2(school string, u *store.User, includeTechnik bool, calendarCaps bool) map[string]any {
 	var teachersMD, roomsMD, subjectsMD, klassenMD map[int64]string
 	if md := p.masterData(school); md != nil {
 		teachersMD, roomsMD, subjectsMD, klassenMD = md.teachers, md.rooms, md.subjects, md.klassen
 	}
-	boosted := p.isBoosted(u.Username)
-	staff := u.PersonType != 5
-	all := boosted || staff
+	st := p.stateFor(school)
 
 	classSet := map[int64]string{}
+	// pooled classes accessible to user
 	if pooled, err := p.store.Pool(school); err == nil {
 		for _, c := range pooled {
-			classSet[c.ID] = c.Name
+			allow := false
+			if calendarCaps {
+				allow = p.canCalendarMintClass(u, school, c.ID)
+			} else {
+				allow = p.canSubscribeTarget(u, school, "CLASS", c.ID) && p.canNotifyCreate(u, school, "ntfy") || p.canSubscribeTarget(u, school, "CLASS", c.ID) && p.canNotifyCreate(u, school, "webhooks")
+				// target visibility for notifications follows calendar/visibility rules
+				allow = p.canSubscribeTarget(u, school, "CLASS", c.ID)
+			}
+			if allow {
+				classSet[c.ID] = c.Name
+			}
 		}
 	}
-	if all {
+	// include own class if known and allowed
+	if u != nil && u.ClassID > 0 {
+		if calendarCaps {
+			if p.canCalendarMintClass(u, school, u.ClassID) {
+				if _, ok := classSet[u.ClassID]; !ok {
+					if n := klassenMD[u.ClassID]; n != "" {
+						classSet[u.ClassID] = n
+					}
+				}
+			}
+		} else if p.canSubscribeTarget(u, school, "CLASS", u.ClassID) {
+			if _, ok := classSet[u.ClassID]; !ok {
+				if n := klassenMD[u.ClassID]; n != "" {
+					classSet[u.ClassID] = n
+				}
+			}
+		}
+	}
+	// boosted/raw class visibility may expose all classes
+	if u != nil && p.canViewClassBoosted(u, school) && (calendarCaps && p.effective(u, school, access.CapCalendarClassMint) || !calendarCaps) {
 		for id, name := range klassenMD {
 			if _, ok := classSet[id]; !ok || classSet[id] == "" {
 				classSet[id] = name
@@ -399,23 +472,53 @@ func (p *Proxy) subscriptionOptions(school string, u *store.User, includeTechnik
 	teacherSet := map[int64]string{}
 	roomSet := map[int64]string{}
 	subjectSet := map[int64]string{}
-	if all {
-		teacherSet, roomSet, subjectSet = teachersMD, roomsMD, subjectsMD
-	} else if can, _ := p.store.ReconAccess(u.Username, "TEACHER"); can {
-		snap := p.stateFor(school).recon.snapshot()
-		for _, id := range snap["TEACHER"] {
-			if name := teachersMD[id]; name != "" {
-				teacherSet[id] = name
+	allowTeacher := (calendarCaps && p.canCalendarMintElement(u, school, "TEACHER")) || (!calendarCaps && p.canSubscribeTarget(u, school, "TEACHER", 1))
+	allowRoom := (calendarCaps && p.canCalendarMintElement(u, school, "ROOM")) || (!calendarCaps && p.canSubscribeTarget(u, school, "ROOM", 1))
+	allowSubject := (calendarCaps && p.canCalendarMintElement(u, school, "SUBJECT")) || (!calendarCaps && p.canSubscribeTarget(u, school, "SUBJECT", 1))
+	if allowTeacher || allowRoom || allowSubject {
+		if u != nil && u.PersonType != 5 {
+			// staff/stock visibility
+			if allowTeacher {
+				teacherSet = copyInt64StringMap(teachersMD)
 			}
-		}
-		for _, id := range snap["ROOM"] {
-			if name := roomsMD[id]; name != "" {
-				roomSet[id] = name
+			if allowRoom {
+				roomSet = copyInt64StringMap(roomsMD)
 			}
-		}
-		for _, id := range snap["SUBJECT"] {
-			if name := subjectsMD[id]; name != "" {
-				subjectSet[id] = name
+			if allowSubject {
+				subjectSet = copyInt64StringMap(subjectsMD)
+			}
+		} else {
+			// boosted raw -> all elements
+			if allowTeacher && p.canViewTeacherBoosted(u, school) {
+				teacherSet = copyInt64StringMap(teachersMD)
+			}
+			if allowRoom && p.canViewRoomBoosted(u, school) {
+				roomSet = copyInt64StringMap(roomsMD)
+			}
+			if allowSubject && p.canViewSubjectBoosted(u, school) {
+				subjectSet = copyInt64StringMap(subjectsMD)
+			}
+			// reconstructed -> only enumerated in recon snapshot
+			if allowTeacher && p.canViewTeacherRecon(u, school) {
+				for _, id := range st.recon.snapshot()["TEACHER"] {
+					if name := teachersMD[id]; name != "" {
+						teacherSet[id] = name
+					}
+				}
+			}
+			if allowRoom && p.canViewRoomRecon(u, school) {
+				for _, id := range st.recon.snapshot()["ROOM"] {
+					if name := roomsMD[id]; name != "" {
+						roomSet[id] = name
+					}
+				}
+			}
+			if allowSubject && p.canViewSubjectRecon(u, school) {
+				for _, id := range st.recon.snapshot()["SUBJECT"] {
+					if name := subjectsMD[id]; name != "" {
+						subjectSet[id] = name
+					}
+				}
 			}
 		}
 	}
@@ -427,13 +530,36 @@ func (p *Proxy) subscriptionOptions(school string, u *store.User, includeTechnik
 		"room":    optionList(roomSet),
 		"subject": optionList(subjectSet),
 	}
-	if u.PersonID > 0 {
-		resp["personal"] = map[string]any{"personId": u.PersonID, "name": u.DisplayName}
+	if u != nil && u.PersonID > 0 {
+		if calendarCaps {
+			if p.canCalendarMintPersonal(u, school, u.PersonID) {
+				resp["personal"] = map[string]any{"personId": u.PersonID, "name": u.DisplayName}
+			}
+		} else if p.canSubscribeTarget(u, school, "STUDENT", u.PersonID) {
+			resp["personal"] = map[string]any{"personId": u.PersonID, "name": u.DisplayName}
+		}
 	}
-	if includeTechnik && p.hasTechniker(u.Username) {
-		resp["technik"] = subscriptionOption{ID: technikClassID, Name: technikClassName}
+	if includeTechnik && u != nil {
+		if calendarCaps {
+			if p.canCalendarMintTechnik(u, school) {
+				resp["technik"] = subscriptionOption{ID: technikClassID, Name: technikClassName}
+			}
+		} else if p.canSubscribeTarget(u, school, "TECHNIK", technikClassID) {
+			// notifications never include Technik currently
+		}
 	}
 	return resp
+}
+
+func copyInt64StringMap(in map[int64]string) map[int64]string {
+	if len(in) == 0 {
+		return map[int64]string{}
+	}
+	out := make(map[int64]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
 }
 
 // optionList flattens a collector map into a name-sorted slice, so the app's
@@ -471,12 +597,35 @@ func (p *Proxy) handleCalendarOptions(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 		return
 	}
-	p.writeJSON(w, p.subscriptionOptions(school, u, true))
+	opts := p.subscriptionOptionsV2(school, u, true, true)
+	if !calendarOptionsHaveTargets(opts, true) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"no accessible calendar targets"}`))
+		return
+	}
+	p.writeJSON(w, opts)
+}
+
+func calendarOptionsHaveTargets(opts map[string]any, includeTechnik bool) bool {
+	if _, ok := opts["personal"]; ok {
+		return true
+	}
+	for _, k := range []string{"class", "teacher", "room", "subject"} {
+		if v, ok := opts[k].([]subscriptionOption); ok && len(v) > 0 {
+			return true
+		}
+	}
+	if includeTechnik {
+		if _, ok := opts["technik"]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // handleNotificationOptions lists the timetable targets the signed-in user may
-// watch with a webhook or ntfy subscription. It is the same catalog as the
-// calendar options, minus the Technik aggregate the poller cannot deliver.
+// watch with a webhook or ntfy subscription.
 func (p *Proxy) handleNotificationOptions(w http.ResponseWriter, r *http.Request) {
 	school := p.requestSchool(r)
 	u := p.sessionUserForAny(r, school, "ntfy", "webhooks")
@@ -485,7 +634,21 @@ func (p *Proxy) handleNotificationOptions(w http.ResponseWriter, r *http.Request
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 		return
 	}
-	p.writeJSON(w, p.subscriptionOptions(school, u, false))
+	// if user cannot create/manage either notification type, deny options
+	if u.Username != "#anonymous#" && !p.canNotifyCreate(u, school, "ntfy") && !p.canNotifyCreate(u, school, "webhooks") {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"notifications not permitted"}`))
+		return
+	}
+	opts := p.subscriptionOptionsV2(school, u, false, false)
+	if !calendarOptionsHaveTargets(opts, false) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"no accessible notification targets"}`))
+		return
+	}
+	p.writeJSON(w, opts)
 }
 
 // handleCalendarTokens lists only the tokens the requesting user created, so
@@ -495,6 +658,15 @@ func (p *Proxy) handleCalendarTokens(w http.ResponseWriter, r *http.Request) {
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+		return
+	}
+	if !p.effective(u, p.requestSchool(r), access.CapCalendarManageOwn) && !p.calendarHasAccessibleTargets(u, p.requestSchool(r), true) {
+		// allow listing if user has manage_own; if they have no targets/capability context, still deny? prefer manage_own
+	}
+	if !p.effective(u, p.requestSchool(r), access.CapCalendarManageOwn) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"calendar management not permitted"}`))
 		return
 	}
 	toks, err := p.store.ListClassTokensByUser(u.Username)
@@ -551,6 +723,12 @@ func (p *Proxy) handleCalendarDelete(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 		return
 	}
+	if !p.effective(u, p.requestSchool(r), access.CapCalendarManageOwn) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"calendar management not permitted"}`))
+		return
+	}
 	tok, ok := p.calendarOwnedToken(r, u)
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
@@ -571,6 +749,12 @@ func (p *Proxy) handleCalendarUpdate(w http.ResponseWriter, r *http.Request) {
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+		return
+	}
+	if !p.effective(u, p.requestSchool(r), access.CapCalendarManageOwn) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"calendar management not permitted"}`))
 		return
 	}
 	tok, ok := p.calendarOwnedToken(r, u)
@@ -609,6 +793,12 @@ func (p *Proxy) handleCalendarRotate(w http.ResponseWriter, r *http.Request) {
 	if u == nil {
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+		return
+	}
+	if !p.effective(u, p.requestSchool(r), access.CapCalendarManageOwn) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":"calendar management not permitted"}`))
 		return
 	}
 	tok, ok := p.calendarOwnedToken(r, u)
@@ -835,6 +1025,10 @@ func (p *Proxy) handleCalendarICS(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimSuffix(r.PathValue("token"), ".ics")
 	tok, err := p.store.ClassTokenByToken(token)
 	if err != nil || tok == nil || tokenExpired(tok) || !p.schoolAdmitted(tok.School) {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if !p.calendarTokenAuthorized(tok) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}

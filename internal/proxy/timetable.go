@@ -45,9 +45,16 @@ func (p *Proxy) getTimetable(w http.ResponseWriter, r *http.Request, school stri
 		return
 	}
 
-	// Class timetables: access is granted for the class pool only.
+	// Class timetables: access is granted for pooled/accessible class targets under v2.
 	ok, err := p.store.PoolContains(school, elID)
 	if err != nil || !ok {
+		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
+		return
+	}
+	if !p.canAccessClassTarget(user, school, elID) {
+		// Own-class upstream access for authenticated students remains allowed even
+		// when no pooled owner path is used elsewhere; for this legacy pooled fetch
+		// endpoint require effective class target access.
 		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 		return
 	}

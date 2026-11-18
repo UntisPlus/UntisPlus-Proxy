@@ -66,6 +66,7 @@ func main() {
 	loginMax := flag.Int("login-max-attempts", 5, "failed logins per account/IP inside the window before lockout (0 disables)")
 	loginWindow := flag.Duration("login-window", 15*time.Minute, "login failure counting window and lockout duration")
 	technikFull := flag.Bool("technik-full-history", false, "make the Technik aggregate return the entire event history instead of the requested range")
+	outageVerifyPings := flag.Int("outage-verify-pings", 5, "extra upstream probe attempts when an outage is first detected, to confirm it is not transient packet loss (0 disables)")
 
 	// Every flag is also settable as UNTIS_<FLAG>, so a compose file or a
 	// container runtime can configure the proxy without rewriting its command
@@ -147,6 +148,10 @@ func main() {
 		log.Printf("restored %d app session(s)", len(sessions))
 	}
 
+	outagePings := *outageVerifyPings
+	if outagePings == 0 {
+		outagePings = -1
+	}
 	p := proxy.New(st, uc, sm, proxy.Options{
 		School:             *school,
 		TTL:                *ttl,
@@ -156,6 +161,7 @@ func main() {
 		LoginWindow:        *loginWindow,
 		LoginRateLimitOff:  *loginMax == 0,
 		TechnikFullHistory: *technikFull,
+		OutageVerifyPings:  outagePings,
 	})
 	p.LoadRecon(*school)
 	p.StartRecon(*school, ys, ye)
