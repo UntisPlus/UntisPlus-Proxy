@@ -117,14 +117,16 @@ func (p *Proxy) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		p.adminRecon(w, r, parts[1:])
 	case parts[0] == "rooms":
 		p.adminRooms(w, r, parts[1:])
-	case parts[0] == "v2":
-		p.adminV2(w, r, parts[1:])
+	case parts[0] == "setup":
+		p.handleAdminSetup(w, r, parts)
+	case parts[0] == "access" || parts[0] == "v2":
+		p.adminAccessAPI(w, r, parts[1:])
 	default:
 		p.writeJSON(w, map[string]any{"error": "not found"})
 	}
 }
 
-func (p *Proxy) adminV2(w http.ResponseWriter, r *http.Request, parts []string) {
+func (p *Proxy) adminAccessAPI(w http.ResponseWriter, r *http.Request, parts []string) {
 	if len(parts) == 0 {
 		p.writeJSON(w, map[string]any{"error": "not found"})
 		return
@@ -175,7 +177,7 @@ func (p *Proxy) adminV2(w http.ResponseWriter, r *http.Request, parts []string) 
 				effective = append(effective, c)
 			}
 		}
-		groups, _ := p.store.ListUserV2Groups(school, username)
+		groups, _ := p.store.ListUserCapGroups(school, username)
 		roleDefIDs, _ := p.store.ListRoleDefaultGroups(school, string(res.Role))
 		if len(roleDefIDs) == 0 {
 			roleDefIDs, _ = p.store.ListRoleDefaultGroups("", string(res.Role))
@@ -194,7 +196,7 @@ func (p *Proxy) adminV2(w http.ResponseWriter, r *http.Request, parts []string) 
 		switch {
 		case r.Method == http.MethodGet && len(parts) == 1:
 			school := strings.TrimSpace(r.URL.Query().Get("school"))
-			groups, err := p.store.ListV2Groups(school)
+			groups, err := p.store.ListCapGroups(school)
 			if err != nil {
 				p.writeJSON(w, map[string]any{"error": "store error"})
 				return
@@ -207,7 +209,7 @@ func (p *Proxy) adminV2(w http.ResponseWriter, r *http.Request, parts []string) 
 				p.writeJSON(w, map[string]any{"error": "bad group id"})
 				return
 			}
-			g, grants, err := p.store.GetV2Group(id)
+			g, grants, err := p.store.GetCapGroup(id)
 			if err != nil || g == nil {
 				p.writeJSON(w, map[string]any{"error": "not found"})
 				return
@@ -224,7 +226,7 @@ func (p *Proxy) adminV2(w http.ResponseWriter, r *http.Request, parts []string) 
 				p.writeJSON(w, map[string]any{"error": "bad request"})
 				return
 			}
-			id, err := p.store.CreateV2Group(req.School, req.Name, req.Description)
+			id, err := p.store.CreateCapGroup(req.School, req.Name, req.Description)
 			if err != nil {
 				p.writeJSON(w, map[string]any{"error": err.Error()})
 				return
@@ -238,7 +240,7 @@ func (p *Proxy) adminV2(w http.ResponseWriter, r *http.Request, parts []string) 
 				p.writeJSON(w, map[string]any{"error": "bad group id"})
 				return
 			}
-			if err := p.store.DeleteV2Group(id); err != nil {
+			if err := p.store.DeleteCapGroup(id); err != nil {
 				p.writeJSON(w, map[string]any{"error": err.Error()})
 				return
 			}
@@ -300,7 +302,7 @@ func (p *Proxy) adminV2(w http.ResponseWriter, r *http.Request, parts []string) 
 				p.writeJSON(w, map[string]any{"error": "invalid effect"})
 				return
 			}
-			if err := p.store.SetV2GroupGrant(id, cap, effect); err != nil {
+			if err := p.store.SetCapGroupGrant(id, cap, effect); err != nil {
 				p.writeJSON(w, map[string]any{"error": err.Error()})
 				return
 			}
@@ -324,7 +326,7 @@ func (p *Proxy) adminV2(w http.ResponseWriter, r *http.Request, parts []string) 
 			p.writeJSON(w, map[string]any{"error": "school and user required"})
 			return
 		}
-		grants, err := p.store.ListUserV2Grants(school, username)
+		grants, err := p.store.ListUserCapGrants(school, username)
 		if err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
@@ -386,7 +388,7 @@ func (p *Proxy) adminV2(w http.ResponseWriter, r *http.Request, parts []string) 
 			p.writeJSON(w, map[string]any{"error": "invalid effect"})
 			return
 		}
-		if err := p.store.SetUserV2Grant(req.School, user, req.Capability, effect); err != nil {
+		if err := p.store.SetUserCapGrant(req.School, user, req.Capability, effect); err != nil {
 			p.writeJSON(w, map[string]any{"error": "store error"})
 			return
 		}
@@ -403,7 +405,7 @@ func (p *Proxy) adminV2(w http.ResponseWriter, r *http.Request, parts []string) 
 				p.writeJSON(w, map[string]any{"error": "school and user required"})
 				return
 			}
-			groups, err := p.store.ListUserV2Groups(school, username)
+			groups, err := p.store.ListUserCapGroups(school, username)
 			if err != nil {
 				p.writeJSON(w, map[string]any{"error": "store error"})
 				return
@@ -439,13 +441,13 @@ func (p *Proxy) adminV2(w http.ResponseWriter, r *http.Request, parts []string) 
 		}
 		switch action {
 		case "assign":
-			if err := p.store.AssignUserV2Group(req.School, user, req.GroupID); err != nil {
+			if err := p.store.AssignUserCapGroup(req.School, user, req.GroupID); err != nil {
 				p.writeJSON(w, map[string]any{"error": "store error"})
 				return
 			}
 			p.audit(r, req.School, "v2.user_group.assign", user, strconv.FormatInt(req.GroupID, 10))
 		case "unassign":
-			if err := p.store.UnassignUserV2Group(req.School, user, req.GroupID); err != nil {
+			if err := p.store.UnassignUserCapGroup(req.School, user, req.GroupID); err != nil {
 				p.writeJSON(w, map[string]any{"error": "store error"})
 				return
 			}

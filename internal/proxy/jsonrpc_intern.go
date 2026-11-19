@@ -418,6 +418,11 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	// "#anonymous#" as a pool account or owner.
 	if !isAnon {
 		_ = p.store.UpsertUser(user)
+		p.maybeClaimSetupAdmin(user.Username)
+		// Refresh admin flag in case setup claim promoted this user.
+		if isAdmin, _ := p.store.IsAdmin(user.Username); isAdmin {
+			user.Admin = true
+		}
 		_ = p.store.Touch(auth.User)
 		p.stateFor(school)
 		if isNewSchool {

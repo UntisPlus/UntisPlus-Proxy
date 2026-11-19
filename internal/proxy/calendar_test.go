@@ -476,7 +476,7 @@ func TestCalendar_ICS_StampAndSequence(t *testing.T) {
 	if _, err := st.ReplaceClassSnapshot("testschool", 5000, []store.PeriodRow{
 		{PeriodID: 1, Start: "2026-01-05T09:00:00", End: "2026-01-05T09:45:00", Subject: "Mathe", Room: "R2", Teacher: "Müller"},
 	}, 2, ""); err != nil {
-		t.Fatalf("snapshot v2: %v", err)
+		t.Fatalf("snapshot second: %v", err)
 	}
 	if got := st.ClassVersion("testschool", 5000); got != 2 {
 		t.Fatalf("class version = %d, want 2", got)

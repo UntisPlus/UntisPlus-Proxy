@@ -51,6 +51,45 @@
 
 <div class="cards" id="cards"></div>
 
+<section id="onboardingSection" style="display:none;border-color:#2f5f3a">
+  <h2>Initial onboarding</h2>
+  <p style="font-size:.86rem;color:#b5bccb;margin:.2rem 0 .8rem">
+    Complete these steps for a fresh setup. This flow avoids relying on legacy/old role defaults: configure network/trusted proxies, create/configure roles and access groups, add ntfy/webhook links, and add users/admins.
+  </p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:.7rem">
+    <div class="card" style="padding:.8rem">
+      <div class="lbl" style="font-size:.85rem;color:#e6e6e6;margin-bottom:.35rem"><b>1. True client IPs behind reverse proxy</b></div>
+      <div style="font-size:.8rem;color:#9aa0ae;margin-bottom:.4rem">If you run behind a reverse proxy/load balancer, trust its IP/CIDR so X-Forwarded-For/X-Real-IP are used for the real client IP (rate limiting, logs).</div>
+      <pre class="log" id="setupIpOut" style="max-height:9rem;margin:.3rem 0"></pre>
+      <div class="row" style="margin:.3rem 0">
+        <input id="setupTrustedProxies" placeholder="e.g. 10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.1" style="min-width:18rem;flex:1">
+        <button class="mini" onclick="saveSetupTrustedProxies()">save</button>
+        <button class="mini" onclick="loadSetupStatus()">refresh</button>
+      </div>
+      <div style="font-size:.75rem;color:#9aa0ae">Leave empty to trust no forwarded headers (direct peer IP only).</div>
+    </div>
+    <div class="card" style="padding:.8rem">
+      <div class="lbl" style="font-size:.85rem;color:#e6e6e6;margin-bottom:.35rem"><b>2. Create roles & access</b></div>
+      <div style="font-size:.8rem;color:#9aa0ae;margin-bottom:.5rem">Define capability groups, grants, role defaults, and person-type→role mappings in Access (fine-grained). Configure who can see pooled/reconstructed/boosted/raw data and other capabilities instead of relying on old roles.</div>
+      <button class="mini" onclick="document.getElementById('v2Access').scrollIntoView({behavior:'smooth'})">Open Access section</button>
+    </div>
+    <div class="card" style="padding:.8rem">
+      <div class="lbl" style="font-size:.85rem;color:#e6e6e6;margin-bottom:.35rem"><b>3. ntfy / webhooks / outage alerts</b></div>
+      <div style="font-size:.8rem;color:#9aa0ae;margin-bottom:.5rem">Add ntfy topics, webhook targets, and outage notification links for operational alerts and subscriptions.</div>
+      <div class="row"><button class="mini" onclick="document.getElementById('outageSection')?.scrollIntoView({behavior:'smooth'})">Outage alerts</button><button class="mini" onclick="scrollToSectionByTitle('Ntfy')">Ntfy</button><button class="mini" onclick="scrollToSectionByTitle('Webhooks')">Webhooks</button></div>
+    </div>
+    <div class="card" style="padding:.8rem">
+      <div class="lbl" style="font-size:.85rem;color:#e6e6e6;margin-bottom:.35rem"><b>4. Users & admins</b></div>
+      <div style="font-size:.8rem;color:#9aa0ae;margin-bottom:.5rem">Add/promote admins and manage users. On a fresh setup the first successful login can claim admin access.</div>
+      <button class="mini" onclick="document.querySelector('h2')?.scrollIntoView({behavior:'smooth'})">Open Users section</button>
+    </div>
+  </div>
+  <div class="row" style="margin-top:.8rem">
+    <button onclick="completeSetup()">Mark onboarding complete</button>
+    <span id="setupMsg" style="font-size:.8rem;color:#9aa0ae"></span>
+  </div>
+</section>
+
 <section>
   <h2>Users <button class="mini" onclick="loadUsers()">refresh</button></h2>
   <div class="row" style="margin-bottom:.5rem">
@@ -94,7 +133,7 @@
   <table id="anon"><thead><tr><th>capability</th><th>state</th></tr></thead><tbody></tbody></table>
 </section>
 
-<section>
+<section id="webhooksSection">
   <h2>Webhooks <button class="mini" onclick="loadWebhooks()">refresh</button></h2>
   <div class="row" style="margin-bottom:.5rem">
     <select id="whSchool"></select>
@@ -115,7 +154,7 @@
   <table id="webhooks"><thead><tr><th>school</th><th>element</th><th>url</th><th>by</th><th></th></tr></thead><tbody></tbody></table>
 </section>
 
-<section>
+<section id="ntfySection">
   <h2>ntfy topics <button class="mini" onclick="loadNtfy()">refresh</button></h2>
   <div class="row" style="margin-bottom:.5rem">
     <select id="ntfySchool"></select>
@@ -155,7 +194,7 @@
 
 </section>
 
-<section>
+<section id="outageSection">
   <h2>Outage alerts (ntfy) <button class="mini" onclick="loadOutageNtfy()">refresh</button></h2>
   <div class="hint" style="font-size:.75rem;color:#9aa0ae;margin-bottom:.4rem">
     Sends a push when the class poller stops reaching Untis, and another when it recovers.
@@ -300,17 +339,17 @@
 </section>
 
 <section id="v2Access">
-  <h2>V2 Access (fine-grained) <button class="mini" onclick="loadV2All()">refresh</button></h2>
+  <h2>Access (fine-grained) <button class="mini" onclick="loadAccessAll()">refresh</button></h2>
   <p style="font-size:.78rem;color:#9aa0ae;margin:0 0 .5rem">
-    v2 parallel access model: server gates, groups/grants, user grants/groups, role defaults, person-type role mappings, anonymous school profiles, and effective/"why" inspection.
-    Use CLI (<code>untisctl v2 ...</code>) for scripting; this panel is for testing/admin UI parity.
+    parallel access model: server gates, groups/grants, user grants/groups, role defaults, person-type role mappings, anonymous school profiles, and effective/"why" inspection.
+    Use CLI (<code>untisctl access ...</code>) for scripting; this panel is for testing/admin UI parity.
   </p>
 
   <div class="row" style="margin-bottom:.5rem">
     <b>Effective / why</b>
     <select id="v2School"></select>
     <input id="v2User" placeholder="username" style="width:12rem">
-    <button class="mini" onclick="loadV2Effective()">inspect</button>
+    <button class="mini" onclick="loadAccessEffective()">inspect</button>
   </div>
   <pre class="log" id="v2EffectiveOut" style="max-height:14rem">select school + user and click inspect</pre>
 
@@ -319,21 +358,21 @@
     <input id="v2GateScope" placeholder="scope (empty/global or school)" style="width:14rem">
     <input id="v2GateCap" placeholder="capability" style="width:22rem">
     <select id="v2GateEnabled"><option value="true">enabled</option><option value="false">disabled</option></select>
-    <button class="mini" onclick="setV2Gate()">set</button>
-    <button class="mini" onclick="loadV2Gates()">reload</button>
+    <button class="mini" onclick="setAccessGate()">set</button>
+    <button class="mini" onclick="loadAccessGates()">reload</button>
   </div>
   <pre class="log" id="v2GatesOut" style="max-height:10rem"></pre>
 
   <h3 style="font-size:.9rem;margin:.8rem 0 .3rem">Groups</h3>
   <div class="row" style="margin-bottom:.4rem">
     <input id="v2GroupSchool" placeholder="school scope (empty=global)" style="width:14rem">
-    <button class="mini" onclick="loadV2Groups()">list</button>
+    <button class="mini" onclick="loadCapGroups()">list</button>
     <input id="v2GroupName" placeholder="new group name" style="width:12rem">
     <input id="v2GroupDesc" placeholder="description" style="width:18rem">
-    <button class="mini" onclick="createV2Group()">create</button>
+    <button class="mini" onclick="createCapGroup()">create</button>
     <input id="v2GroupId" placeholder="group id" style="width:6rem">
-    <button class="mini" onclick="showV2Group()">show</button>
-    <button class="mini danger" onclick="deleteV2Group()">delete</button>
+    <button class="mini" onclick="showCapGroup()">show</button>
+    <button class="mini danger" onclick="deleteCapGroup()">delete</button>
   </div>
   <div class="row" style="margin-bottom:.4rem">
     <input id="v2GroupGrantId" placeholder="group id" style="width:6rem">
@@ -341,7 +380,7 @@
     <select id="v2GroupGrantEffect">
       <option value="allow">allow</option><option value="deny">deny</option><option value="inherit">inherit</option>
     </select>
-    <button class="mini" onclick="setV2GroupGrant()">set grant</button>
+    <button class="mini" onclick="setCapGroupGrant()">set grant</button>
   </div>
   <pre class="log" id="v2GroupsOut" style="max-height:12rem"></pre>
 
@@ -349,18 +388,18 @@
   <div class="row" style="margin-bottom:.4rem">
     <select id="v2UGSchool"></select>
     <input id="v2UGUser" placeholder="username" style="width:12rem">
-    <button class="mini" onclick="loadV2UserGroups()">groups</button>
-    <button class="mini" onclick="loadV2UserGrants()">direct grants</button>
+    <button class="mini" onclick="loadAccessUserGroups()">groups</button>
+    <button class="mini" onclick="loadAccessUserGrants()">direct grants</button>
     <input id="v2UGGroupId" placeholder="group id" style="width:6rem">
-    <button class="mini" onclick="assignV2UserGroup()">assign</button>
-    <button class="mini danger" onclick="unassignV2UserGroup()">unassign</button>
+    <button class="mini" onclick="assignAccessUserGroup()">assign</button>
+    <button class="mini danger" onclick="unassignAccessUserGroup()">unassign</button>
   </div>
   <div class="row" style="margin-bottom:.4rem">
     <input id="v2UGrantCap" placeholder="capability" style="width:22rem">
     <select id="v2UGrantEffect">
       <option value="allow">allow</option><option value="deny">deny</option><option value="inherit">inherit</option>
     </select>
-    <button class="mini" onclick="setV2UserGrant()">set direct grant</button>
+    <button class="mini" onclick="setAccessUserGrant()">set direct grant</button>
   </div>
   <pre class="log" id="v2UserOut" style="max-height:12rem"></pre>
 
@@ -368,39 +407,39 @@
   <div class="row" style="margin-bottom:.4rem">
     <input id="v2RDSchool" placeholder="school scope (empty=global)" style="width:14rem">
     <input id="v2RDListRole" placeholder="role (optional)" style="width:10rem">
-    <button class="mini" onclick="loadV2RoleDefaults()">list</button>
+    <button class="mini" onclick="loadAccessRoleDefaults()">list</button>
     <input id="v2RDRole" placeholder="role" style="width:8rem">
     <input id="v2RDGroupId" placeholder="group id" style="width:6rem">
     <input id="v2RDPriority" placeholder="priority" value="0" style="width:5rem">
-    <button class="mini" onclick="setV2RoleDefault()">set</button>
-    <button class="mini danger" onclick="deleteV2RoleDefault()">delete</button>
+    <button class="mini" onclick="setAccessRoleDefault()">set</button>
+    <button class="mini danger" onclick="deleteAccessRoleDefault()">delete</button>
   </div>
   <pre class="log" id="v2RoleDefaultsOut" style="max-height:10rem"></pre>
 
   <h3 style="font-size:.9rem;margin:.8rem 0 .3rem">Person type → role mappings</h3>
   <div class="row" style="margin-bottom:.4rem">
     <input id="v2PTRScope" placeholder="scope (empty=global)" style="width:14rem">
-    <button class="mini" onclick="loadV2PersonTypeRoles()">list</button>
+    <button class="mini" onclick="loadAccessPersonTypeRoles()">list</button>
     <input id="v2PTRType" placeholder="personType" style="width:7rem">
     <input id="v2PTRRole" placeholder="role" style="width:8rem">
-    <button class="mini" onclick="setV2PersonTypeRole()">set</button>
-    <button class="mini danger" onclick="deleteV2PersonTypeRole()">delete</button>
+    <button class="mini" onclick="setAccessPersonTypeRole()">set</button>
+    <button class="mini danger" onclick="deleteAccessPersonTypeRole()">delete</button>
   </div>
   <pre class="log" id="v2PTROut" style="max-height:8rem"></pre>
 
   <h3 style="font-size:.9rem;margin:.8rem 0 .3rem">Anonymous profiles (per school)</h3>
   <div class="row" style="margin-bottom:.4rem">
     <select id="v2AnonSchool"></select>
-    <button class="mini" onclick="loadV2AnonProfile()">get</button>
-    <button class="mini" onclick="refreshV2AnonProfile()">refresh probe</button>
-    <button class="mini" onclick="loadV2AnonProfiles()">list all</button>
+    <button class="mini" onclick="loadAccessAnonProfile()">get</button>
+    <button class="mini" onclick="refreshAccessAnonProfile()">refresh probe</button>
+    <button class="mini" onclick="loadAccessAnonProfiles()">list all</button>
   </div>
   <div class="row" style="margin-bottom:.4rem">
     <select id="v2AnonLoginOk"><option value="">loginOk (keep)</option><option value="true">loginOk true</option><option value="false">loginOk false</option></select>
     <input id="v2AnonClasses" placeholder="classesDisplayable csv (optional)" style="width:16rem">
     <input id="v2AnonCaps" placeholder='capabilities JSON e.g. {"classes":true}' style="width:22rem">
     <input id="v2AnonNotes" placeholder="notes" style="width:12rem">
-    <button class="mini" onclick="overrideV2AnonProfile()">save override</button>
+    <button class="mini" onclick="overrideAccessAnonProfile()">save override</button>
   </div>
   <pre class="log" id="v2AnonOut" style="max-height:12rem"></pre>
 </section>
@@ -1305,166 +1344,166 @@ function v2Show(id, obj){
   try { el.textContent = typeof obj === 'string' ? obj : JSON.stringify(obj, null, 2); }
   catch(e){ el.textContent = String(obj); }
 }
-async function loadV2Effective(){
+async function loadAccessEffective(){
   const school=($('v2School').value||defaultSchool()||'').trim();
   const user=($('v2User').value||'').trim();
   if(!school || !user){ v2Show('v2EffectiveOut','school and username required'); return; }
-  const d=await api('GET','v2/effective?school='+encodeURIComponent(school)+'&user='+encodeURIComponent(user));
+  const d=await api('GET','access/effective?school='+encodeURIComponent(school)+'&user='+encodeURIComponent(user));
   v2Show('v2EffectiveOut', d);
 }
-async function loadV2Gates(){
-  const d=await api('GET','v2/gates');
+async function loadAccessGates(){
+  const d=await api('GET','access/gates');
   v2Show('v2GatesOut', d);
 }
-async function setV2Gate(){
+async function setAccessGate(){
   const scope=($('v2GateScope').value||'').trim();
   const capability=($('v2GateCap').value||'').trim();
   const enabled=$('v2GateEnabled').value==='true';
   if(!capability){ v2Show('v2GatesOut','capability required (scope can be empty for global)'); return; }
-  const d=await api('POST','v2/gates/set',{scope:scope,capability:capability,enabled:enabled});
+  const d=await api('POST','access/gates/set',{scope:scope,capability:capability,enabled:enabled});
   v2Show('v2GatesOut', d);
-  if(d && d.ok) loadV2Gates();
+  if(d && d.ok) loadAccessGates();
 }
-async function loadV2Groups(){
+async function loadCapGroups(){
   const school=($('v2GroupSchool').value||'').trim();
-  const d=await api('GET','v2/groups?school='+encodeURIComponent(school));
+  const d=await api('GET','access/groups?school='+encodeURIComponent(school));
   v2Show('v2GroupsOut', d);
 }
-async function createV2Group(){
+async function createCapGroup(){
   const school=($('v2GroupSchool').value||'').trim();
   const name=($('v2GroupName').value||'').trim();
   const description=($('v2GroupDesc').value||'').trim();
   if(!name){ v2Show('v2GroupsOut','name required'); return; }
-  const d=await api('POST','v2/groups',{school:school,name:name,description:description});
+  const d=await api('POST','access/groups',{school:school,name:name,description:description});
   v2Show('v2GroupsOut', d);
-  if(d && d.ok) loadV2Groups();
+  if(d && d.ok) loadCapGroups();
 }
-async function showV2Group(){
+async function showCapGroup(){
   const id=parseInt($('v2GroupId').value,10);
   if(!id){ v2Show('v2GroupsOut','group id required'); return; }
-  const d=await api('GET','v2/groups/'+id);
+  const d=await api('GET','access/groups/'+id);
   v2Show('v2GroupsOut', d);
 }
-async function deleteV2Group(){
+async function deleteCapGroup(){
   const id=parseInt($('v2GroupId').value,10);
   if(!id){ v2Show('v2GroupsOut','group id required'); return; }
-  const d=await api('DELETE','v2/groups/'+id);
+  const d=await api('DELETE','access/groups/'+id);
   v2Show('v2GroupsOut', d);
-  if(d && d.ok) loadV2Groups();
+  if(d && d.ok) loadCapGroups();
 }
-async function setV2GroupGrant(){
+async function setCapGroupGrant(){
   const id=parseInt($('v2GroupGrantId').value,10);
   const capability=($('v2GroupGrantCap').value||'').trim();
   const effect=$('v2GroupGrantEffect').value;
   if(!id || !capability){ v2Show('v2GroupsOut','group id and capability required'); return; }
-  const d=await api('POST','v2/groups/'+id+'/grants',{capability:capability,effect:effect});
+  const d=await api('POST','access/groups/'+id+'/grants',{capability:capability,effect:effect});
   v2Show('v2GroupsOut', d);
 }
-async function loadV2UserGroups(){
+async function loadAccessUserGroups(){
   const school=($('v2UGSchool').value||defaultSchool()||'').trim();
   const user=($('v2UGUser').value||'').trim();
   if(!school || !user){ v2Show('v2UserOut','school and user required'); return; }
-  const d=await api('GET','v2/user-groups?school='+encodeURIComponent(school)+'&user='+encodeURIComponent(user));
+  const d=await api('GET','access/user-groups?school='+encodeURIComponent(school)+'&user='+encodeURIComponent(user));
   v2Show('v2UserOut', d);
 }
-async function loadV2UserGrants(){
+async function loadAccessUserGrants(){
   const school=($('v2UGSchool').value||defaultSchool()||'').trim();
   const user=($('v2UGUser').value||'').trim();
   if(!school || !user){ v2Show('v2UserOut','school and user required'); return; }
-  const d=await api('GET','v2/grants?school='+encodeURIComponent(school)+'&user='+encodeURIComponent(user));
+  const d=await api('GET','access/grants?school='+encodeURIComponent(school)+'&user='+encodeURIComponent(user));
   v2Show('v2UserOut', d);
 }
-async function assignV2UserGroup(){
+async function assignAccessUserGroup(){
   const school=($('v2UGSchool').value||defaultSchool()||'').trim();
   const user=($('v2UGUser').value||'').trim();
   const groupId=parseInt($('v2UGGroupId').value,10);
   if(!school || !user || !groupId){ v2Show('v2UserOut','school, user, group id required'); return; }
-  const d=await api('POST','v2/user-groups/assign',{school:school,user:user,groupId:groupId});
+  const d=await api('POST','access/user-groups/assign',{school:school,user:user,groupId:groupId});
   v2Show('v2UserOut', d);
 }
-async function unassignV2UserGroup(){
+async function unassignAccessUserGroup(){
   const school=($('v2UGSchool').value||defaultSchool()||'').trim();
   const user=($('v2UGUser').value||'').trim();
   const groupId=parseInt($('v2UGGroupId').value,10);
   if(!school || !user || !groupId){ v2Show('v2UserOut','school, user, group id required'); return; }
-  const d=await api('POST','v2/user-groups/unassign',{school:school,user:user,groupId:groupId});
+  const d=await api('POST','access/user-groups/unassign',{school:school,user:user,groupId:groupId});
   v2Show('v2UserOut', d);
 }
-async function setV2UserGrant(){
+async function setAccessUserGrant(){
   const school=($('v2UGSchool').value||defaultSchool()||'').trim();
   const user=($('v2UGUser').value||'').trim();
   const capability=($('v2UGrantCap').value||'').trim();
   const effect=$('v2UGrantEffect').value;
   if(!school || !user || !capability){ v2Show('v2UserOut','school, user, capability required'); return; }
-  const d=await api('POST','v2/grant',{school:school,user:user,capability:capability,effect:effect});
+  const d=await api('POST','access/grant',{school:school,user:user,capability:capability,effect:effect});
   v2Show('v2UserOut', d);
 }
-async function loadV2RoleDefaults(){
+async function loadAccessRoleDefaults(){
   const school=($('v2RDSchool').value||'').trim();
   const role=($('v2RDListRole').value||'').trim();
-  let path='v2/role-defaults?school='+encodeURIComponent(school);
+  let path='access/role-defaults?school='+encodeURIComponent(school);
   if(role) path += '&role='+encodeURIComponent(role);
   const d=await api('GET', path);
   v2Show('v2RoleDefaultsOut', d);
 }
-async function setV2RoleDefault(){
+async function setAccessRoleDefault(){
   const school=($('v2RDSchool').value||'').trim();
   const role=($('v2RDRole').value||'').trim();
   const groupId=parseInt($('v2RDGroupId').value,10);
   const priority=parseInt($('v2RDPriority').value||'0',10)||0;
   if(!role || !groupId){ v2Show('v2RoleDefaultsOut','role and group id required'); return; }
-  const d=await api('POST','v2/role-defaults/set',{school:school,role:role,groupId:groupId,priority:priority});
+  const d=await api('POST','access/role-defaults/set',{school:school,role:role,groupId:groupId,priority:priority});
   v2Show('v2RoleDefaultsOut', d);
-  if(d && d.ok) loadV2RoleDefaults();
+  if(d && d.ok) loadAccessRoleDefaults();
 }
-async function deleteV2RoleDefault(){
+async function deleteAccessRoleDefault(){
   const school=($('v2RDSchool').value||'').trim();
   const role=($('v2RDRole').value||'').trim();
   const groupId=parseInt($('v2RDGroupId').value,10);
   if(!role || !groupId){ v2Show('v2RoleDefaultsOut','role and group id required'); return; }
-  const d=await api('DELETE','v2/role-defaults?school='+encodeURIComponent(school)+'&role='+encodeURIComponent(role)+'&groupId='+groupId);
+  const d=await api('DELETE','access/role-defaults?school='+encodeURIComponent(school)+'&role='+encodeURIComponent(role)+'&groupId='+groupId);
   v2Show('v2RoleDefaultsOut', d);
-  if(d && d.ok) loadV2RoleDefaults();
+  if(d && d.ok) loadAccessRoleDefaults();
 }
-async function loadV2PersonTypeRoles(){
+async function loadAccessPersonTypeRoles(){
   const scope=($('v2PTRScope').value||'').trim();
-  const d=await api('GET','v2/person-type-roles?scope='+encodeURIComponent(scope));
+  const d=await api('GET','access/person-type-roles?scope='+encodeURIComponent(scope));
   v2Show('v2PTROut', d);
 }
-async function setV2PersonTypeRole(){
+async function setAccessPersonTypeRole(){
   const scope=($('v2PTRScope').value||'').trim();
   const personType=parseInt($('v2PTRType').value,10);
   const role=($('v2PTRRole').value||'').trim();
   if(isNaN(personType) || !role){ v2Show('v2PTROut','personType and role required'); return; }
-  const d=await api('POST','v2/person-type-roles',{scope:scope,personType:personType,role:role});
+  const d=await api('POST','access/person-type-roles',{scope:scope,personType:personType,role:role});
   v2Show('v2PTROut', d);
-  if(d && d.ok) loadV2PersonTypeRoles();
+  if(d && d.ok) loadAccessPersonTypeRoles();
 }
-async function deleteV2PersonTypeRole(){
+async function deleteAccessPersonTypeRole(){
   const scope=($('v2PTRScope').value||'').trim();
   const personType=parseInt($('v2PTRType').value,10);
   if(isNaN(personType)){ v2Show('v2PTROut','personType required'); return; }
-  const d=await api('DELETE','v2/person-type-roles?scope='+encodeURIComponent(scope)+'&personType='+personType);
+  const d=await api('DELETE','access/person-type-roles?scope='+encodeURIComponent(scope)+'&personType='+personType);
   v2Show('v2PTROut', d);
-  if(d && d.ok) loadV2PersonTypeRoles();
+  if(d && d.ok) loadAccessPersonTypeRoles();
 }
-async function loadV2AnonProfiles(){
-  const d=await api('GET','v2/anon-profiles');
+async function loadAccessAnonProfiles(){
+  const d=await api('GET','access/anon-profiles');
   v2Show('v2AnonOut', d);
 }
-async function loadV2AnonProfile(){
+async function loadAccessAnonProfile(){
   const school=($('v2AnonSchool').value||defaultSchool()||'').trim();
   if(!school){ v2Show('v2AnonOut','school required'); return; }
   const d=await api('GET','schools/'+encodeURIComponent(school)+'/anon-profile');
   v2Show('v2AnonOut', d);
 }
-async function refreshV2AnonProfile(){
+async function refreshAccessAnonProfile(){
   const school=($('v2AnonSchool').value||defaultSchool()||'').trim();
   if(!school){ v2Show('v2AnonOut','school required'); return; }
   const d=await api('POST','schools/'+encodeURIComponent(school)+'/anon-profile/refresh');
   v2Show('v2AnonOut', d);
 }
-async function overrideV2AnonProfile(){
+async function overrideAccessAnonProfile(){
   const school=($('v2AnonSchool').value||defaultSchool()||'').trim();
   if(!school){ v2Show('v2AnonOut','school required'); return; }
   const body={};
@@ -1484,17 +1523,59 @@ async function overrideV2AnonProfile(){
   const d=await api('POST','schools/'+encodeURIComponent(school)+'/anon-profile/override', body);
   v2Show('v2AnonOut', d);
 }
-async function loadV2All(){
-  try { await loadV2Gates(); } catch(e){ v2Show('v2GatesOut','load failed: '+e.message); }
-  try { await loadV2AnonProfiles(); } catch(e){ v2Show('v2AnonOut','load failed: '+e.message); }
+async function loadAccessAll(){
+  try { await loadAccessGates(); } catch(e){ v2Show('v2GatesOut','load failed: '+e.message); }
+  try { await loadAccessAnonProfiles(); } catch(e){ v2Show('v2AnonOut','load failed: '+e.message); }
+}
+
+
+async function loadSetupStatus(){
+  try {
+    const d = await api('GET','setup');
+    const sec = $('onboardingSection');
+    if(sec) sec.style.display = (d && d.setupCompleted===false) ? '' : 'none';
+    if($('setupTrustedProxies') && d && typeof d.trustedProxies==='string') $('setupTrustedProxies').value = d.trustedProxies;
+    if($('setupIpOut')) $('setupIpOut').textContent = JSON.stringify(d && d.clientIP ? d.clientIP : d, null, 2);
+    if($('setupMsg') && d){
+      $('setupMsg').textContent = d.setupCompleted ? 'Onboarding completed.' : (d.canClaimAdmin ? 'Waiting for first admin login/claim if needed.' : 'Setup pending.');
+    }
+    return d;
+  } catch(e){
+    if($('setupIpOut')) $('setupIpOut').textContent = 'setup status unavailable: '+e.message;
+    return null;
+  }
+}
+async function saveSetupTrustedProxies(){
+  try {
+    const trustedProxies = ($('setupTrustedProxies').value || '').trim();
+    const d = await api('POST','setup/trusted-proxies', {trustedProxies});
+    if($('setupTrustedProxies')) $('setupTrustedProxies').value = d.trustedProxies || '';
+    if($('setupIpOut')) $('setupIpOut').textContent = JSON.stringify(d.clientIP || d, null, 2);
+    if($('setupMsg')) $('setupMsg').textContent = 'Trusted proxies saved. If you are behind a reverse proxy, reload this page through it to verify resolved IP.';
+    log('trusted proxies saved');
+  } catch(e){ log('trusted proxies save failed: '+e.message); if($('setupMsg')) $('setupMsg').textContent = 'Save failed: '+e.message; }
+}
+async function completeSetup(){
+  try {
+    await api('POST','setup/complete');
+    if($('setupMsg')) $('setupMsg').textContent = 'Onboarding marked complete.';
+    await loadSetupStatus();
+    log('setup completed');
+  } catch(e){ log('complete setup failed: '+e.message); if($('setupMsg')) $('setupMsg').textContent = 'Complete failed: '+e.message; }
+}
+function scrollToSectionByTitle(title){
+  const hs = Array.from(document.querySelectorAll('section h2'));
+  const h = hs.find(x => (x.textContent||'').toLowerCase().includes(String(title).toLowerCase()));
+  if(h && h.closest('section')) h.closest('section').scrollIntoView({behavior:'smooth'});
 }
 
 async function refreshAll(){
   const mark = new Date().toTimeString().slice(0,8);
   const hint = $('refreshHint'); if(hint) hint.textContent = 'last refresh '+mark;
+  try { await loadSetupStatus(); } catch(e){ log('setup: '+e); }
   const jobs = {users:loadUsers, webhooks:loadWebhooks,
                 ntfy:loadNtfy, outage:loadOutageNtfy, tokens:loadTokens, pool:loadPool, roommap:loadRoomMap, audit:loadAudit,
-                anonymous:loadAnonymous, defaultPerms:loadDefaultPerms, v2:loadV2All};
+                anonymous:loadAnonymous, defaultPerms:loadDefaultPerms, v2:loadAccessAll};
   // The school list has to land before the cards render, because rendering the
   // cards is what fills the school selectors.
   try { await loadSchools(); } catch(e){ log('schools: '+e); }

@@ -127,14 +127,14 @@ func (p *Proxy) canManageTechnik(u *store.User, school string) bool {
 }
 
 // compat coarse helpers derived from v2 effective state (used during transition)
-func (p *Proxy) isBoostedV2(u *store.User, school string) bool {
+func (p *Proxy) hasBoostedAccess(u *store.User, school string) bool {
 	if u == nil || u.Username == "#anonymous#" {
 		return false
 	}
 	return p.canViewClassBoosted(u, school) || p.canViewTeacherBoosted(u, school) || p.canViewRoomBoosted(u, school) || p.canViewSubjectBoosted(u, school) || p.canViewPersonalBoosted(u, school) || p.canWriteAbsence(u, school) || p.canWriteLesson(u, school)
 }
 
-func (p *Proxy) isEditorV2(u *store.User, school string) bool {
+func (p *Proxy) hasEditorAccess(u *store.User, school string) bool {
 	if u == nil || u.Username == "#anonymous#" {
 		return false
 	}
@@ -142,7 +142,7 @@ func (p *Proxy) isEditorV2(u *store.User, school string) bool {
 }
 
 // legacy string-username helpers (best effort; prefer user-aware helpers)
-func (p *Proxy) boostedV2(username string) bool {
+func (p *Proxy) userHasBoostedAccess(username string) bool {
 	if username == "" || username == "#anonymous#" {
 		return false
 	}
@@ -150,10 +150,10 @@ func (p *Proxy) boostedV2(username string) bool {
 	if err != nil || u == nil {
 		return p.isBoosted(username)
 	}
-	return p.isBoostedV2(u, u.School)
+	return p.hasBoostedAccess(u, u.School)
 }
 
-func (p *Proxy) editorV2(username string) bool {
+func (p *Proxy) userHasEditorAccess(username string) bool {
 	if username == "" || username == "#anonymous#" {
 		return false
 	}
@@ -161,7 +161,7 @@ func (p *Proxy) editorV2(username string) bool {
 	if err != nil || u == nil {
 		return p.isEditor(username)
 	}
-	return p.isEditorV2(u, u.School)
+	return p.hasEditorAccess(u, u.School)
 }
 
 func (p *Proxy) canBoostedRawForTimetable(u *store.User, school, reqType string, own bool) bool {
@@ -439,7 +439,7 @@ func (p *Proxy) canWatchChangesTarget(u *store.User, school, et string, eid int6
 }
 
 func (p *Proxy) calendarHasAccessibleTargets(u *store.User, school string, includeTechnik bool) bool {
-	opts := p.subscriptionOptionsV2(school, u, includeTechnik, true)
+	opts := p.subscriptionOptionsForCaps(school, u, includeTechnik, true)
 	if _, ok := opts["personal"]; ok {
 		return true
 	}

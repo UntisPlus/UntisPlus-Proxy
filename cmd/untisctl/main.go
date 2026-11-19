@@ -136,8 +136,8 @@ Run 'untisctl <command> -h' for per-command flags.
 		cmdPerms(st, flag.Args()[1:])
 	case "anonymous":
 		cmdAnonymous(st, flag.Args()[1:])
-	case "v2":
-		cmdV2(st, flag.Args()[1:])
+	case "access", "v2":
+		cmdAccess(st, flag.Args()[1:])
 	case "users":
 		cmdUsers(st, flag.Args()[1:], *server, *school)
 	case "pool":
@@ -323,35 +323,35 @@ func cmdAnonymous(st *store.Store, args []string) {
 	}
 }
 
-func cmdV2(st *store.Store, args []string) {
+func cmdAccess(st *store.Store, args []string) {
 	if len(args) == 0 {
-		fatal("v2 requires a subcommand (anon-profile|gates|groups|effective|grants|grant|user-groups|role-defaults|person-type-roles)")
+		fatal("access requires a subcommand (anon-profile|gates|groups|effective|grants|grant|user-groups|role-defaults|person-type-roles)")
 	}
 	switch args[0] {
 	case "anon-profile", "anon-profiles":
-		cmdV2AnonProfile(st, args[1:])
+		cmdAccessAnonProfile(st, args[1:])
 	case "gates":
-		cmdV2Gates(st, args[1:])
+		cmdAccessGates(st, args[1:])
 	case "groups":
-		cmdV2Groups(st, args[1:])
+		cmdCapGroups(st, args[1:])
 	case "effective", "why":
-		cmdV2Effective(st, args[1:])
+		cmdAccessEffective(st, args[1:])
 	case "grants":
-		cmdV2Grants(st, args[1:])
+		cmdAccessGrants(st, args[1:])
 	case "grant":
-		cmdV2GrantSet(st, args[1:])
+		cmdAccessGrantSet(st, args[1:])
 	case "user-groups":
-		cmdV2UserGroups(st, args[1:])
+		cmdAccessUserGroups(st, args[1:])
 	case "role-defaults":
-		cmdV2RoleDefaults(st, args[1:])
+		cmdAccessRoleDefaults(st, args[1:])
 	case "person-type-roles", "role-mappings", "person-type-role":
-		cmdV2PersonTypeRoles(st, args[1:])
+		cmdAccessPersonTypeRoles(st, args[1:])
 	default:
-		fatal("unknown v2 subcommand %q", args[0])
+		fatal("unknown access subcommand %q", args[0])
 	}
 }
 
-func cmdV2Groups(st *store.Store, args []string) {
+func cmdCapGroups(st *store.Store, args []string) {
 	if len(args) == 0 {
 		args = []string{"list"}
 	}
@@ -361,9 +361,9 @@ func cmdV2Groups(st *store.Store, args []string) {
 		if len(args) > 1 {
 			school = args[1]
 		}
-		groups, err := st.ListV2Groups(school)
+		groups, err := st.ListCapGroups(school)
 		if err != nil {
-			fatal("list v2 groups: %v", err)
+			fatal("list access groups: %v", err)
 		}
 		if len(groups) == 0 {
 			fmt.Println("no groups")
@@ -375,13 +375,13 @@ func cmdV2Groups(st *store.Store, args []string) {
 		}
 	case "show":
 		if len(args) < 2 {
-			fatal("v2 groups show requires GROUP_ID")
+			fatal("access groups show requires GROUP_ID")
 		}
 		id, err := strconv.ParseInt(args[1], 10, 64)
 		if err != nil {
 			fatal("invalid group id: %v", err)
 		}
-		g, grants, err := st.GetV2Group(id)
+		g, grants, err := st.GetCapGroup(id)
 		if err != nil || g == nil {
 			fatal("group not found: %d", id)
 		}
@@ -402,7 +402,7 @@ func cmdV2Groups(st *store.Store, args []string) {
 		}
 	case "create":
 		if len(args) < 3 {
-			fatal("v2 groups create requires SCHOOL NAME [DESCRIPTION...] (use empty school \"\" for global)")
+			fatal("access groups create requires SCHOOL NAME [DESCRIPTION...] (use empty school \"\" for global)")
 		}
 		school := args[1]
 		name := args[2]
@@ -410,47 +410,47 @@ func cmdV2Groups(st *store.Store, args []string) {
 		if len(args) > 3 {
 			desc = strings.Join(args[3:], " ")
 		}
-		id, err := st.CreateV2Group(school, name, desc)
+		id, err := st.CreateCapGroup(school, name, desc)
 		if err != nil {
 			fatal("create group: %v", err)
 		}
 		fmt.Printf("created group id=%d school=%q name=%q\n", id, school, name)
 	case "delete":
 		if len(args) < 2 {
-			fatal("v2 groups delete requires GROUP_ID")
+			fatal("access groups delete requires GROUP_ID")
 		}
 		id, err := strconv.ParseInt(args[1], 10, 64)
 		if err != nil {
 			fatal("invalid group id: %v", err)
 		}
-		if err := st.DeleteV2Group(id); err != nil {
+		if err := st.DeleteCapGroup(id); err != nil {
 			fatal("delete group: %v", err)
 		}
 		fmt.Printf("deleted group %d\n", id)
 	case "grant":
-		// v2 groups grant GROUP_ID CAPABILITY allow|deny|inherit
+		// access groups grant GROUP_ID CAPABILITY allow|deny|inherit
 		if len(args) < 4 {
-			fatal("v2 groups grant requires GROUP_ID CAPABILITY allow|deny|inherit")
+			fatal("access groups grant requires GROUP_ID CAPABILITY allow|deny|inherit")
 		}
 		id, err := strconv.ParseInt(args[1], 10, 64)
 		if err != nil {
 			fatal("invalid group id: %v", err)
 		}
 		cap := args[2]
-		effect, ok := parseV2EffectArg(args[3])
+		effect, ok := parseEffectArg(args[3])
 		if !ok {
 			fatal("invalid effect %q (use allow|deny|inherit)", args[3])
 		}
-		if err := st.SetV2GroupGrant(id, cap, effect); err != nil {
+		if err := st.SetCapGroupGrant(id, cap, effect); err != nil {
 			fatal("set group grant: %v", err)
 		}
 		fmt.Printf("set group grant group=%d cap=%s effect=%d\n", id, cap, effect)
 	default:
 		// backward compat: treat single arg as school for list
 		if len(args) == 1 {
-			groups, err := st.ListV2Groups(args[0])
+			groups, err := st.ListCapGroups(args[0])
 			if err != nil {
-				fatal("list v2 groups: %v", err)
+				fatal("list access groups: %v", err)
 			}
 			if len(groups) == 0 {
 				fmt.Println("no groups")
@@ -466,7 +466,7 @@ func cmdV2Groups(st *store.Store, args []string) {
 	}
 }
 
-func parseV2EffectArg(s string) (int, bool) {
+func parseEffectArg(s string) (int, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case "allow", "grant", "1", "true":
 		return 1, true
@@ -478,9 +478,9 @@ func parseV2EffectArg(s string) (int, bool) {
 	return 0, false
 }
 
-func cmdV2Effective(st *store.Store, args []string) {
+func cmdAccessEffective(st *store.Store, args []string) {
 	if len(args) < 2 {
-		fatal("v2 effective/why requires SCHOOL USERNAME")
+		fatal("access effective/why requires SCHOOL USERNAME")
 	}
 	school, username := args[0], args[1]
 	u, err := st.GetUser(username)
@@ -492,7 +492,7 @@ func cmdV2Effective(st *store.Store, args []string) {
 		fatal("resolve effective: %v", err)
 	}
 	fmt.Printf("user=%s school=%s role=%s\n", username, school, res.Role)
-	groups, _ := st.ListUserV2Groups(school, username)
+	groups, _ := st.ListUserCapGroups(school, username)
 	fmt.Printf("groups:")
 	for _, g := range groups {
 		fmt.Printf(" %s(%d)", g.Name, g.ID)
@@ -534,18 +534,18 @@ func cmdV2Effective(st *store.Store, args []string) {
 	}
 }
 
-func cmdV2Grants(st *store.Store, args []string) {
+func cmdAccessGrants(st *store.Store, args []string) {
 	if len(args) < 2 {
-		fatal("v2 grants requires list SCHOOL USERNAME")
+		fatal("access grants requires list SCHOOL USERNAME")
 	}
 	if args[0] == "list" {
 		args = args[1:]
 		if len(args) < 2 {
-			fatal("v2 grants list requires SCHOOL USERNAME")
+			fatal("access grants list requires SCHOOL USERNAME")
 		}
 	}
 	school, username := args[0], args[1]
-	grants, err := st.ListUserV2Grants(school, username)
+	grants, err := st.ListUserCapGrants(school, username)
 	if err != nil {
 		fatal("list user grants: %v", err)
 	}
@@ -565,14 +565,14 @@ func cmdV2Grants(st *store.Store, args []string) {
 	}
 }
 
-func cmdV2GrantSet(st *store.Store, args []string) {
+func cmdAccessGrantSet(st *store.Store, args []string) {
 	if len(args) < 4 {
-		fatal("v2 grant set requires SCHOOL USERNAME CAPABILITY allow|deny|inherit")
+		fatal("access grant set requires SCHOOL USERNAME CAPABILITY allow|deny|inherit")
 	}
 	if args[0] == "set" {
 		args = args[1:]
 		if len(args) < 4 {
-			fatal("v2 grant set requires SCHOOL USERNAME CAPABILITY allow|deny|inherit")
+			fatal("access grant set requires SCHOOL USERNAME CAPABILITY allow|deny|inherit")
 		}
 	}
 	school, username, cap, effStr := args[0], args[1], args[2], strings.ToLower(args[3])
@@ -587,22 +587,22 @@ func cmdV2GrantSet(st *store.Store, args []string) {
 	default:
 		fatal("invalid effect %q (use allow|deny|inherit)", effStr)
 	}
-	if err := st.SetUserV2Grant(school, username, cap, effect); err != nil {
+	if err := st.SetUserCapGrant(school, username, cap, effect); err != nil {
 		fatal("set user grant: %v", err)
 	}
 	fmt.Printf("set direct grant school=%s user=%s cap=%s effect=%d\n", school, username, cap, effect)
 }
 
-func cmdV2UserGroups(st *store.Store, args []string) {
+func cmdAccessUserGroups(st *store.Store, args []string) {
 	if len(args) == 0 {
-		fatal("v2 user-groups requires a subcommand (list|assign|unassign)")
+		fatal("access user-groups requires a subcommand (list|assign|unassign)")
 	}
 	switch args[0] {
 	case "list":
 		if len(args) < 3 {
-			fatal("v2 user-groups list requires SCHOOL USERNAME")
+			fatal("access user-groups list requires SCHOOL USERNAME")
 		}
-		groups, err := st.ListUserV2Groups(args[1], args[2])
+		groups, err := st.ListUserCapGroups(args[1], args[2])
 		if err != nil {
 			fatal("list user groups: %v", err)
 		}
@@ -615,36 +615,36 @@ func cmdV2UserGroups(st *store.Store, args []string) {
 		}
 	case "assign":
 		if len(args) < 4 {
-			fatal("v2 user-groups assign requires SCHOOL USERNAME GROUP_ID")
+			fatal("access user-groups assign requires SCHOOL USERNAME GROUP_ID")
 		}
 		gid, err := strconv.ParseInt(args[3], 10, 64)
 		if err != nil {
 			fatal("invalid group id: %v", err)
 		}
-		if err := st.AssignUserV2Group(args[1], args[2], gid); err != nil {
+		if err := st.AssignUserCapGroup(args[1], args[2], gid); err != nil {
 			fatal("assign user group: %v", err)
 		}
 		fmt.Printf("assigned group %d to %s (%s)\n", gid, args[2], args[1])
 	case "unassign":
 		if len(args) < 4 {
-			fatal("v2 user-groups unassign requires SCHOOL USERNAME GROUP_ID")
+			fatal("access user-groups unassign requires SCHOOL USERNAME GROUP_ID")
 		}
 		gid, err := strconv.ParseInt(args[3], 10, 64)
 		if err != nil {
 			fatal("invalid group id: %v", err)
 		}
-		if err := st.UnassignUserV2Group(args[1], args[2], gid); err != nil {
+		if err := st.UnassignUserCapGroup(args[1], args[2], gid); err != nil {
 			fatal("unassign user group: %v", err)
 		}
 		fmt.Printf("unassigned group %d from %s (%s)\n", gid, args[2], args[1])
 	default:
-		fatal("unknown v2 user-groups subcommand %q", args[0])
+		fatal("unknown access user-groups subcommand %q", args[0])
 	}
 }
 
-func cmdV2RoleDefaults(st *store.Store, args []string) {
+func cmdAccessRoleDefaults(st *store.Store, args []string) {
 	if len(args) == 0 {
-		fatal("v2 role-defaults requires a subcommand (list|set|delete)")
+		fatal("access role-defaults requires a subcommand (list|set|delete)")
 	}
 	switch args[0] {
 	case "list":
@@ -676,7 +676,7 @@ func cmdV2RoleDefaults(st *store.Store, args []string) {
 		}
 	case "set":
 		if len(args) < 5 {
-			fatal("v2 role-defaults set requires SCHOOL ROLE GROUP_ID PRIORITY")
+			fatal("access role-defaults set requires SCHOOL ROLE GROUP_ID PRIORITY")
 		}
 		gid, err := strconv.ParseInt(args[3], 10, 64)
 		if err != nil {
@@ -692,7 +692,7 @@ func cmdV2RoleDefaults(st *store.Store, args []string) {
 		fmt.Printf("set role default school=%s role=%s group=%d priority=%d\n", args[1], args[2], gid, pri)
 	case "delete", "unset":
 		if len(args) < 4 {
-			fatal("v2 role-defaults delete requires SCHOOL ROLE GROUP_ID")
+			fatal("access role-defaults delete requires SCHOOL ROLE GROUP_ID")
 		}
 		gid, err := strconv.ParseInt(args[3], 10, 64)
 		if err != nil {
@@ -703,13 +703,13 @@ func cmdV2RoleDefaults(st *store.Store, args []string) {
 		}
 		fmt.Printf("deleted role default school=%s role=%s group=%d\n", args[1], args[2], gid)
 	default:
-		fatal("unknown v2 role-defaults subcommand %q (use list|set|delete)", args[0])
+		fatal("unknown access role-defaults subcommand %q (use list|set|delete)", args[0])
 	}
 }
 
-func cmdV2PersonTypeRoles(st *store.Store, args []string) {
+func cmdAccessPersonTypeRoles(st *store.Store, args []string) {
 	if len(args) == 0 {
-		fatal("v2 person-type-roles requires a subcommand (list|set|delete)")
+		fatal("access person-type-roles requires a subcommand (list|set|delete)")
 	}
 	switch args[0] {
 	case "list":
@@ -731,7 +731,7 @@ func cmdV2PersonTypeRoles(st *store.Store, args []string) {
 		}
 	case "set":
 		if len(args) < 4 {
-			fatal("v2 person-type-roles set requires SCOPE PERSON_TYPE ROLE")
+			fatal("access person-type-roles set requires SCOPE PERSON_TYPE ROLE")
 		}
 		pt, err := strconv.ParseInt(args[2], 10, 64)
 		if err != nil {
@@ -743,7 +743,7 @@ func cmdV2PersonTypeRoles(st *store.Store, args []string) {
 		fmt.Printf("set person type role scope=%q personType=%d role=%s\n", args[1], pt, access.NormalizeRole(args[3]))
 	case "delete":
 		if len(args) < 3 {
-			fatal("v2 person-type-roles delete requires SCOPE PERSON_TYPE")
+			fatal("access person-type-roles delete requires SCOPE PERSON_TYPE")
 		}
 		pt, err := strconv.ParseInt(args[2], 10, 64)
 		if err != nil {
@@ -754,13 +754,13 @@ func cmdV2PersonTypeRoles(st *store.Store, args []string) {
 		}
 		fmt.Printf("deleted person type role scope=%q personType=%d\n", args[1], pt)
 	default:
-		fatal("unknown v2 person-type-roles subcommand %q (use list|set|delete)", args[0])
+		fatal("unknown access person-type-roles subcommand %q (use list|set|delete)", args[0])
 	}
 }
 
-func cmdV2AnonProfile(st *store.Store, args []string) {
+func cmdAccessAnonProfile(st *store.Store, args []string) {
 	if len(args) == 0 {
-		fatal("v2 anon-profile requires a subcommand (list|show|clear)")
+		fatal("access anon-profile requires a subcommand (list|show|clear)")
 	}
 	switch args[0] {
 	case "list":
@@ -781,7 +781,7 @@ func cmdV2AnonProfile(st *store.Store, args []string) {
 		}
 	case "show":
 		if len(args) < 2 {
-			fatal("v2 anon-profile show requires SCHOOL")
+			fatal("access anon-profile show requires SCHOOL")
 		}
 		prof, err := st.GetSchoolAnonProfile(args[1])
 		if err != nil {
@@ -800,20 +800,20 @@ func cmdV2AnonProfile(st *store.Store, args []string) {
 		fmt.Println(string(b))
 	case "clear":
 		if len(args) < 2 {
-			fatal("v2 anon-profile clear requires SCHOOL")
+			fatal("access anon-profile clear requires SCHOOL")
 		}
 		if err := st.DeleteSchoolAnonProfile(args[1]); err != nil {
 			fatal("delete anon profile: %v", err)
 		}
 		fmt.Printf("cleared anon profile for %s\n", args[1])
 	default:
-		fatal("unknown v2 anon-profile subcommand %q", args[0])
+		fatal("unknown access anon-profile subcommand %q", args[0])
 	}
 }
 
-func cmdV2Gates(st *store.Store, args []string) {
+func cmdAccessGates(st *store.Store, args []string) {
 	if len(args) == 0 {
-		fatal("v2 gates requires a subcommand (list|set)")
+		fatal("access gates requires a subcommand (list|set)")
 	}
 	switch args[0] {
 	case "list":
@@ -831,7 +831,7 @@ func cmdV2Gates(st *store.Store, args []string) {
 		}
 	case "set":
 		if len(args) < 4 {
-			fatal("v2 gates set requires SCOPE CAPABILITY true|false")
+			fatal("access gates set requires SCOPE CAPABILITY true|false")
 		}
 		scope := args[1]
 		cap := args[2]
@@ -844,7 +844,7 @@ func cmdV2Gates(st *store.Store, args []string) {
 		}
 		fmt.Printf("set gate scope=%s cap=%s enabled=%v\n", scope, cap, v)
 	default:
-		fatal("unknown v2 gates subcommand %q", args[0])
+		fatal("unknown access gates subcommand %q", args[0])
 	}
 }
 

@@ -103,7 +103,7 @@ func (p *Proxy) handleSubsWebhooks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	canAll := p.isAdmin(u.Username) || p.editorV2(u.Username) || p.boostedV2(u.Username)
+	canAll := p.isAdmin(u.Username) || p.userHasEditorAccess(u.Username) || p.userHasBoostedAccess(u.Username)
 
 	if r.Method == http.MethodGet {
 		hooks, err := p.store.ListWebhooks(school)
@@ -268,7 +268,7 @@ func (p *Proxy) handleSubsNtfy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	canAll := p.isAdmin(u.Username) || p.editorV2(u.Username) || p.boostedV2(u.Username)
+	canAll := p.isAdmin(u.Username) || p.userHasEditorAccess(u.Username) || p.userHasBoostedAccess(u.Username)
 
 	if r.Method == http.MethodGet {
 		topics, err := p.store.ListNtfyTopics(school)

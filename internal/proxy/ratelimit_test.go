@@ -99,13 +99,38 @@ func TestLoginRateLimitCanBeDisabled(t *testing.T) {
 	}
 }
 
-// TestClientIPIgnoresForwardedFor: trusting a client-written header would let an
-// attacker reset the per-source counter on every attempt.
+// TestClientIPIgnoresForwardedFor: without trusted proxies, client-written
+// forwarded headers must be ignored so an attacker cannot reset the per-source
+// counter on every attempt.
 func TestClientIPIgnoresForwardedFor(t *testing.T) {
+	p, _ := newTestProxy(t)
 	req := httptest.NewRequest("POST", "/", nil)
 	req.RemoteAddr = "198.51.100.7:1234"
 	req.Header.Set("X-Forwarded-For", "1.2.3.4")
-	if got := clientIP(req.RemoteAddr); got != "198.51.100.7" {
-		t.Errorf("clientIP = %q, want the socket address", got)
+	if got := p.realClientIP(req); got != "198.51.100.7" {
+		t.Errorf("realClientIP = %q, want the socket address", got)
+	}
+}
+
+// TestClientIPUsesForwardedForFromTrustedProxy verifies real client IP is taken
+// from forwarded headers only when the direct peer is a configured trusted proxy.
+func TestClientIPUsesForwardedForFromTrustedProxy(t *testing.T) {
+	p, _ := newTestProxy(t)
+	if err := p.SetTrustedProxies("10.0.0.0/8"); err != nil {
+		t.Fatalf("SetTrustedProxies: %v", err)
+	}
+	req := httptest.NewRequest("POST", "/", nil)
+	req.RemoteAddr = "10.2.3.4:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9, 10.2.3.4")
+	if got := p.realClientIP(req); got != "203.0.113.9" {
+		t.Errorf("realClientIP = %q, want forwarded client 203.0.113.9", got)
+	}
+
+	// Untrusted direct peer must not be able to spoof forwarded headers.
+	req2 := httptest.NewRequest("POST", "/", nil)
+	req2.RemoteAddr = "198.51.100.7:1234"
+	req2.Header.Set("X-Forwarded-For", "203.0.113.9")
+	if got := p.realClientIP(req2); got != "198.51.100.7" {
+		t.Errorf("realClientIP = %q, want socket address for untrusted peer", got)
 	}
 }

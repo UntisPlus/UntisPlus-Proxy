@@ -415,10 +415,10 @@ func (p *Proxy) canMintElement(u *store.User, elType string) bool {
 // target accessibility.
 func (p *Proxy) subscriptionOptions(school string, u *store.User, includeTechnik bool) map[string]any {
 	// calendar/options callers historically included Technik when allowed.
-	return p.subscriptionOptionsV2(school, u, includeTechnik, true)
+	return p.subscriptionOptionsForCaps(school, u, includeTechnik, true)
 }
 
-func (p *Proxy) subscriptionOptionsV2(school string, u *store.User, includeTechnik bool, calendarCaps bool) map[string]any {
+func (p *Proxy) subscriptionOptionsForCaps(school string, u *store.User, includeTechnik bool, calendarCaps bool) map[string]any {
 	var teachersMD, roomsMD, subjectsMD, klassenMD map[int64]string
 	if md := p.masterData(school); md != nil {
 		teachersMD, roomsMD, subjectsMD, klassenMD = md.teachers, md.rooms, md.subjects, md.klassen
@@ -597,7 +597,7 @@ func (p *Proxy) handleCalendarOptions(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 		return
 	}
-	opts := p.subscriptionOptionsV2(school, u, true, true)
+	opts := p.subscriptionOptionsForCaps(school, u, true, true)
 	if !calendarOptionsHaveTargets(opts, true) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)
@@ -641,7 +641,7 @@ func (p *Proxy) handleNotificationOptions(w http.ResponseWriter, r *http.Request
 		_, _ = w.Write([]byte(`{"error":"notifications not permitted"}`))
 		return
 	}
-	opts := p.subscriptionOptionsV2(school, u, false, false)
+	opts := p.subscriptionOptionsForCaps(school, u, false, false)
 	if !calendarOptionsHaveTargets(opts, false) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusForbidden)

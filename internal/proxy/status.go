@@ -145,7 +145,7 @@ func (p *Proxy) writeMeUser(w http.ResponseWriter, school string, user *store.Us
 			effective = append(effective, c)
 		}
 	}
-	groups, _ := p.store.ListUserV2Groups(school, user.Username)
+	groups, _ := p.store.ListUserCapGroups(school, user.Username)
 	groupNames := make([]string, 0, len(groups))
 	for _, g := range groups {
 		groupNames = append(groupNames, g.Name)

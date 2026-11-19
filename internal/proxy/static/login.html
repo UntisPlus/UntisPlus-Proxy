@@ -32,9 +32,7 @@
   </label>
   <button id="btn" type="submit">Sign in</button>
   <div class="err" id="err"></div>
-  <div class="hint">Logs in through the same <code>getUserData2017</code> call the app uses, so it only
-  succeeds for real accounts. Admin access is then restricted to users holding the
-  <code>admin</code> flag.</div>
+  <div class="hint" id="hint">Logs in through the same <code>getUserData2017</code> call the app uses. Admin access is restricted to users holding the <code>admin</code> flag.</div>
 </form>
 <script>
 const f = document.getElementById('f');
@@ -43,6 +41,16 @@ const err = document.getElementById('err');
 const user = document.getElementById('user');
 const otp = document.getElementById('otp');
 try { user.value = localStorage.getItem('admin_user') || ''; } catch (e) {}
+
+(async () => {
+  try {
+    const r = await fetch('/setup', { credentials: 'same-origin' });
+    const j = await r.json().catch(() => ({}));
+    if (j && j.setupNeeded) {
+      document.getElementById('hint').innerHTML = 'Initial setup detected: sign in with your Untis account. The first successful login will claim admin access and open onboarding (trusted reverse-proxy IPs, roles, ntfy, users).';
+    }
+  } catch (e) {}
+})();
 
 f.addEventListener('submit', async (ev) => {
   ev.preventDefault();

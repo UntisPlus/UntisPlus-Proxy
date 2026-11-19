@@ -139,18 +139,8 @@ func loginLimitIPKey(ip string) string {
 	return "ip\x00" + ip
 }
 
-// clientIP extracts the address used for the per-source limit. It deliberately
-// ignores X-Forwarded-For: trusting a header the client can write would let an
-// attacker bypass the limit by inventing a new address each attempt.
-func clientIP(remoteAddr string) string {
-	if remoteAddr == "" {
-		return "unknown"
-	}
-	if i := strings.LastIndexByte(remoteAddr, ':'); i > 0 {
-		return remoteAddr[:i]
-	}
-	return remoteAddr
-}
+// (client IP resolution for rate limiting is handled by Proxy.realClientIP so
+// forwarded headers are honored only from configured trusted reverse proxies.)
 
 // loginRateLimited reports whether either the account or the source address is
 // locked out, and sets Retry-After on the response when it is.
@@ -161,7 +151,7 @@ func (p *Proxy) loginRateLimited(w http.ResponseWriter, r *http.Request, school,
 		key string
 	}{
 		{p.loginAccountLimit, loginLimitKey(school, username)},
-		{p.loginIPLimit, loginLimitIPKey(clientIP(r.RemoteAddr))},
+		{p.loginIPLimit, loginLimitIPKey(p.realClientIP(r))},
 	} {
 		if locked, retry := pair.l.locked(pair.key, now); locked {
 			secs := int(retry.Seconds())
@@ -179,7 +169,7 @@ func (p *Proxy) loginRateLimited(w http.ResponseWriter, r *http.Request, school,
 func (p *Proxy) recordLoginFailure(r *http.Request, school, username string) {
 	now := time.Now()
 	accountLocked, _ := p.loginAccountLimit.fail(loginLimitKey(school, username), now)
-	ipLocked, _ := p.loginIPLimit.fail(loginLimitIPKey(clientIP(r.RemoteAddr)), now)
+	ipLocked, _ := p.loginIPLimit.fail(loginLimitIPKey(p.realClientIP(r)), now)
 	if accountLocked || ipLocked {
 		// Log the fact of a lockout, never the credential.
 		logLoginLockout(school, username, accountLocked, ipLocked)

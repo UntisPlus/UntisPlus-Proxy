@@ -3,7 +3,9 @@ package proxy
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -49,6 +51,12 @@ type Options struct {
 	// alert debounce. Zero means use the default (5); negative disables extra
 	// verification probes.
 	OutageVerifyPings int
+	// TrustedProxies is a comma/space-separated list of proxy IPs and/or CIDRs
+	// (e.g. "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"). When the direct peer is
+	// trusted, the real client IP is taken from forwarded headers (X-Forwarded-
+	// For / X-Real-IP) so rate limiting and logging see the actual client behind
+	// a reverse proxy. When empty, forwarded headers are ignored.
+	TrustedProxies string
 }
 
 type Proxy struct {
@@ -107,6 +115,10 @@ type Proxy struct {
 	// the outage detector when a school first appears down, to avoid false
 	// alerts from transient packet loss or blips.
 	outageVerifyPings int
+
+	trustedProxiesMu  sync.RWMutex
+	trustedProxiesRaw string
+	trustedProxyNets  []*net.IPNet
 }
 
 // RequestRescan makes the next recon sweep re-enumerate every pooled class
@@ -198,6 +210,15 @@ func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *
 		verifyPings = 0
 	}
 	p.outageVerifyPings = verifyPings
+	if err := p.SetTrustedProxies(opts.TrustedProxies); err != nil {
+		log.Printf("trusted proxies config: %v", err)
+	}
+	// Settings override (onboarding/runtime config) takes precedence when set.
+	if v, ok, err := st.GetSetting(store.SettingTrustedProxies); err == nil && ok && strings.TrimSpace(v) != "" {
+		if err := p.SetTrustedProxies(v); err != nil {
+			log.Printf("trusted proxies setting: %v", err)
+		}
+	}
 	// The raw masterData of every known school survives a restart, so the first
 	// timetable request after a restart (before a fresh login) still resolves
 	// real element names and ids. Entries that do not parse are dropped: serving
@@ -622,6 +643,8 @@ const contentSecurityPolicy = "default-src 'self'; img-src 'self' data:; " +
 
 func (p *Proxy) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /{$}", p.handleRoot)
+	mux.HandleFunc("GET /setup", p.handleSetupPublic)
 	mux.HandleFunc("/WebUntis/jsonrpc.do", p.handleJSONRPC)
 	mux.HandleFunc("/WebUntis/jsonrpc_intern.do", p.handleJSONRPCIntern)
 	mux.HandleFunc("/WebUntis/api/", p.handleREST)
@@ -666,7 +689,7 @@ func (p *Proxy) Handler() http.Handler {
 		h.Set("X-Frame-Options", "DENY")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Content-Security-Policy", contentSecurityPolicy)
-		if requestIsHTTPS(r) {
+		if p.requestIsHTTPS(r) {
 			h.Set("Strict-Transport-Security", "max-age=31536000")
 		}
 		if r.Body != nil {
@@ -748,26 +771,177 @@ func (p *Proxy) setSessionCookies(w http.ResponseWriter, r *http.Request, sid, s
 	http.SetCookie(w, &http.Cookie{
 		Name: "JSESSIONID", Value: sid, Path: "/",
 		HttpOnly: true,
-		Secure:   requestIsHTTPS(r),
+		Secure:   p.requestIsHTTPS(r),
 		SameSite: http.SameSiteLaxMode,
 	})
 	sc := "_" + base64.StdEncoding.EncodeToString([]byte(school))
 	http.SetCookie(w, &http.Cookie{Name: "schoolname", Value: sc, Path: "/", MaxAge: 1209600,
-		Secure: requestIsHTTPS(r), SameSite: http.SameSiteLaxMode})
+		Secure: p.requestIsHTTPS(r), SameSite: http.SameSiteLaxMode})
 }
 
 // requestIsHTTPS reports whether the client connection reached the proxy over
-// TLS. X-Forwarded-Proto is honoured only when it says https: a request that
-// arrives over TLS can never talk the proxy out of marking its cookie Secure,
-// so a spoofed header cannot force a downgrade.
-func requestIsHTTPS(r *http.Request) bool {
+// TLS. A forwarded https scheme is honored from a configured trusted proxy. When
+// no trusted proxies are configured, X-Forwarded-Proto is honored for backward
+// compatibility with existing reverse-proxy deployments.
+func (p *Proxy) requestIsHTTPS(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
 	if r.TLS != nil {
 		return true
 	}
-	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	remoteIP := parseRemoteIP(r.RemoteAddr)
+	if remoteIP != nil && p.isTrustedProxyIP(remoteIP) {
+		return strings.EqualFold(strings.TrimSpace(r.Header.Get("X-Forwarded-Proto")), "https")
+	}
+	if p.TrustedProxies() == "" {
+		return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+	}
+	return false
+}
+
+// SetTrustedProxies parses and installs the trusted reverse-proxy peers (IPs
+// and/or CIDRs, comma/space-separated). Forwarded client-IP headers are trusted
+// only when the direct peer matches. An empty value disables forwarded-header
+// trust and restores peer-IP-only behavior.
+func (p *Proxy) SetTrustedProxies(raw string) error {
+	nets, norm, err := parseTrustedProxies(raw)
+	if err != nil {
+		return err
+	}
+	p.trustedProxiesMu.Lock()
+	p.trustedProxiesRaw = norm
+	p.trustedProxyNets = nets
+	p.trustedProxiesMu.Unlock()
+	return nil
+}
+
+// TrustedProxies returns the configured trusted-proxy list in normalized form.
+func (p *Proxy) TrustedProxies() string {
+	p.trustedProxiesMu.RLock()
+	defer p.trustedProxiesMu.RUnlock()
+	return p.trustedProxiesRaw
+}
+
+func (p *Proxy) isTrustedProxyIP(ip net.IP) bool {
+	p.trustedProxiesMu.RLock()
+	nets := p.trustedProxyNets
+	p.trustedProxiesMu.RUnlock()
+	if len(nets) == 0 || ip == nil {
+		return false
+	}
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// realClientIP returns the effective client IP for the request. When the direct
+// peer is a configured trusted proxy, the client IP is resolved from forwarded
+// headers (X-Forwarded-For, then X-Real-IP) so rate limiting and logging see the
+// real client behind the proxy chain. Otherwise the direct peer IP is used and
+// forwarded headers are ignored.
+func (p *Proxy) realClientIP(r *http.Request) string {
+	remoteIP := parseRemoteIP(r.RemoteAddr)
+	if remoteIP != nil && p.isTrustedProxyIP(remoteIP) {
+		if ip := clientIPFromForwardedHeaders(r.Header, func(ip net.IP) bool { return p.isTrustedProxyIP(ip) }); ip != "" {
+			return ip
+		}
+	}
+	return ipString(remoteIP, r.RemoteAddr)
+}
+
+func parseTrustedProxies(raw string) ([]*net.IPNet, string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, "", nil
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ' ' || r == '\t' || r == '\n' })
+	var nets []*net.IPNet
+	var norm []string
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.Contains(part, "/") {
+			_, n, err := net.ParseCIDR(part)
+			if err != nil {
+				return nil, "", fmt.Errorf("invalid trusted proxy CIDR %q: %w", part, err)
+			}
+			nets = append(nets, n)
+			norm = append(norm, n.String())
+			continue
+		}
+		ip := net.ParseIP(part)
+		if ip == nil {
+			return nil, "", fmt.Errorf("invalid trusted proxy IP %q", part)
+		}
+		bits := 32
+		if ip.To4() == nil {
+			bits = 128
+		}
+		n := &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)}
+		nets = append(nets, n)
+		norm = append(norm, ip.String())
+	}
+	return nets, strings.Join(norm, ","), nil
+}
+
+func parseRemoteIP(remoteAddr string) net.IP {
+	host := strings.TrimSpace(remoteAddr)
+	if host == "" {
+		return nil
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	return net.ParseIP(host)
+}
+
+func ipString(ip net.IP, fallback string) string {
+	if ip != nil {
+		return ip.String()
+	}
+	if fallback == "" {
+		return "unknown"
+	}
+	if h, _, err := net.SplitHostPort(fallback); err == nil {
+		return strings.Trim(h, "[]")
+	}
+	return strings.Trim(fallback, "[]")
+}
+
+// clientIPFromForwardedHeaders resolves the real client IP from standard proxy
+// headers. It walks X-Forwarded-For from right to left and returns the
+// rightmost IP that is not itself a trusted proxy (the client as seen by the
+// trusted chain). If XFF yields nothing usable, X-Real-IP is used.
+func clientIPFromForwardedHeaders(h http.Header, isTrusted func(net.IP) bool) string {
+	xff := h.Get("X-Forwarded-For")
+	if xff != "" {
+		parts := strings.Split(xff, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			ip := net.ParseIP(strings.TrimSpace(parts[i]))
+			if ip == nil {
+				continue
+			}
+			if isTrusted == nil || !isTrusted(ip) {
+				return ip.String()
+			}
+		}
+	}
+	if xr := strings.TrimSpace(h.Get("X-Real-IP")); xr != "" {
+		if ip := net.ParseIP(xr); ip != nil {
+			if isTrusted == nil || !isTrusted(ip) {
+				return ip.String()
+			}
+			return ip.String()
+		}
+	}
+	return ""
 }
 
 func (p *Proxy) classNameFor(school, cookie string, classID int64) string {
@@ -919,7 +1093,7 @@ func (p *Proxy) isBoosted(username string) bool {
 	}
 	u, err := p.store.GetUser(username)
 	if err == nil && u != nil {
-		return p.isBoostedV2(u, p.userSchool(u, u.School))
+		return p.hasBoostedAccess(u, p.userSchool(u, u.School))
 	}
 	ok, _ := p.store.BoostedAccess(username)
 	return ok
@@ -933,7 +1107,7 @@ func (p *Proxy) isEditor(username string) bool {
 	}
 	u, err := p.store.GetUser(username)
 	if err == nil && u != nil {
-		return p.isEditorV2(u, p.userSchool(u, u.School))
+		return p.hasEditorAccess(u, p.userSchool(u, u.School))
 	}
 	ok, _ := p.store.EditorAccess(username)
 	return ok
@@ -1014,7 +1188,7 @@ func (p *Proxy) hasWriteCapability(username, school, method string) bool {
 	case string(access.CapLessonWrite):
 		return p.canWriteLesson(u, sch)
 	default:
-		return p.isEditorV2(u, sch)
+		return p.hasEditorAccess(u, sch)
 	}
 }
 
@@ -1032,7 +1206,7 @@ func (p *Proxy) canUseClassScopedMethod(u *store.User, school, method string) bo
 	// getPeriodData2017 and similar class-scoped reads for editor UI: allow if the
 	// user has editor-class capabilities (either write or legacy boosted/editor
 	// behavior that grants access to class register data).
-	return p.isEditorV2(u, p.userSchool(u, school)) || p.canWriteAbsence(u, p.userSchool(u, school)) || p.canWriteLesson(u, p.userSchool(u, school))
+	return p.hasEditorAccess(u, p.userSchool(u, school)) || p.canWriteAbsence(u, p.userSchool(u, school)) || p.canWriteLesson(u, p.userSchool(u, school))
 }
 
 // classScopedOwner returns the teacher account a class-scoped request has to

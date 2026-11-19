@@ -626,9 +626,9 @@ func TestStudentEventVersionMovesOnEveryEdit(t *testing.T) {
 	if _, _, err := st.UpdateStudentEvent("testschool", ev.ID, store.StudentEventPatch{Room: &room}); err != nil {
 		t.Fatalf("UpdateStudentEvent: %v", err)
 	}
-	v2, _ := st.StudentEventVersion("testschool", "dee")
-	if v2 <= v1 {
-		t.Errorf("editing an event moved the version from %d to %d", v1, v2)
+	ver2, _ := st.StudentEventVersion("testschool", "dee")
+	if ver2 <= v1 {
+		t.Errorf("editing an event moved the version from %d to %d", v1, ver2)
 	}
 	if _, err := st.DeleteStudentEvent("testschool", ev.ID); err != nil {
 		t.Fatalf("DeleteStudentEvent: %v", err)
@@ -636,8 +636,8 @@ func TestStudentEventVersionMovesOnEveryEdit(t *testing.T) {
 	v3, _ := st.StudentEventVersion("testschool", "dee")
 	// The delete is the case a derived counter cannot catch: the row is gone, so
 	// a max(updated_at) would not move and the client would keep showing it.
-	if v3 <= v2 {
-		t.Errorf("deleting an event moved the version from %d to %d", v2, v3)
+	if v3 <= ver2 {
+		t.Errorf("deleting an event moved the version from %d to %d", ver2, v3)
 	}
 }
 

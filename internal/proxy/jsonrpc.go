@@ -144,6 +144,10 @@ func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request, school stri
 	}
 	p.preserveUserIdentity(user)
 	_ = p.store.UpsertUser(user)
+	p.maybeClaimSetupAdmin(user.Username)
+	if isAdmin, _ := p.store.IsAdmin(user.Username); isAdmin {
+		user.Admin = true
+	}
 	_ = p.store.SetAccountPassword(params.User, params.Password)
 	_ = p.store.Touch(params.User)
 	p.stateFor(school)

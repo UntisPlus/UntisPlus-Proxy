@@ -12,10 +12,10 @@ import (
 	"untis-proxy/internal/access"
 )
 
-// v2 access/permission schema and migration bridge from v1 flags/settings.
+// Access/permission schema and migration bridge from v1 flags/settings.
 // Additive and idempotent so v2 can run in parallel/migrated environments.
 
-func migrateV2AccessSchema(db *sql.DB) error {
+func migrateAccessSchema(db *sql.DB) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS cap_groups (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -96,50 +96,50 @@ func migrateV2AccessSchema(db *sql.DB) error {
 	return nil
 }
 
-const v2AccessMigratedKey = "v2_access_migrated"
+const accessMigrationDoneKey = "v2_access_migrated"
 
-func (s *Store) migrateV2AccessData() error {
+func (s *Store) migrateAccessData() error {
 	// Always ensure builtin groups/grants are present and up to date.
-	if err := s.ensureBuiltinV2Groups(); err != nil {
+	if err := s.ensureBuiltinCapGroups(); err != nil {
 		return err
 	}
 	var v string
-	if err := s.db.QueryRow(`SELECT value FROM settings WHERE key=?`, v2AccessMigratedKey).Scan(&v); err == nil && v == "1" {
+	if err := s.db.QueryRow(`SELECT value FROM settings WHERE key=?`, accessMigrationDoneKey).Scan(&v); err == nil && v == "1" {
 		return nil
 	}
-	log.Printf("[v2] migrating v1 permissions/anonymous settings to v2 access model")
+	log.Printf("[access] migrating v1 permissions/anonymous settings to access model")
 	if err := s.migrateV1DefaultPermsToRoleDefaults(); err != nil {
 		return err
 	}
-	if err := s.migrateV1UserPermsToV2(); err != nil {
+	if err := s.migrateV1UserPermsToAccessModel(); err != nil {
 		return err
 	}
-	if err := s.migrateV1AnonymousToV2(); err != nil {
+	if err := s.migrateV1AnonymousToAccessModel(); err != nil {
 		return err
 	}
 	_, err := s.db.Exec(`INSERT INTO settings (key,value) VALUES (?, '1')
-		ON CONFLICT(key) DO UPDATE SET value='1'`, v2AccessMigratedKey)
+		ON CONFLICT(key) DO UPDATE SET value='1'`, accessMigrationDoneKey)
 	return err
 }
 
 // Built-in group names used as migration targets/compat anchors.
 const (
-	V2GroupStudentBase    = "v2.student_base"
-	V2GroupTeacherBase    = "v2.teacher_base"
-	V2GroupRecon          = "v2.recon"
-	V2GroupBoosted        = "v2.boosted"
-	V2GroupEditor         = "v2.editor"
-	V2GroupTechniker      = "v2.techniker"
-	V2GroupDefaultNewUser = "v2.default_new_user"
+	CapGroupStudentBase    = "v2.student_base"
+	CapGroupTeacherBase    = "v2.teacher_base"
+	CapGroupRecon          = "v2.recon"
+	CapGroupBoosted        = "v2.boosted"
+	CapGroupEditor         = "v2.editor"
+	CapGroupTechniker      = "v2.techniker"
+	CapGroupDefaultNewUser = "v2.default_new_user"
 )
 
-func (s *Store) ensureBuiltinV2Groups() error {
+func (s *Store) ensureBuiltinCapGroups() error {
 	groups := []struct {
 		name   string
 		desc   string
 		grants []access.Grant
 	}{
-		{name: V2GroupStudentBase, desc: "Baseline capabilities for authenticated real student accounts", grants: []access.Grant{
+		{name: CapGroupStudentBase, desc: "Baseline capabilities for authenticated real student accounts", grants: []access.Grant{
 			{Capability: access.CapTimetableClassPooledView, Allow: true},
 			{Capability: access.CapTimetableClassUpstreamView, Allow: true},
 			{Capability: access.CapTimetableStudentPersonalUpstreamView, Allow: true},
@@ -155,7 +155,7 @@ func (s *Store) ensureBuiltinV2Groups() error {
 			{Capability: access.CapCalendarClassMint, Allow: true},
 			{Capability: access.CapCalendarStudentPersonalMint, Allow: true},
 		}},
-		{name: V2GroupTeacherBase, desc: "Baseline capabilities for authenticated teacher/staff accounts", grants: []access.Grant{
+		{name: CapGroupTeacherBase, desc: "Baseline capabilities for authenticated teacher/staff accounts", grants: []access.Grant{
 			{Capability: access.CapTimetableClassUpstreamView, Allow: true},
 			{Capability: access.CapAbsenceOwnRead, Allow: true},
 			{Capability: access.CapChangesClassView, Allow: true},
@@ -168,7 +168,7 @@ func (s *Store) ensureBuiltinV2Groups() error {
 			{Capability: access.CapCalendarClassMint, Allow: true},
 			{Capability: access.CapCalendarStudentPersonalMint, Allow: true},
 		}},
-		{name: V2GroupRecon, desc: "Reconstructed teacher/room/subject views and related discovery/calendar/changes", grants: []access.Grant{
+		{name: CapGroupRecon, desc: "Reconstructed teacher/room/subject views and related discovery/calendar/changes", grants: []access.Grant{
 			{Capability: access.CapTimetableTeacherReconstructedView, Allow: true},
 			{Capability: access.CapTimetableRoomReconstructedView, Allow: true},
 			{Capability: access.CapTimetableSubjectReconstructedView, Allow: true},
@@ -178,7 +178,7 @@ func (s *Store) ensureBuiltinV2Groups() error {
 			{Capability: access.CapChangesElementView, Allow: true},
 			{Capability: access.CapChangesElementStream, Allow: true},
 		}},
-		{name: V2GroupBoosted, desc: "Raw forwarding via teacher/boosted account (teacher-grade visibility)", grants: []access.Grant{
+		{name: CapGroupBoosted, desc: "Raw forwarding via teacher/boosted account (teacher-grade visibility)", grants: []access.Grant{
 			{Capability: access.CapTimetableClassBoostedRawView, Allow: true},
 			{Capability: access.CapTimetableStudentPersonalBoostedRawView, Allow: true},
 			{Capability: access.CapTimetableTeacherBoostedRawView, Allow: true},
@@ -198,19 +198,19 @@ func (s *Store) ensureBuiltinV2Groups() error {
 			{Capability: access.CapChangesSchoolView, Allow: true},
 			{Capability: access.CapChangesSchoolStream, Allow: true},
 		}},
-		{name: V2GroupEditor, desc: "Editing/writes (implies boosted-class data access patterns in v1)", grants: []access.Grant{
+		{name: CapGroupEditor, desc: "Editing/writes (implies boosted-class data access patterns in v1)", grants: []access.Grant{
 			{Capability: access.CapAbsenceWrite, Allow: true},
 			{Capability: access.CapLessonWrite, Allow: true},
 			{Capability: access.CapChangesSchoolView, Allow: true},
 			{Capability: access.CapChangesSchoolStream, Allow: true},
 		}},
-		{name: V2GroupTechniker, desc: "Technik aggregate class and proxy event surfaces", grants: []access.Grant{
+		{name: CapGroupTechniker, desc: "Technik aggregate class and proxy event surfaces", grants: []access.Grant{
 			{Capability: access.CapEventsTechnikView, Allow: true},
 			{Capability: access.CapEventsTechnikManage, Allow: true},
 			{Capability: access.CapCalendarManageOwn, Allow: true},
 			{Capability: access.CapCalendarTechnikMint, Allow: true},
 		}},
-		{name: V2GroupDefaultNewUser, desc: "Migrated v1 default permissions for newly seen users", grants: nil},
+		{name: CapGroupDefaultNewUser, desc: "Migrated v1 default permissions for newly seen users", grants: nil},
 	}
 	for _, g := range groups {
 		id, err := s.ensureGroup("", g.name, g.desc)
@@ -224,13 +224,13 @@ func (s *Store) ensureBuiltinV2Groups() error {
 		}
 	}
 	// Ensure base role defaults exist (idempotent).
-	if id, ok, _ := s.groupIDByName("", V2GroupStudentBase); ok {
+	if id, ok, _ := s.groupIDByName("", CapGroupStudentBase); ok {
 		_ = s.ensureRoleDefaultGroup("", string(access.RoleStudent), id, 0)
 		// Compat baseline for authenticated accounts whose person type is unknown/other.
 		_ = s.ensureRoleDefaultGroup("", string(access.RoleUnknown), id, 0)
 		_ = s.ensureRoleDefaultGroup("", string(access.RoleOther), id, 0)
 	}
-	if id, ok, _ := s.groupIDByName("", V2GroupTeacherBase); ok {
+	if id, ok, _ := s.groupIDByName("", CapGroupTeacherBase); ok {
 		_ = s.ensureRoleDefaultGroup("", string(access.RoleTeacher), id, 0)
 		_ = s.ensureRoleDefaultGroup("", string(access.RoleStaff), id, 0)
 	}
@@ -279,11 +279,11 @@ func (s *Store) ensureRoleDefaultGroup(school, role string, groupID int64, prior
 }
 
 func (s *Store) migrateV1DefaultPermsToRoleDefaults() error {
-	// Keep V2GroupDefaultNewUser as a template reflecting current default-perm
+	// Keep CapGroupDefaultNewUser as a template reflecting current default-perm
 	// settings (for introspection), but do NOT assign it as a role default.
 	// v1 default permissions are applied per-user on first insert via
 	// applyDefaultPerms; making them role defaults would grant them to everyone.
-	id, ok, err := s.groupIDByName("", V2GroupDefaultNewUser)
+	id, ok, err := s.groupIDByName("", CapGroupDefaultNewUser)
 	if err != nil || !ok {
 		return err
 	}
@@ -298,26 +298,26 @@ func (s *Store) migrateV1DefaultPermsToRoleDefaults() error {
 		return err
 	}
 	if def[FeatureRecon] {
-		if gid, ok, _ := s.groupIDByName("", V2GroupRecon); ok {
+		if gid, ok, _ := s.groupIDByName("", CapGroupRecon); ok {
 			_ = s.copyGroupGrants(gid, id)
 		}
 	}
 	if def[FeatureBoosted] {
-		if gid, ok, _ := s.groupIDByName("", V2GroupBoosted); ok {
+		if gid, ok, _ := s.groupIDByName("", CapGroupBoosted); ok {
 			_ = s.copyGroupGrants(gid, id)
 		}
 	}
 	if def[FeatureEditor] {
-		if gid, ok, _ := s.groupIDByName("", V2GroupEditor); ok {
+		if gid, ok, _ := s.groupIDByName("", CapGroupEditor); ok {
 			_ = s.copyGroupGrants(gid, id)
 		}
-		if gid, ok, _ := s.groupIDByName("", V2GroupBoosted); ok {
+		if gid, ok, _ := s.groupIDByName("", CapGroupBoosted); ok {
 			// v1 editor implied boosted access patterns.
 			_ = s.copyGroupGrants(gid, id)
 		}
 	}
 	if def[FeatureTechniker] {
-		if gid, ok, _ := s.groupIDByName("", V2GroupTechniker); ok {
+		if gid, ok, _ := s.groupIDByName("", CapGroupTechniker); ok {
 			_ = s.copyGroupGrants(gid, id)
 		}
 	}
@@ -363,7 +363,7 @@ func (s *Store) ensureServerGateDefault(scope string, cap access.Capability, ena
 	return err
 }
 
-func (s *Store) migrateV1UserPermsToV2() error {
+func (s *Store) migrateV1UserPermsToAccessModel() error {
 	rows, err := s.db.Query(`SELECT username, feature, allowed FROM perms WHERE username<>?`, globalPermUser)
 	if err != nil {
 		return err
@@ -390,12 +390,12 @@ func (s *Store) migrateV1UserPermsToV2() error {
 	for _, r := range all {
 		switch r.feature {
 		case FeatureRecon, FeatureBoosted, FeatureEditor, FeatureTechniker:
-			_ = s.v2ApplyDirectFeature(r.user, r.feature, r.allow)
+			_ = s.applyDirectFeatureFromV1(r.user, r.feature, r.allow)
 		}
 	}
 	// Global recon switch from v1 -> make recon group a broad role default if enabled.
 	if v, err := s.hasPermRow(globalPermUser, FeatureRecon); err == nil && v {
-		_ = s.v2SetGlobalReconRoleDefaults(true)
+		_ = s.setGlobalReconRoleDefaults(true)
 	}
 	return nil
 }
@@ -428,8 +428,8 @@ func (s *Store) ensureUserInGroup(school, username, groupName string) error {
 	return err
 }
 
-func (s *Store) migrateV1AnonymousToV2() error {
-	// v1 had global anon feature toggles off by default. In v2 anonymous access
+func (s *Store) migrateV1AnonymousToAccessModel() error {
+	// v1 had global anon feature toggles off by default. In the access model, anonymous access
 	// is per-school upstream-detected and never gets proxy-pooled supplements; we
 	// keep anonymous login per school (schools.anonymous) and record conservative
 	// server gates/placeholders so detection can fill profiles later.
@@ -437,9 +437,9 @@ func (s *Store) migrateV1AnonymousToV2() error {
 	return nil
 }
 
-// V2: Group management
+// Capability group management
 
-type V2Group struct {
+type CapGroup struct {
 	ID          int64
 	School      string
 	Name        string
@@ -448,20 +448,20 @@ type V2Group struct {
 	UpdatedAt   time.Time
 }
 
-type V2GroupGrant struct {
+type CapGroupGrant struct {
 	Capability string
 	Effect     int // 1 allow, -1 deny
 }
 
-func (s *Store) ListV2Groups(school string) ([]V2Group, error) {
+func (s *Store) ListCapGroups(school string) ([]CapGroup, error) {
 	rows, err := s.db.Query(`SELECT id,school,name,description,created_at,updated_at FROM cap_groups WHERE school=? OR school='' ORDER BY school,name`, school)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []V2Group
+	var out []CapGroup
 	for rows.Next() {
-		var g V2Group
+		var g CapGroup
 		var ca, ua int64
 		if err := rows.Scan(&g.ID, &g.School, &g.Name, &g.Description, &ca, &ua); err != nil {
 			return nil, err
@@ -472,7 +472,7 @@ func (s *Store) ListV2Groups(school string) ([]V2Group, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) CreateV2Group(school, name, desc string) (int64, error) {
+func (s *Store) CreateCapGroup(school, name, desc string) (int64, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return 0, fmt.Errorf("group name required")
@@ -486,7 +486,7 @@ func (s *Store) CreateV2Group(school, name, desc string) (int64, error) {
 	return res.LastInsertId()
 }
 
-func (s *Store) DeleteV2Group(id int64) error {
+func (s *Store) DeleteCapGroup(id int64) error {
 	if _, err := s.db.Exec(`DELETE FROM cap_group_grants WHERE group_id=?`, id); err != nil {
 		return err
 	}
@@ -500,8 +500,8 @@ func (s *Store) DeleteV2Group(id int64) error {
 	return err
 }
 
-func (s *Store) GetV2Group(id int64) (*V2Group, []V2GroupGrant, error) {
-	var g V2Group
+func (s *Store) GetCapGroup(id int64) (*CapGroup, []CapGroupGrant, error) {
+	var g CapGroup
 	var ca, ua int64
 	err := s.db.QueryRow(`SELECT id,school,name,description,created_at,updated_at FROM cap_groups WHERE id=?`, id).
 		Scan(&g.ID, &g.School, &g.Name, &g.Description, &ca, &ua)
@@ -517,9 +517,9 @@ func (s *Store) GetV2Group(id int64) (*V2Group, []V2GroupGrant, error) {
 		return &g, nil, err
 	}
 	defer rows.Close()
-	var grants []V2GroupGrant
+	var grants []CapGroupGrant
 	for rows.Next() {
-		var gr V2GroupGrant
+		var gr CapGroupGrant
 		if err := rows.Scan(&gr.Capability, &gr.Effect); err != nil {
 			return &g, nil, err
 		}
@@ -528,7 +528,7 @@ func (s *Store) GetV2Group(id int64) (*V2Group, []V2GroupGrant, error) {
 	return &g, grants, rows.Err()
 }
 
-func (s *Store) SetV2GroupGrant(groupID int64, cap string, effect int) error {
+func (s *Store) SetCapGroupGrant(groupID int64, cap string, effect int) error {
 	cap = strings.TrimSpace(cap)
 	if cap == "" {
 		return fmt.Errorf("capability required")
@@ -552,19 +552,19 @@ func (s *Store) SetV2GroupGrant(groupID int64, cap string, effect int) error {
 
 // User/group assignment and grants
 
-func (s *Store) AssignUserV2Group(school, username string, groupID int64) error {
+func (s *Store) AssignUserCapGroup(school, username string, groupID int64) error {
 	_, err := s.db.Exec(`INSERT OR IGNORE INTO user_cap_groups (school,username,group_id,created_at) VALUES (?,?,?,?)`,
 		school, norm(username), groupID, time.Now().Unix())
 	return err
 }
 
-func (s *Store) UnassignUserV2Group(school, username string, groupID int64) error {
+func (s *Store) UnassignUserCapGroup(school, username string, groupID int64) error {
 	_, err := s.db.Exec(`DELETE FROM user_cap_groups WHERE school=? AND username=? AND group_id=?`,
 		school, norm(username), groupID)
 	return err
 }
 
-func (s *Store) ListUserV2Groups(school, username string) ([]V2Group, error) {
+func (s *Store) ListUserCapGroups(school, username string) ([]CapGroup, error) {
 	q := `SELECT g.id,g.school,g.name,g.description,g.created_at,g.updated_at
 		FROM cap_groups g JOIN user_cap_groups ug ON ug.group_id=g.id
 		WHERE ug.username=? AND ug.school=? ORDER BY g.name`
@@ -581,9 +581,9 @@ func (s *Store) ListUserV2Groups(school, username string) ([]V2Group, error) {
 	}
 	defer rows.Close()
 	seen := map[int64]bool{}
-	var out []V2Group
+	var out []CapGroup
 	for rows.Next() {
-		var g V2Group
+		var g CapGroup
 		var ca, ua int64
 		if err := rows.Scan(&g.ID, &g.School, &g.Name, &g.Description, &ca, &ua); err != nil {
 			return nil, err
@@ -598,7 +598,7 @@ func (s *Store) ListUserV2Groups(school, username string) ([]V2Group, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) SetUserV2Grant(school, username, cap string, effect int) error {
+func (s *Store) SetUserCapGrant(school, username, cap string, effect int) error {
 	cap = strings.TrimSpace(cap)
 	if cap == "" {
 		return fmt.Errorf("capability required")
@@ -619,7 +619,7 @@ func (s *Store) SetUserV2Grant(school, username, cap string, effect int) error {
 	return err
 }
 
-func (s *Store) ListUserV2Grants(school, username string) ([]V2GroupGrant, error) {
+func (s *Store) ListUserCapGrants(school, username string) ([]CapGroupGrant, error) {
 	q := `SELECT capability,effect FROM user_cap_grants WHERE school=? AND username=? ORDER BY capability`
 	args := []any{school, norm(username)}
 	if school != "" {
@@ -665,9 +665,9 @@ func (s *Store) ListUserV2Grants(school, username string) ([]V2GroupGrant, error
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
-	out := make([]V2GroupGrant, 0, len(keys))
+	out := make([]CapGroupGrant, 0, len(keys))
 	for _, k := range keys {
-		out = append(out, V2GroupGrant{Capability: k, Effect: best[k].eff})
+		out = append(out, CapGroupGrant{Capability: k, Effect: best[k].eff})
 	}
 	return out, nil
 }
@@ -965,7 +965,7 @@ func (s *Store) ListServerCapGates() ([]struct {
 	Cap     string
 	Enabled bool
 }, error) {
-	rows, err := s.db.Query(`SELECT scope,cap,enabled FROM server_cap_gates ORDER BY scope,cap`)
+	rows, err := s.db.Query(`SELECT scope,capability,enabled FROM server_cap_gates ORDER BY scope,capability`)
 	if err != nil {
 		return nil, err
 	}
@@ -997,7 +997,7 @@ type EffectiveResult struct {
 	Role         access.Role
 	Decisions    map[access.Capability]access.Decision
 	GroupIDs     []int64
-	DirectGrants []V2GroupGrant
+	DirectGrants []CapGroupGrant
 }
 
 func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, error) {
@@ -1017,7 +1017,7 @@ func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, erro
 	}
 
 	direct := map[access.Capability]access.Effect{}
-	directRows, _ := s.ListUserV2Grants(school, u.Username)
+	directRows, _ := s.ListUserCapGrants(school, u.Username)
 	for _, g := range directRows {
 		if g.Effect > 0 {
 			direct[access.Capability(g.Capability)] = access.EffectAllow
@@ -1027,7 +1027,7 @@ func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, erro
 	}
 
 	// User groups (school-specific and global? assignments stored with school; also include global groups by group scope handling)
-	groups, _ := s.ListUserV2Groups(school, u.Username)
+	groups, _ := s.ListUserCapGroups(school, u.Username)
 	var groupGrants []map[access.Capability]access.Effect
 	var groupIDs []int64
 	for _, g := range groups {
@@ -1107,7 +1107,7 @@ func (s *Store) resolveUserRole(school string, personType int64) access.Role {
 }
 
 func defaultServerEnabled(cap access.Capability) bool {
-	// v2 first-level gate: server enablement. Default to enabled so migrated v1
+	// first-level gate: server enablement. Default to enabled so migrated v1
 	// grants/defaults remain effective; operators can restrict via server gates.
 	// Anonymous calendar minting is still forbidden by construction in handlers.
 	_ = cap
@@ -1136,13 +1136,13 @@ func (s *Store) EffectiveHas(school string, u *User, cap access.Capability) bool
 
 // v1 compat helpers
 
-func (s *Store) v2UserSchool(username string) string {
+func (s *Store) userSchoolByUsername(username string) string {
 	var school string
 	_ = s.db.QueryRow(`SELECT school FROM users WHERE username=?`, norm(username)).Scan(&school)
 	return school
 }
 
-func (s *Store) v2EnsureUserGroup(school, username, groupName string, on bool) error {
+func (s *Store) ensureUserInCapGroup(school, username, groupName string, on bool) error {
 	gid, ok, err := s.groupIDByName("", groupName)
 	if err != nil || !ok {
 		return err
@@ -1157,11 +1157,11 @@ func (s *Store) v2EnsureUserGroup(school, username, groupName string, on bool) e
 	return err
 }
 
-func (s *Store) v2SetDirectGrant(school, username, cap string, effect int) error {
-	return s.SetUserV2Grant(school, username, cap, effect)
+func (s *Store) setDirectCapGrant(school, username, cap string, effect int) error {
+	return s.SetUserCapGrant(school, username, cap, effect)
 }
 
-func (s *Store) v2ClearUserAll(school, username string) error {
+func (s *Store) clearUserAccessAssignments(school, username string) error {
 	u := norm(username)
 	if _, err := s.db.Exec(`DELETE FROM user_cap_groups WHERE school=? AND username=?`, school, u); err != nil {
 		return err
@@ -1175,8 +1175,8 @@ func (s *Store) v2ClearUserAll(school, username string) error {
 	return nil
 }
 
-func (s *Store) v2SetGlobalReconRoleDefaults(on bool) error {
-	gid, ok, err := s.groupIDByName("", V2GroupRecon)
+func (s *Store) setGlobalReconRoleDefaults(on bool) error {
+	gid, ok, err := s.groupIDByName("", CapGroupRecon)
 	if err != nil || !ok {
 		return err
 	}
@@ -1195,8 +1195,8 @@ func (s *Store) v2SetGlobalReconRoleDefaults(on bool) error {
 	return nil
 }
 
-func (s *Store) v2SetDefaultNewUserGroup(feature string, on bool) error {
-	id, ok, err := s.groupIDByName("", V2GroupDefaultNewUser)
+func (s *Store) setDefaultNewUserCapGroup(feature string, on bool) error {
+	id, ok, err := s.groupIDByName("", CapGroupDefaultNewUser)
 	if err != nil || !ok {
 		return err
 	}
@@ -1222,25 +1222,25 @@ func (s *Store) v2SetDefaultNewUserGroup(feature string, on bool) error {
 		}
 	}
 	if def[FeatureRecon] {
-		if gid, ok, _ := s.groupIDByName("", V2GroupRecon); ok {
+		if gid, ok, _ := s.groupIDByName("", CapGroupRecon); ok {
 			_ = s.copyGroupGrants(gid, id)
 		}
 	}
 	if def[FeatureBoosted] {
-		if gid, ok, _ := s.groupIDByName("", V2GroupBoosted); ok {
+		if gid, ok, _ := s.groupIDByName("", CapGroupBoosted); ok {
 			_ = s.copyGroupGrants(gid, id)
 		}
 	}
 	if def[FeatureEditor] {
-		if gid, ok, _ := s.groupIDByName("", V2GroupEditor); ok {
+		if gid, ok, _ := s.groupIDByName("", CapGroupEditor); ok {
 			_ = s.copyGroupGrants(gid, id)
 		}
-		if gid, ok, _ := s.groupIDByName("", V2GroupBoosted); ok {
+		if gid, ok, _ := s.groupIDByName("", CapGroupBoosted); ok {
 			_ = s.copyGroupGrants(gid, id)
 		}
 	}
 	if def[FeatureTechniker] {
-		if gid, ok, _ := s.groupIDByName("", V2GroupTechniker); ok {
+		if gid, ok, _ := s.groupIDByName("", CapGroupTechniker); ok {
 			_ = s.copyGroupGrants(gid, id)
 		}
 	}
@@ -1270,9 +1270,9 @@ func v1ReconCapsFor(elType string) []access.Capability {
 	}
 }
 
-func (s *Store) v2ReconAccess(username, elType string) bool {
+func (s *Store) reconAccessEffective(username, elType string) bool {
 	username = norm(username)
-	school := s.v2UserSchool(username)
+	school := s.userSchoolByUsername(username)
 	u, err := s.GetUser(username)
 	if err != nil || u == nil {
 		// fall back to a synthetic user shell for resolution by username-only cases
@@ -1292,9 +1292,9 @@ func (s *Store) v2ReconAccess(username, elType string) bool {
 	return false
 }
 
-func (s *Store) v2BoostedAccess(username string) bool {
+func (s *Store) boostedAccessEffective(username string) bool {
 	username = norm(username)
-	school := s.v2UserSchool(username)
+	school := s.userSchoolByUsername(username)
 	u, err := s.GetUser(username)
 	if err != nil || u == nil {
 		u = &User{Username: username, School: school}
@@ -1324,9 +1324,9 @@ func (s *Store) v2BoostedAccess(username string) bool {
 	return false
 }
 
-func (s *Store) v2EditorAccess(username string) bool {
+func (s *Store) editorAccessEffective(username string) bool {
 	username = norm(username)
-	school := s.v2UserSchool(username)
+	school := s.userSchoolByUsername(username)
 	u, err := s.GetUser(username)
 	if err != nil || u == nil {
 		u = &User{Username: username, School: school}
@@ -1340,9 +1340,9 @@ func (s *Store) v2EditorAccess(username string) bool {
 	return access.Effective(res.Decisions, access.CapAbsenceWrite) || access.Effective(res.Decisions, access.CapLessonWrite)
 }
 
-func (s *Store) v2TechnikerAccess(username string) bool {
+func (s *Store) technikerAccessEffective(username string) bool {
 	username = norm(username)
-	school := s.v2UserSchool(username)
+	school := s.userSchoolByUsername(username)
 	u, err := s.GetUser(username)
 	if err != nil || u == nil {
 		u = &User{Username: username, School: school}
@@ -1356,28 +1356,28 @@ func (s *Store) v2TechnikerAccess(username string) bool {
 	return access.Effective(res.Decisions, access.CapEventsTechnikView) || access.Effective(res.Decisions, access.CapEventsTechnikManage)
 }
 
-func (s *Store) v2ApplyDirectFeature(username, feature string, allowed bool) error {
+func (s *Store) applyDirectFeatureFromV1(username, feature string, allowed bool) error {
 	username = norm(username)
-	school := s.v2UserSchool(username)
+	school := s.userSchoolByUsername(username)
 	switch feature {
 	case FeatureRecon:
 		if allowed {
-			_ = s.v2EnsureUserGroup(school, username, V2GroupRecon, true)
+			_ = s.ensureUserInCapGroup(school, username, CapGroupRecon, true)
 			// clear explicit recon denies
 			for _, cap := range v1ReconCapsFor("") {
-				_ = s.v2SetDirectGrant(school, username, string(cap), 0)
+				_ = s.setDirectCapGrant(school, username, string(cap), 0)
 			}
 		} else {
-			_ = s.v2EnsureUserGroup(school, username, V2GroupRecon, false)
+			_ = s.ensureUserInCapGroup(school, username, CapGroupRecon, false)
 			// explicit deny overrides role/global defaults
 			for _, cap := range v1ReconCapsFor("") {
-				_ = s.v2SetDirectGrant(school, username, string(cap), -1)
+				_ = s.setDirectCapGrant(school, username, string(cap), -1)
 			}
 		}
 		return nil
 	case FeatureBoosted:
 		if allowed {
-			_ = s.v2EnsureUserGroup(school, username, V2GroupBoosted, true)
+			_ = s.ensureUserInCapGroup(school, username, CapGroupBoosted, true)
 			// boosted implies not having recon denies forced except mutual exclusion handled separately
 			for _, cap := range []access.Capability{
 				access.CapTimetableClassBoostedRawView,
@@ -1386,58 +1386,58 @@ func (s *Store) v2ApplyDirectFeature(username, feature string, allowed bool) err
 				access.CapTimetableSubjectBoostedRawView,
 				access.CapTimetableStudentPersonalBoostedRawView,
 			} {
-				_ = s.v2SetDirectGrant(school, username, string(cap), 0)
+				_ = s.setDirectCapGrant(school, username, string(cap), 0)
 			}
 		} else {
-			_ = s.v2EnsureUserGroup(school, username, V2GroupBoosted, false)
+			_ = s.ensureUserInCapGroup(school, username, CapGroupBoosted, false)
 		}
 		return nil
 	case FeatureEditor:
 		if allowed {
-			_ = s.v2EnsureUserGroup(school, username, V2GroupEditor, true)
-			_ = s.v2EnsureUserGroup(school, username, V2GroupBoosted, true)
-			_ = s.v2SetDirectGrant(school, username, string(access.CapAbsenceWrite), 0)
-			_ = s.v2SetDirectGrant(school, username, string(access.CapLessonWrite), 0)
+			_ = s.ensureUserInCapGroup(school, username, CapGroupEditor, true)
+			_ = s.ensureUserInCapGroup(school, username, CapGroupBoosted, true)
+			_ = s.setDirectCapGrant(school, username, string(access.CapAbsenceWrite), 0)
+			_ = s.setDirectCapGrant(school, username, string(access.CapLessonWrite), 0)
 		} else {
-			_ = s.v2EnsureUserGroup(school, username, V2GroupEditor, false)
+			_ = s.ensureUserInCapGroup(school, username, CapGroupEditor, false)
 			// editor implies boosted in v1; revoking editor alone should not revoke explicit boosted flag,
 			// but compat callers handle combinations. leave boosted group state as-is unless caller also revokes.
 		}
 		return nil
 	case FeatureTechniker:
 		if allowed {
-			_ = s.v2EnsureUserGroup(school, username, V2GroupTechniker, true)
+			_ = s.ensureUserInCapGroup(school, username, CapGroupTechniker, true)
 			for _, cap := range []access.Capability{access.CapEventsTechnikView, access.CapEventsTechnikManage, access.CapCalendarTechnikMint} {
-				_ = s.v2SetDirectGrant(school, username, string(cap), 0)
+				_ = s.setDirectCapGrant(school, username, string(cap), 0)
 			}
 		} else {
-			_ = s.v2EnsureUserGroup(school, username, V2GroupTechniker, false)
+			_ = s.ensureUserInCapGroup(school, username, CapGroupTechniker, false)
 			for _, cap := range []access.Capability{access.CapEventsTechnikView, access.CapEventsTechnikManage, access.CapCalendarTechnikMint} {
-				_ = s.v2SetDirectGrant(school, username, string(cap), -1)
+				_ = s.setDirectCapGrant(school, username, string(cap), -1)
 			}
 		}
 		return nil
 	default:
-		// generic: store as a direct grant marker capability not used in resolution, no-op for v2
+		// generic: store as a direct grant marker capability not used in resolution, no-op for access model
 		return nil
 	}
 }
 
-// v2SyncUserFromPermRows rebuilds v2 direct/group state for known v1 features
+// syncUserAccessFromPermRows rebuilds v2 direct/group state for known v1 features
 // from explicit perm rows for the canonical username. Rows absent mean "no
 // explicit override" (fall back to defaults/role defaults).
-func (s *Store) v2SyncUserFromPermRows(username string) error {
+func (s *Store) syncUserAccessFromPermRows(username string) error {
 	username = norm(username)
-	school := s.v2UserSchool(username)
-	// Clear v2 state for known feature groups/grants for this user in this school.
-	for _, g := range []string{V2GroupRecon, V2GroupBoosted, V2GroupEditor, V2GroupTechniker} {
-		_ = s.v2EnsureUserGroup(school, username, g, false)
+	school := s.userSchoolByUsername(username)
+	// Clear access-model state for known feature groups/grants for this user in this school.
+	for _, g := range []string{CapGroupRecon, CapGroupBoosted, CapGroupEditor, CapGroupTechniker} {
+		_ = s.ensureUserInCapGroup(school, username, g, false)
 	}
 	for _, cap := range v1ReconCapsFor("") {
-		_ = s.v2SetDirectGrant(school, username, string(cap), 0)
+		_ = s.setDirectCapGrant(school, username, string(cap), 0)
 	}
 	for _, cap := range []access.Capability{access.CapEventsTechnikView, access.CapEventsTechnikManage, access.CapCalendarTechnikMint} {
-		_ = s.v2SetDirectGrant(school, username, string(cap), 0)
+		_ = s.setDirectCapGrant(school, username, string(cap), 0)
 	}
 	// Read explicit perm rows.
 	rows, err := s.db.Query(`SELECT feature, allowed FROM perms WHERE username=? AND username<>?`, username, globalPermUser)
@@ -1476,13 +1476,13 @@ func (s *Store) v2SyncUserFromPermRows(username string) error {
 	// Apply explicit states for features that have rows.
 	for _, f := range []string{FeatureRecon, FeatureBoosted, FeatureEditor, FeatureTechniker} {
 		if v, ok := by[f]; ok {
-			_ = s.v2ApplyDirectFeature(username, f, v)
+			_ = s.applyDirectFeatureFromV1(username, f, v)
 		}
 	}
 	return nil
 }
 
-// V2 anon profile helper: JSON payload structure (extensible).
+// Anonymous profile helper: JSON payload structure (extensible).
 type AnonProfilePayload struct {
 	// Upstream-detected anonymous visibility/capabilities for this school.
 	ClassesDisplayable []int64         `json:"classesDisplayable,omitempty"`

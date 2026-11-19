@@ -67,6 +67,7 @@ func main() {
 	loginWindow := flag.Duration("login-window", 15*time.Minute, "login failure counting window and lockout duration")
 	technikFull := flag.Bool("technik-full-history", false, "make the Technik aggregate return the entire event history instead of the requested range")
 	outageVerifyPings := flag.Int("outage-verify-pings", 5, "extra upstream probe attempts when an outage is first detected, to confirm it is not transient packet loss (0 disables)")
+	trustedProxies := flag.String("trusted-proxies", "", "comma/space-separated reverse-proxy IPs/CIDRs trusted to supply real client IP (X-Forwarded-For/X-Real-IP)")
 
 	// Every flag is also settable as UNTIS_<FLAG>, so a compose file or a
 	// container runtime can configure the proxy without rewriting its command
@@ -162,6 +163,7 @@ func main() {
 		LoginRateLimitOff:  *loginMax == 0,
 		TechnikFullHistory: *technikFull,
 		OutageVerifyPings:  outagePings,
+		TrustedProxies:     *trustedProxies,
 	})
 	p.LoadRecon(*school)
 	p.StartRecon(*school, ys, ye)

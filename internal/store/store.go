@@ -703,7 +703,7 @@ func Open(path string) (*Store, error) {
 		ON ntfy_topics (school, created_by, element_type, element_id, topic, base_url)`); err != nil {
 		return nil, err
 	}
-	if err := migrateV2AccessSchema(db); err != nil {
+	if err := migrateAccessSchema(db); err != nil {
 		return nil, err
 	}
 	// Seed shipped default permissions for fresh installs (v1.15 compat): recon on,
@@ -723,7 +723,7 @@ func Open(path string) (*Store, error) {
 	if err := st.normalizeUsernames(); err != nil {
 		return nil, err
 	}
-	if err := st.migrateV2AccessData(); err != nil {
+	if err := st.migrateAccessData(); err != nil {
 		return nil, err
 	}
 	return st, nil
@@ -905,16 +905,16 @@ func (s *Store) normalizeUsernames() error {
 	}
 	// Rebuild v2 effective grants for merged users from their canonicalized perm rows.
 	for user, mp := range toSync {
-		_ = s.v2ClearUserAll(mp.school, user)
+		_ = s.clearUserAccessAssignments(mp.school, user)
 		// also clear by empty school in case school changed; keep simple by clearing canonical username across scopes
 		_, _ = s.db.Exec(`DELETE FROM user_cap_groups WHERE username=?`, norm(user))
 		_, _ = s.db.Exec(`DELETE FROM user_cap_grants WHERE username=?`, norm(user))
 		_, _ = s.db.Exec(`DELETE FROM user_cap_prefs WHERE username=?`, norm(user))
 		for _, f := range []string{FeatureRecon, FeatureBoosted, FeatureEditor, FeatureTechniker} {
 			if mp.perms[f] {
-				_ = s.v2ApplyDirectFeature(user, f, true)
+				_ = s.applyDirectFeatureFromV1(user, f, true)
 			} else {
-				// apply explicit false only for recon? v2ApplyDirectFeature handles false semantics
+				// apply explicit false only for recon? applyDirectFeatureFromV1 handles false semantics
 				// (recon false adds denies; techniker false adds denies; others mostly remove groups)
 				// only meaningful if previously set, but safe to be explicit for compat where needed.
 				if f == FeatureRecon || f == FeatureTechniker {
@@ -927,7 +927,7 @@ func (s *Store) normalizeUsernames() error {
 		// but we lost row presence distinction except value; re-query not needed: if a feature was explicitly denied in v1 perms,
 		// perms[f] is false but row existed - loadPerms sets out[f]=v!=0 so false means explicit deny only if row existed.
 		// We need to know row existence; adjust: rebuild from DB for canonical user.
-		_ = s.v2SyncUserFromPermRows(user)
+		_ = s.syncUserAccessFromPermRows(user)
 	}
 	log.Printf("merged %d case-insensitive duplicate account(s)", merged)
 	return nil
@@ -1147,18 +1147,18 @@ func (s *Store) ReconAccess(username, elType string) (bool, error) {
 		v, err := s.HasPerm(globalPermUser, FeatureRecon)
 		return v, err
 	}
-	return s.v2ReconAccess(username, elType), nil
+	return s.reconAccessEffective(username, elType), nil
 }
 
 // BoostedAccess reports whether a user effectively gets Boosted raw timetable
 // forwarding (v2 effective).
 func (s *Store) BoostedAccess(username string) (bool, error) {
-	return s.v2BoostedAccess(username), nil
+	return s.boostedAccessEffective(username), nil
 }
 
 // EditorAccess reports whether a user holds the editor flag (v2 effective).
 func (s *Store) EditorAccess(username string) (bool, error) {
-	return s.v2EditorAccess(username), nil
+	return s.editorAccessEffective(username), nil
 }
 
 // SetReconType sets the global switch for reconstruction across all users.
@@ -1167,7 +1167,7 @@ func (s *Store) SetReconType(elType string, allowed bool) error {
 	if err := s.setPermRow(globalPermUser, FeatureRecon, allowed); err != nil {
 		return err
 	}
-	return s.v2SetGlobalReconRoleDefaults(allowed)
+	return s.setGlobalReconRoleDefaults(allowed)
 }
 
 // SetReconOverride grants or revokes reconstruction for a single user, taking
@@ -1217,11 +1217,11 @@ func (s *Store) setPerm(username, feature string, allowed bool) error {
 	}
 	if username == globalPermUser {
 		if feature == FeatureRecon {
-			return s.v2SetGlobalReconRoleDefaults(allowed)
+			return s.setGlobalReconRoleDefaults(allowed)
 		}
 		return nil
 	}
-	return s.v2ApplyDirectFeature(username, feature, allowed)
+	return s.applyDirectFeatureFromV1(username, feature, allowed)
 }
 
 func (s *Store) setPermFalse(username, feature string) error {
@@ -1231,7 +1231,7 @@ func (s *Store) setPermFalse(username, feature string) error {
 	if norm(username) == globalPermUser {
 		return nil
 	}
-	return s.v2ApplyDirectFeature(username, feature, false)
+	return s.applyDirectFeatureFromV1(username, feature, false)
 }
 
 // ClearReconOverrides removes any per-user permission overrides for a username
@@ -1243,8 +1243,8 @@ func (s *Store) ClearReconOverrides(username string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	school := s.v2UserSchool(username)
-	_ = s.v2ClearUserAll(school, username)
+	school := s.userSchoolByUsername(username)
+	_ = s.clearUserAccessAssignments(school, username)
 	n, _ := res.RowsAffected()
 	return n, nil
 }
@@ -1260,7 +1260,7 @@ func (s *Store) RevokeAll() (int64, error) {
 	_, _ = s.db.Exec(`DELETE FROM user_cap_groups`)
 	_, _ = s.db.Exec(`DELETE FROM user_cap_grants`)
 	_, _ = s.db.Exec(`DELETE FROM user_cap_prefs`)
-	if gid, ok, _ := s.groupIDByName("", V2GroupRecon); ok {
+	if gid, ok, _ := s.groupIDByName("", CapGroupRecon); ok {
 		_, _ = s.db.Exec(`DELETE FROM role_default_groups WHERE school='' AND group_id=?`, gid)
 	}
 	n, _ := res.RowsAffected()
@@ -1317,6 +1317,119 @@ func (s *Store) MarkAdminBootstrapSeeded() error {
 	_, err := s.db.Exec(`INSERT INTO settings (key, value) VALUES (?, '1')
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value`, adminBootstrapKey)
 	return err
+}
+
+// HasAnyAdmin reports whether any user currently holds the admin flag.
+func (s *Store) HasAnyAdmin() (bool, error) {
+	var n int
+	err := s.db.QueryRow(`SELECT COUNT(1) FROM users WHERE admin<>0`).Scan(&n)
+	return n > 0, err
+}
+
+const (
+	SettingSetupCompleted  = "setup_completed"
+	SettingSetupFreshClaim = "setup_fresh_claim"
+)
+
+// SetupCompleted reports whether initial onboarding has been explicitly completed.
+func (s *Store) SetupCompleted() (bool, error) {
+	v, ok, err := s.GetSetting(SettingSetupCompleted)
+	if err != nil || !ok {
+		return false, err
+	}
+	return strings.TrimSpace(v) == "1" || strings.EqualFold(strings.TrimSpace(v), "true"), nil
+}
+
+// SetSetupCompleted marks initial onboarding as completed or resets it.
+func (s *Store) SetSetupCompleted(done bool) error {
+	v := "0"
+	if done {
+		v = "1"
+	}
+	return s.SetSetting(SettingSetupCompleted, v)
+}
+
+// SetupFreshClaim reports whether the first admin was claimed through the
+// fresh-setup flow (as opposed to an existing/upgraded instance).
+func (s *Store) SetupFreshClaim() (bool, error) {
+	v, ok, err := s.GetSetting(SettingSetupFreshClaim)
+	if err != nil || !ok {
+		return false, err
+	}
+	return strings.TrimSpace(v) == "1" || strings.EqualFold(strings.TrimSpace(v), "true"), nil
+}
+
+func (s *Store) SetSetupFreshClaim(v bool) error {
+	val := "0"
+	if v {
+		val = "1"
+	}
+	return s.SetSetting(SettingSetupFreshClaim, val)
+}
+
+// normalizeSetupState avoids showing onboarding on existing/upgraded instances
+// that predate the setup flow: if admins exist and setup was never explicitly
+// completed or freshly claimed, treat setup as completed.
+func (s *Store) normalizeSetupState() error {
+	done, err := s.SetupCompleted()
+	if err != nil || done {
+		return err
+	}
+	fresh, err := s.SetupFreshClaim()
+	if err != nil || fresh {
+		return err
+	}
+	hasAdmin, err := s.HasAnyAdmin()
+	if err != nil || !hasAdmin {
+		return err
+	}
+	return s.SetSetupCompleted(true)
+}
+
+// SetupNeeded reports whether first-run admin claim/onboarding entry is needed.
+// Existing instances with an admin (or explicitly completed/fresh-claimed setup)
+// are not treated as needing initial claim.
+func (s *Store) SetupNeeded() (bool, error) {
+	if err := s.normalizeSetupState(); err != nil {
+		return false, err
+	}
+	done, err := s.SetupCompleted()
+	if err != nil || done {
+		return false, err
+	}
+	fresh, err := s.SetupFreshClaim()
+	if err != nil || fresh {
+		return false, err
+	}
+	hasAdmin, err := s.HasAnyAdmin()
+	if err != nil {
+		return false, err
+	}
+	return !hasAdmin, nil
+}
+
+// SetupOnboarding reports whether onboarding UI should be shown to admins:
+// setup is not completed and this is a fresh setup flow (pre-claim or claimed).
+func (s *Store) SetupOnboarding() (bool, error) {
+	if err := s.normalizeSetupState(); err != nil {
+		return false, err
+	}
+	done, err := s.SetupCompleted()
+	if err != nil || done {
+		return false, err
+	}
+	fresh, err := s.SetupFreshClaim()
+	if err != nil {
+		return false, err
+	}
+	if fresh {
+		return true, nil
+	}
+	hasAdmin, err := s.HasAnyAdmin()
+	if err != nil {
+		return false, err
+	}
+	return !hasAdmin, nil
 }
 
 // SetSetting stores an arbitrary opaque blob under a key. It is used to
@@ -1487,7 +1600,13 @@ func anonymousFeatureKey(feature string) (string, bool) {
 // school may auto-register from its first login. A missing row means yes,
 // preserving the behaviour every existing deployment had before the switch
 // existed.
-const SettingSchoolsAllowNew = "schools_allow_new"
+const (
+	SettingSchoolsAllowNew = "schools_allow_new"
+	// SettingTrustedProxies stores the comma/space-separated list of trusted
+	// reverse-proxy IPs/CIDRs. When the direct peer matches, forwarded client-IP
+	// headers are honored for real client IP resolution.
+	SettingTrustedProxies = "trusted_proxies"
+)
 
 // AllowNewSchools reports whether a school that is not registered yet may
 // register itself by logging in.
@@ -1708,7 +1827,7 @@ func (s *Store) SetDefaultPerm(feature string, allowed bool) error {
 		}
 	}
 	// update v2 default-new-user group grants and role defaults
-	return s.v2SetDefaultNewUserGroup(feature, allowed)
+	return s.setDefaultNewUserCapGroup(feature, allowed)
 }
 
 // ClearDefaultPerms removes every default, so newly seen users start with no
@@ -1720,7 +1839,7 @@ func (s *Store) ClearDefaultPerms() error {
 			return err
 		}
 	}
-	if id, ok, _ := s.groupIDByName("", V2GroupDefaultNewUser); ok {
+	if id, ok, _ := s.groupIDByName("", CapGroupDefaultNewUser); ok {
 		_, _ = s.db.Exec(`DELETE FROM cap_group_grants WHERE group_id=?`, id)
 		_, _ = s.db.Exec(`DELETE FROM role_default_groups WHERE group_id=?`, id)
 	}
@@ -1734,7 +1853,7 @@ func (s *Store) applyDefaultPerms(username string) error {
 	if err != nil {
 		return err
 	}
-	// Apply to v2 (per-user groups/direct grants) and keep v1 explicit perm rows
+	// Apply to access model (per-user groups/direct grants) and keep v1 explicit perm rows
 	// for compat/admin visibility. Defaults are applied only on first insert.
 	for _, feature := range []string{FeatureRecon, FeatureBoosted, FeatureEditor, FeatureTechniker} {
 		if !defaults[feature] {
@@ -1743,7 +1862,7 @@ func (s *Store) applyDefaultPerms(username string) error {
 		if err := s.setPermRow(norm(username), feature, true); err != nil {
 			return err
 		}
-		if err := s.v2ApplyDirectFeature(username, feature, true); err != nil {
+		if err := s.applyDirectFeatureFromV1(username, feature, true); err != nil {
 			return err
 		}
 	}
