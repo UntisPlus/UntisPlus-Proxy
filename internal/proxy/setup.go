@@ -166,19 +166,36 @@ var (
 func (p *Proxy) handleRoot(w http.ResponseWriter, r *http.Request) {
 	needed, _ := p.store.SetupNeeded()
 	title := "UntisPlus Proxy"
-	msg := "Dashboard and administration"
+	heading := "UntisPlus Proxy"
+	msg := "Administration dashboard, access control, notifications, and operations for this proxy instance."
 	linkText := "Open dashboard"
+	badge := "Ready"
+	badgeStyle := "background:rgba(47,158,99,.16);border:1px solid rgba(47,158,99,.35);color:#8fe0b3;"
 	if needed {
 		title = "UntisPlus Proxy — Setup"
-		msg = "Initial setup required. Sign in to claim admin access and complete onboarding (trusted reverse-proxy IPs, roles, ntfy, users)."
-		linkText = "Continue to setup/login"
+		heading = "Initial setup required"
+		msg = "Sign in to claim admin access and complete onboarding. You'll be guided to configure trusted reverse-proxy client IPs, roles/access, ntfy/webhook alerts, and users/admins."
+		linkText = "Continue to setup & login"
+		badge = "Setup pending"
+		badgeStyle = "background:rgba(217,119,6,.16);border:1px solid rgba(217,119,6,.35);color:#ffd08a;"
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + title + `</title>
-<style>body{font-family:system-ui,sans-serif;background:#111216;color:#e6e6e6;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center}
-.card{max-width:560px;background:#1c1e26;border:1px solid #2a2d37;border-radius:12px;padding:1.5rem}
-h1{font-size:1.2rem;margin:0 0 .5rem}p{color:#b5bccb;line-height:1.5;margin:.4rem 0 1rem}
-a.btn{display:inline-block;background:#3b82f6;color:#fff;text-decoration:none;padding:.6rem .9rem;border-radius:8px;font-weight:600}
-.small{font-size:.85rem;color:#9aa0ae;margin-top:1rem}</style></head><body><div class="card"><h1>` + title + `</h1><p>` + msg + `</p><a class="btn" href="/admin">` + linkText + `</a><div class="small">If running behind a reverse proxy, complete trusted-proxy IP setup during onboarding so the server sees real client IPs.</div></div></body></html>`))
+<style>
+:root{color-scheme:dark;--bg:#0f1115;--panel:#171a21;--border:#2a2f3a;--text:#e8edf7;--muted:#9aa6b8;--accent:#4f8cff}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:1rem;background:radial-gradient(1000px 500px at 10% -10%,rgba(79,140,255,.18),transparent),var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
+.card{width:min(640px,100%);background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:1.4rem 1.4rem 1.2rem;box-shadow:0 20px 50px rgba(0,0,0,.35)}
+.badge{display:inline-flex;align-items:center;padding:.2rem .55rem;border-radius:999px;font-size:.75rem;margin-bottom:.65rem}
+h1{font-size:1.35rem;margin:0 0 .4rem}p{color:var(--muted);line-height:1.55;margin:.3rem 0 .95rem}
+.actions{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
+a.btn{display:inline-block;background:var(--accent);color:#fff;text-decoration:none;padding:.65rem .9rem;border-radius:10px;font-weight:600}
+a.btn.secondary{background:#2a3140;border:1px solid #394150;color:var(--text)}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.6rem;margin-top:1rem}
+.item{border:1px solid var(--border);border-radius:10px;padding:.65rem .7rem;background:rgba(255,255,255,.02)}
+.item b{display:block;font-size:.86rem;margin-bottom:.15rem;color:var(--text)}.item span{font-size:.8rem;color:var(--muted);line-height:1.4}
+.small{font-size:.82rem;color:var(--muted);margin-top:1rem;line-height:1.45}
+</style></head><body><div class="card"><div class="badge" style="` + badgeStyle + `">` + badge + `</div><h1>` + heading + `</h1><p>` + msg + `</p><div class="actions"><a class="btn" href="/admin">` + linkText + `</a></div>
+<div class="grid"><div class="item"><b>Trusted proxy / real IP</b><span>Configure trusted reverse proxies so the server sees real client IPs for rate limiting and logs.</span></div><div class="item"><b>Access control</b><span>Define capability groups, role defaults, mappings, and grants for precise permissions.</span></div><div class="item"><b>Notifications</b><span>Set up ntfy topics, webhooks, and outage alerts for operations and changes.</span></div><div class="item"><b>Users & schools</b><span>Manage admins, user permissions, schools, anonymous access, tokens, and events.</span></div></div>
+<div class="small">If running behind a reverse proxy/load balancer, complete trusted-proxy setup during onboarding to ensure forwarded client IP headers are handled safely.</div></div></body></html>`))
 }

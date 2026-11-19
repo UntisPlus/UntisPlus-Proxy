@@ -3,51 +3,62 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>untis-proxy admin &middot; login</title>
+<title>UntisPlus Proxy · Admin Login</title>
 <style>
-  :root { color-scheme: light dark; }
-  body { font-family: system-ui, sans-serif; margin: 0; min-height: 100vh; display: flex;
-         align-items: center; justify-content: center; background:#111216; color:#e6e6e6; }
-  form { width: min(320px, 90vw); background:#1c1e26; border:1px solid #2a2d37; border-radius:10px;
-         padding:1.4rem; display:flex; flex-direction:column; gap:.7rem; }
-  h1 { font-size:1.1rem; margin:0 0 .2rem; font-weight:600; }
-  label { font-size:.78rem; color:#9aa0ae; display:flex; flex-direction:column; gap:.3rem; }
-  input { background:#14161c; border:1px solid #353947; color:#e6e6e6; border-radius:6px; padding:.5rem .6rem; }
-  button { background:#3b82f6; border:0; color:white; border-radius:6px; padding:.55rem; cursor:pointer; font-size:.86rem; }
-  button:disabled { opacity:.5; cursor:default; }
-  .err { color:#f87171; font-size:.8rem; min-height:1rem; }
-  .hint { color:#9aa0ae; font-size:.74rem; }
-  code { background:#14161c; padding:.1rem .3rem; border-radius:4px; }
+  :root { color-scheme: dark; --bg:#0f1115; --panel:#171a21; --border:#2a2f3a; --text:#e8edf7; --muted:#9aa6b8; --accent:#4f8cff; --danger:#f87171; }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background: radial-gradient(1200px 600px at 10% -10%, rgba(79,140,255,.18), transparent), var(--bg); color:var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; padding: 1rem; }
+  .wrap { width: min(440px, 100%); }
+  .card { background: var(--panel); border:1px solid var(--border); border-radius:14px; padding:1.25rem 1.25rem 1.1rem; box-shadow: 0 20px 50px rgba(0,0,0,.35); }
+  h1 { margin:0 0 .25rem; font-size:1.2rem; }
+  .sub { margin:0 0 1rem; color:var(--muted); font-size:.9rem; line-height:1.45; }
+  form { display:flex; flex-direction:column; gap:.75rem; }
+  label { display:flex; flex-direction:column; gap:.3rem; font-size:.82rem; color:var(--muted); }
+  input { background:#10141b; border:1px solid #364050; color:var(--text); border-radius:10px; padding:.65rem .7rem; font-size:.95rem; }
+  input:focus { outline:2px solid rgba(79,140,255,.35); border-color: rgba(79,140,255,.55); }
+  button { margin-top:.1rem; background:var(--accent); color:white; border:0; border-radius:10px; padding:.7rem .8rem; font-weight:600; cursor:pointer; font-size:.95rem; }
+  button:disabled { opacity:.6; cursor:default; }
+  .err { color:var(--danger); font-size:.84rem; min-height:1.2rem; }
+  .hint { margin-top:.8rem; color:var(--muted); font-size:.8rem; line-height:1.45; border-top:1px solid var(--border); padding-top:.75rem; }
+  .callout { background: rgba(79,140,255,.1); border:1px solid rgba(79,140,255,.25); border-radius:10px; padding:.6rem .7rem; color:#dce8ff; font-size:.82rem; line-height:1.45; margin-bottom:.2rem; }
+  code { background: rgba(255,255,255,.06); padding:.1rem .3rem; border-radius:5px; }
 </style>
 </head>
 <body>
-<form id="f" autocomplete="on">
-  <h1>untis-proxy admin</h1>
-  <label>Untis username
-    <input id="user" name="user" autocomplete="username" required>
-  </label>
-  <label>6-digit code (from your TOTP app)
-    <input id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code"
-           pattern="[0-9]{6}" maxlength="6" placeholder="123456" required>
-  </label>
-  <button id="btn" type="submit">Sign in</button>
-  <div class="err" id="err"></div>
-  <div class="hint" id="hint">Logs in through the same <code>getUserData2017</code> call the app uses. Admin access is restricted to users holding the <code>admin</code> flag.</div>
-</form>
+  <div class="wrap">
+    <div class="card">
+      <h1>UntisPlus Proxy Admin</h1>
+      <p class="sub">Sign in with your Untis account and 6-digit OTP code to access the admin dashboard.</p>
+      <div id="setupCallout" class="callout" style="display:none"></div>
+      <form id="f" autocomplete="on">
+        <label>Untis username
+          <input id="user" name="user" autocomplete="username" required>
+        </label>
+        <label>6-digit code (TOTP)
+          <input id="otp" name="otp" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" placeholder="123456" required>
+        </label>
+        <button id="btn" type="submit">Sign in</button>
+        <div class="err" id="err"></div>
+      </form>
+      <div class="hint" id="hint">Authentication uses the same <code>getUserData2017</code> flow as the app. Access requires an account with admin privileges. After a fresh install, the first successful non-anonymous login can claim admin access and open onboarding.</div>
+    </div>
+  </div>
 <script>
 const f = document.getElementById('f');
 const btn = document.getElementById('btn');
 const err = document.getElementById('err');
 const user = document.getElementById('user');
 const otp = document.getElementById('otp');
+const setupCallout = document.getElementById('setupCallout');
 try { user.value = localStorage.getItem('admin_user') || ''; } catch (e) {}
 
 (async () => {
   try {
     const r = await fetch('/setup', { credentials: 'same-origin' });
     const j = await r.json().catch(() => ({}));
-    if (j && j.setupNeeded) {
-      document.getElementById('hint').innerHTML = 'Initial setup detected: sign in with your Untis account. The first successful login will claim admin access and open onboarding (trusted reverse-proxy IPs, roles, ntfy, users).';
+    if (j && (j.setupNeeded || j.canClaimAdmin || j.hasAdmin === false)) {
+      setupCallout.style.display = 'block';
+      setupCallout.textContent = 'Initial setup detected. Sign in to claim/open admin onboarding (trusted reverse-proxy IPs, roles & access, ntfy/webhooks, users).';
     }
   } catch (e) {}
 })();
@@ -70,23 +81,23 @@ f.addEventListener('submit', async (ev) => {
         body: JSON.stringify(body),
       });
     } catch (e) {
-      throw new Error('network error: ' + e.message);
+      throw new Error('Network error: ' + e.message);
     }
     const j = await r.json().catch(() => ({}));
     if (!r.ok || (j && j.error)) {
-      throw new Error((j && j.error && j.error.message) || ('login failed (HTTP ' + r.status + ')'));
+      throw new Error((j && j.error && j.error.message) || ('Login failed (HTTP ' + r.status + ')'));
     }
     const s = await fetch('/admin/status', { credentials: 'include' });
     if (s.ok) {
       try { localStorage.setItem('admin_user', user.value); } catch (e) {}
-      location.href = '/admin';
+      location.href = '/admin#onboarding';
     } else if (s.status === 403) {
       err.textContent = 'Signed in, but this account is not an admin.';
     } else {
-      throw new Error('session not accepted (HTTP ' + s.status + ')');
+      throw new Error('Session not accepted (HTTP ' + s.status + ')');
     }
   } catch (e) {
-    err.textContent = e.message || 'login failed';
+    err.textContent = e.message || 'Login failed';
   } finally {
     btn.disabled = false;
     btn.textContent = 'Sign in';
