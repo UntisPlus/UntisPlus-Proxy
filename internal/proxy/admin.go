@@ -178,6 +178,30 @@ func (p *Proxy) adminAccessAPI(w http.ResponseWriter, r *http.Request, parts []s
 		return
 	}
 	switch parts[0] {
+	case "group-editor":
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var req struct {
+			ID          int64          `json:"id"`
+			School      string         `json:"school"`
+			Name        string         `json:"name"`
+			Description string         `json:"description"`
+			Grants      map[string]int `json:"grants"`
+			AssignTo    string         `json:"assignTo"`
+		}
+		if err := decodeJSONBody(r, &req); err != nil {
+			badRequest(w, "invalid group")
+			return
+		}
+		id, err := p.store.SavePermissionGroup(req.ID, req.School, req.Name, req.Description, req.Grants, req.AssignTo)
+		if err != nil {
+			badRequest(w, err.Error())
+			return
+		}
+		p.audit(r, req.School, "access.group.save", strconv.FormatInt(id, 10), req.Name)
+		p.writeJSON(w, map[string]any{"ok": true, "id": id})
 	case "effective":
 		if r.Method != http.MethodGet {
 			p.writeJSON(w, map[string]any{"error": "not found"})
@@ -228,6 +252,8 @@ func (p *Proxy) adminAccessAPI(w http.ResponseWriter, r *http.Request, parts []s
 		if len(roleDefIDs) == 0 {
 			roleDefIDs, _ = p.store.ListRoleDefaultGroups("", string(res.Role))
 		}
+		everyoneIDs, _ := p.store.ListRoleDefaultGroups(school, "*")
+		roleDefIDs = append(roleDefIDs, everyoneIDs...)
 		p.writeJSON(w, map[string]any{
 			"school": school, "user": username, "role": res.Role,
 			"groups": groups, "groupIds": res.GroupIDs,
@@ -509,7 +535,7 @@ func (p *Proxy) adminAccessAPI(w http.ResponseWriter, r *http.Request, parts []s
 			role := strings.TrimSpace(r.URL.Query().Get("role"))
 			roles := []string{role}
 			if role == "" {
-				roles = []string{"student", "teacher", "staff", "parent", "unknown", "other"}
+				roles = []string{"*", "student", "teacher", "staff", "parent", "unknown", "other"}
 			}
 			out := map[string]any{}
 			for _, rname := range roles {

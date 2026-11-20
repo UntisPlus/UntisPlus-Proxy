@@ -98,7 +98,8 @@ func (p *Proxy) handleSubsWebhooks(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	if u.Username != "#anonymous#" && !p.canNotifyManageOwn(u, school, "webhooks") && !p.isAdmin(u.Username) {
+	isCreate := r.Method == http.MethodPost && strings.Trim(r.URL.Path, "/") == "api/webhooks"
+	if !isCreate && u.Username != "#anonymous#" && !p.canNotifyManageOwn(u, school, "webhooks") && !p.isAdmin(u.Username) {
 		p.forbidden(w)
 		return
 	}
@@ -263,7 +264,8 @@ func (p *Proxy) handleSubsNtfy(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
-	if u.Username != "#anonymous#" && !p.canNotifyManageOwn(u, school, "ntfy") && !p.isAdmin(u.Username) {
+	isCreate := r.Method == http.MethodPost && strings.Trim(r.URL.Path, "/") == "api/ntfy"
+	if !isCreate && u.Username != "#anonymous#" && !p.canNotifyManageOwn(u, school, "ntfy") && !p.isAdmin(u.Username) {
 		p.forbidden(w)
 		return
 	}

@@ -159,6 +159,8 @@
 @media(max-width:980px){.app{grid-template-columns:220px minmax(0,1fr)}.nav a{padding:12px 16px;gap:14px;font-size:13px}.brand h1{font-size:18px}.content{padding:22px 18px}.side-status{margin-left:20px}.brand{padding:20px 15px}}
 @media(max-width:680px){.app{display:block}.sidebar{height:auto;position:static;padding-bottom:10px}.brand{padding:14px 18px}.side-status,.nav-group{display:none}.nav{flex-direction:row;flex-wrap:wrap}.nav a{font-size:12px;padding:9px 12px;min-height:36px;gap:8px}.dot{width:17px;height:17px}.dot svg{width:17px;height:17px}.content{padding:20px 14px}.topbar .actions{gap:5px}.panel{padding:16px}.panel-header{margin:0 0 12px;padding:0 0 12px}.help-icon .help-tip{left:auto;right:0}}
 
+
+.permission-section{border:1px solid var(--border);margin:12px 0;background:#fff}.permission-section>summary{padding:12px;font-size:13px;font-weight:600;background:#f7f8fa;cursor:pointer}.permission-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 12px;border-top:1px solid #edf0f2;font-size:12px}.permission-row>div{flex:1}.permission-row select{width:145px;flex:0 0 145px}.permission-row .help-tip{left:auto;right:0}.permission-section .help-icon{cursor:pointer}@media(max-width:680px){.permission-row{align-items:flex-start}.permission-row select{width:112px;flex-basis:112px}}
 </style>
 </head>
 <body>
@@ -403,12 +405,21 @@
 
         <div class="grid two">
           <div class="panel">
-            <div class="panel-header"><div><h3>Create permission groups</h3><p class="desc">Start from a ready-made access set, give the group a clear name, then assign it to an account type or individual.</p></div></div>
-            <div class="row mb"><input id="simpleGroupName" placeholder="Group name" aria-label="Group name" style="flex:1;min-width:12rem"><select id="simpleGroupTemplate" aria-label="Starting access"><option value="">Choose starting access…</option><option value="blank">Start with no extra access</option></select><button onclick="createSimpleGroup()">Create group</button></div>
+            <div class="panel-header"><div><h3>Create permission groups</h3><p class="desc">Choose each permission separately, save the group, then decide who receives it. Built-in groups can be copied as a starting point.</p></div><button class="secondary mini" onclick="newPermissionGroup()">New group</button></div>
+            <div id="groupEditor">
+              <input type="hidden" id="permissionGroupId" value="0">
+              <div class="row mb"><label class="field">Group name<input id="simpleGroupName" maxlength="120" placeholder="For example: Student calendar access"></label><label class="field">Start with<select id="simpleGroupTemplate" onchange="loadPermissionTemplate(this.value)"><option value="blank">Choose permissions myself</option></select></label></div>
+              <label class="field mb">Description<input id="permissionGroupDescription" placeholder="What is this group for?"></label>
+              <p class="small">Allow grants this action. Block explicitly refuses it at this rule level. Leave unchanged adds no rule; access may still come from other groups, account defaults or a direct exception. A direct person-level exception takes priority. Within the same level, Block wins over Allow.</p>
+              <div id="permissionChoices"></div>
+              <div class="row mt"><label class="field">After saving, also give this group to<select id="permissionGroupAudience"><option value="">Nobody automatically — assign people individually</option><option value="*">Everyone in this school, now and in the future</option><option value="student">Students</option><option value="teacher">Teachers</option><option value="staff">Staff (configured mapping)</option><option value="parent">Parents (configured mapping)</option><option value="other">Other account types</option><option value="unknown">Unclassified accounts</option></select></label><button id="permissionGroupSave" onclick="createSimpleGroup()">Save group</button></div>
+              <div id="permissionGroupMessage" role="status" aria-live="polite" class="small mt"></div>
+            </div>
+            <h4>Your available groups</h4>
             <div id="simpleGroupList" class="stack"><div class="empty">Loading access groups…</div></div>
           </div>
           <div class="panel">
-            <div class="panel-header"><div><h3>Default access by account type</h3><p class="desc">Choose which groups students, teachers, staff, and other accounts receive.</p></div></div>
+            <div class="panel-header"><div><h3>Default access by account type</h3><p class="desc">Choose which groups everyone or each account type receives. Staff and parent types require a verified school-specific mapping.</p></div></div>
             <div id="simpleRoleDefaults" class="stack"><div class="empty">Loading access groups…</div></div>
           </div>
         </div>
@@ -967,7 +978,7 @@ function groupID(g){ return Number(g && (g.ID || g.id) || 0); }
 function groupName(g){ const n=String(g && (g.Name || g.name) || 'Access group'); return simpleGroupNames[n] || n; }
 function groupDescription(g){ const n=String(g && (g.Name || g.name) || ''); return simpleGroupDescriptions[n] || String(g && (g.Description || g.description) || ''); }
 function simpleAccessSchool(){ return ($('simpleAccessSchool')?.value || defaultSchool() || '').trim(); }
-function roleLabel(role){ return ({student:'Students',teacher:'Teachers',staff:'Staff',unknown:'Unclassified accounts',other:'Other accounts',parent:'Parents'})[role] || role; }
+function roleLabel(role){ return ({'*':'Everyone',student:'Students',teacher:'Teachers',staff:'Staff',unknown:'Unclassified accounts',other:'Other accounts',parent:'Parents (configured mapping)'})[role] || role; }
 async function loadSimpleAccess(){
   const schoolSel=$('simpleAccessSchool');
   if(schoolSel){
@@ -995,43 +1006,60 @@ async function loadSimpleAccess(){
   await renderSimpleRoleDefaults(school,groups);
   if(userSel && userSel.value) await loadSimpleUserAccess();
 }
+const permissionSections=[["Personal and shared timetables", [["timetable.student.personal.upstream.view", "View own personal timetable", "Uses the person’s own WebUntis account and its normal viewing limits."], ["timetable.student.personal.boosted_raw.view", "View own personal timetable through a teacher account", "Uses a saved teacher account for the person’s own timetable. Future dates are limited by what the school has published and what that account can access."], ["timetable.class.upstream.view", "View own class timetable", "Allows the student’s own class timetable through their normal school account."], ["pool.class.view", "Browse classes shared by users", "Shows the list of classes contributed by people who have signed in."], ["timetable.class.pooled.view", "View class timetables shared by users", "Reads shared class timetables using the account that contributed each class."]]], ["Timetables through a teacher account", [["timetable.class.boosted_raw.view", "View class timetables through a teacher account", "Uses a saved teacher account to fetch class timetables. This permission currently covers all available classes; a selected-class restriction is not yet supported."], ["timetable.teacher.boosted_raw.view", "View teacher timetables through a teacher account", "Uses a saved teacher account to fetch teacher timetables. Covers all available teachers."], ["timetable.room.boosted_raw.view", "View room timetables through a teacher account", "Uses a saved teacher account to fetch room timetables. Covers all available rooms."], ["timetable.subject.boosted_raw.view", "View subject timetables through a teacher account", "Uses a saved teacher account to fetch subject timetables. Covers all available subjects."]]], ["Timetables reconstructed from shared classes", [["timetable.teacher.reconstructed.view", "View reconstructed teacher timetables", "Builds teacher timetables from lessons in shared class data. It can only include the classes and dates collected by the proxy."], ["timetable.room.reconstructed.view", "View reconstructed room timetables", "Builds room timetables from shared class data. Missing classes can make this view incomplete."], ["timetable.subject.reconstructed.view", "View reconstructed subject timetables", "Builds subject timetables from shared class data. Does not use a teacher account to fetch the whole timetable."]]], ["Notifications", [["notify.ntfy.create", "Add ntfy topics", "Allows the person to create ntfy subscriptions for timetable changes they may access. It does not grant extra timetable access."], ["notify.ntfy.manage_own", "Manage own ntfy topics", "Allows the person to list, test and remove their own ntfy subscriptions."], ["notify.webhook.create", "Add webhooks", "Allows the person to send timetable change notifications to a webhook URL for targets they may access."], ["notify.webhook.manage_own", "Manage own webhooks", "Allows the person to list, test and remove their own webhook subscriptions."]]], ["Calendar links", [["calendar.student.personal.mint", "Create a calendar link for own timetable", "Creates a subscription link for the person’s own timetable. Anyone with the link can read that feed."], ["calendar.class.mint", "Create calendar links for classes", "Creates calendar subscription links for accessible classes. Does not grant access to additional classes."], ["calendar.teacher.mint", "Create calendar links for teachers", "Creates calendar links for teacher timetables the person may already view."], ["calendar.room.mint", "Create calendar links for rooms", "Creates calendar links for room timetables the person may already view."], ["calendar.subject.mint", "Create calendar links for subjects", "Creates calendar links for subject timetables the person may already view."], ["calendar.technik.mint", "Create calendar links for Technik events", "Creates calendar subscription links for the Technik event timetable when event access is also allowed."], ["calendar.manage_own", "Manage own calendar links", "Lists, updates, rotates and revokes the person’s existing calendar links."]]], ["Timetable changes", [["changes.class.view", "Read class timetable changes", "Allows checking for changes to class timetables the person may access."], ["changes.class.stream", "Receive live class timetable changes", "Allows live change updates for accessible class timetables."], ["changes.element.view", "Read teacher, room and subject changes", "Allows checking changes to these timetables when the person also has timetable access."], ["changes.element.stream", "Receive live teacher, room and subject changes", "Allows live updates for accessible teacher, room and subject timetables."], ["changes.school.view", "Read school-wide timetable changes", "Allows checking timetable changes across the school."], ["changes.school.stream", "Receive live school-wide changes", "Allows live change updates across the school."]]], ["Attendance and lesson records", [["absence.own.read", "Read own absences", "Reads the person’s own absence records. Does not allow changing attendance."], ["absence.write", "Edit attendance records", "Allows supported absence and attendance changes. The upstream school account must permit the requested change."], ["lesson.write", "Edit lesson records", "Allows supported lesson record writes. The upstream school account must permit the requested change."]]], ["Technik events", [["events.technik.view", "View Technik events", "Allows viewing the aggregate Technik event timetable."], ["events.technik.manage", "Manage Technik events and attendance", "Allows the current Technik management and event attendance actions. Separate event creation/editing/attendance controls will be handled in the Technik work next."]]]];
+function permissionHelp(text){return '<button type="button" class="help-icon" aria-label="Explain this permission">i<span class="help-tip" role="tooltip">'+esc(text)+'</span></button>';}
+function renderPermissionChoices(grants={}){
+  const box=$('permissionChoices');if(!box)return;
+  box.innerHTML=permissionSections.map(([section,items])=>'<details class="permission-section" open><summary>'+esc(section)+'</summary>'+items.map(([key,label,help])=>'<div class="permission-row"><div><label for="permission-'+esc(key)+'">'+esc(label)+'</label>'+permissionHelp(help)+'</div><select id="permission-'+esc(key)+'" aria-label="'+esc(label)+'">'+[[0,'Leave unchanged'],[1,'Allow'],[-1,'Block']].map(([value,title])=>'<option value="'+value+'" '+(Number(grants[key]||0)===value?'selected':'')+'>'+title+'</option>').join('')+'</select></div>').join('')+'</details>').join('');
+}
+function newPermissionGroup(){
+ $('permissionGroupId').value='0';$('simpleGroupName').value='';$('permissionGroupDescription').value='';$('permissionGroupAudience').value='';$('simpleGroupTemplate').value='blank';$('permissionGroupMessage').textContent='';renderPermissionChoices();
+}
 function renderSimpleGroupList(groups){
-  const box=$('simpleGroupList'); if(!box)return;
-  if(!groups.length){box.innerHTML='<div class="empty">No access groups found.</div>';return;}
-  box.innerHTML=groups.map(g=>'<div class="callout"><strong>'+esc(groupName(g))+'</strong>'+
-    (groupDescription(g)?'<div class="small muted mt">'+esc(groupDescription(g))+'</div>':'')+
-    '<div class="small muted mt">'+(g.School||g.school?'School-specific':'Available to all schools')+'</div></div>').join('');
+ const box=$('simpleGroupList');if(!box)return;
+ box.innerHTML=groups.length?groups.map(g=>{
+  const builtin=String(g.Name||g.name||'').startsWith('v2.');
+  return '<div class="callout"><div class="row" style="justify-content:space-between"><strong>'+esc(groupName(g))+'</strong><button class="secondary mini" onclick="editPermissionGroup('+groupID(g)+','+builtin+')">'+(builtin?'Use as starting point':'Edit permissions')+'</button></div><p class="small muted">'+esc(groupDescription(g))+'</p><span class="small muted">'+(g.School||g.school?'This school':'All schools')+(builtin?' · Built-in template':'')+'</span></div>';
+ }).join(''):'<div class="empty">Create your first group above.</div>';
 }
 function renderSimpleGroupTemplates(groups){
-  const sel=$('simpleGroupTemplate');if(!sel)return;
-  const previous=sel.value, useful=new Set(['v2.recon','v2.boosted','v2.editor','v2.techniker']);
-  sel.innerHTML='<option value="">Choose starting access…</option><option value="blank">Start with no extra access</option>';
-  groups.filter(g=>useful.has(String(g.Name||g.name||''))).forEach(g=>{
-    const opt=document.createElement('option');opt.value=String(groupID(g));opt.textContent=groupName(g);sel.appendChild(opt);
-  });
-  if(Array.from(sel.options).some(o=>o.value===previous))sel.value=previous;
+ const sel=$('simpleGroupTemplate');if(!sel)return;
+ const prev=sel.value;sel.innerHTML='<option value="blank">Choose permissions myself</option>';
+ groups.forEach(g=>{const o=document.createElement('option');o.value=String(groupID(g));o.textContent=groupName(g);sel.appendChild(o);});
+ if(Array.from(sel.options).some(o=>o.value===prev))sel.value=prev;
+ if(!$('permissionChoices').innerHTML)renderPermissionChoices();
+}
+async function loadPermissionTemplate(id){
+ if(!id||id==='blank'){renderPermissionChoices();return;}
+ try{
+  const source=await api('GET','access/groups/'+encodeURIComponent(id));if(source.error)throw new Error(source.error);
+  const grants={};(source.grants||[]).forEach(g=>{grants[g.Capability||g.capability]=Number(g.Effect||g.effect||0);});renderPermissionChoices(grants);
+ }catch(e){$('permissionGroupMessage').textContent='Could not load permissions: '+e.message;}
+}
+async function editPermissionGroup(id,copy){
+ try{
+  const data=await api('GET','access/groups/'+id);if(data.error||!data.group)throw new Error(data.error||'Group not found');
+  const g=data.group, school=g.School||g.school||'';
+  if(!copy&&school!==simpleAccessSchool())throw new Error('Select this group’s school before editing. Global groups can be copied into this school.');
+  $('permissionGroupId').value=copy?'0':String(id);$('simpleGroupName').value=groupName(g)+(copy?' copy':'');$('permissionGroupDescription').value=groupDescription(g);$('permissionGroupAudience').value='';
+  const grants={};(data.grants||[]).forEach(g=>{grants[g.Capability||g.capability]=Number(g.Effect||g.effect||0);});renderPermissionChoices(grants);
+  $('permissionGroupMessage').textContent=copy?'Choose permissions and save your own group.':'Editing this group affects everyone who receives it.';
+  try{$('groupEditor').scrollIntoView({behavior:'smooth',block:'start'});}catch(_){}
+ }catch(e){$('permissionGroupMessage').textContent=e.message;}
 }
 async function createSimpleGroup(){
-  const input=$('simpleGroupName'), name=(input?.value||'').trim(), school=simpleAccessSchool(), template=$('simpleGroupTemplate')?.value||'';
-  if(!name){log('Enter a name for the access group.');input?.focus();return;}
-  if(!template){log('Choose a starting access set before creating the group.');$('simpleGroupTemplate')?.focus();return;}
-  let createdID=0;
-  try{
-    const source=template==='blank'?null:await api('GET','access/groups/'+encodeURIComponent(template));
-    const sourceName=source&&source.group?String(source.group.Name||source.group.name||''):'';
-    const result=await api('POST','access/groups',{school,name,description:sourceName?('Based on '+groupName({name:sourceName})+'.'):''});
-    if(result && result.ok){
-      createdID=Number(result.id)||0;
-      const grants=source&&Array.isArray(source.grants)?source.grants:[];
-      for(const grant of grants){
-        const capability=grant.Capability||grant.capability, effect=Number(grant.Effect||grant.effect||0);
-        if(capability&&effect)await api('POST','access/groups/'+result.id+'/grants',{capability,effect});
-      }
-      if(input)input.value='';$('simpleGroupTemplate').value='';
-      log('Created access group “'+name+'”'+(sourceName?' based on '+groupName({name:sourceName}):'')+'.');await loadSimpleAccess();
-    }
-    else log('Could not create access group.');
-  }catch(e){if(createdID){try{await api('DELETE','access/groups/'+createdID);}catch(_){}}log('Could not create access group: '+e.message);}
+ const message=$('permissionGroupMessage'),button=$('permissionGroupSave');
+ const name=($('simpleGroupName').value||'').trim(),school=simpleAccessSchool();
+ if(!school||!name){message.textContent='Choose a school and enter a group name.';return;}
+ const grants={};permissionSections.forEach(([,items])=>items.forEach(([key])=>{const value=Number($('permission-'+key).value||0);if(value)grants[key]=value;}));
+ const assignTo=$('permissionGroupAudience').value||'';
+ if(assignTo&&!confirm('Give this group to '+(assignTo==='*'?'everyone':roleLabel(assignTo).toLowerCase())+' in '+school+'? This includes current and future accounts.'))return;
+ button.disabled=true;message.textContent='Saving group…';
+ try{
+  const data=await api('POST','access/group-editor',{id:Number($('permissionGroupId').value)||0,school,name,description:$('permissionGroupDescription').value.trim(),grants,assignTo});
+  if(data.error||!data.ok)throw new Error(data.error||'Group could not be saved');
+  $('permissionGroupId').value=String(data.id);message.textContent='Saved “'+name+'”. '+(assignTo?'The selected audience now receives this group.':'Use Choose groups below to assign it to individual people.');log('Saved permission group '+name);await loadSimpleAccess();
+ }catch(e){message.textContent='Could not save group: '+e.message;}finally{button.disabled=false;}
 }
 function renderSimplePeople(users){
   const body=$('simpleAccessPeople')?.querySelector('tbody'); if(!body)return;
@@ -1059,7 +1087,7 @@ async function renderSimpleRoleDefaults(school,groups){
   try{
     const data=await api('GET','access/role-defaults?school='+encodeURIComponent(school));
     const defaults=data.roleDefaults||{};
-    const roles=['student','teacher','staff','parent','other','unknown'];
+    const roles=['*','student','teacher','staff','parent','other','unknown'];
     box.innerHTML=roles.map(role=>{
       const active=(defaults[role]||[]).map(Number);
       const relevant=groups;
@@ -1090,7 +1118,7 @@ async function loadSimpleUserAccess(){
       api('GET','access/effective?school='+encodeURIComponent(school)+'&user='+encodeURIComponent(user)),
       api('GET','access/user-groups?school='+encodeURIComponent(school)+'&user='+encodeURIComponent(user))
     ]);
-    const groups=(window.simpleAccessGroups||[]).filter(g=>!['v2.student_base','v2.teacher_base'].includes(String(g.Name||g.name||''))), assignedIds=new Set((assigned.groups||[]).map(groupID));
+    const groups=(window.simpleAccessGroups||[]), assignedIds=new Set((assigned.groups||[]).map(groupID));
     box.innerHTML='<div class="panel"><div class="panel-header"><div><h3>'+esc(user)+' · '+esc(roleLabel(eff.role||'account'))+'</h3><p class="desc">Default groups come from the account type. Add or remove extra groups below.</p></div></div>'+
       '<div class="stack">'+groups.map(g=>'<label class="row callout"><input type="checkbox" '+(assignedIds.has(groupID(g))?'checked':'')+' onchange="toggleSimpleUserGroup('+jsq(user)+','+groupID(g)+',this.checked)"><span><strong>'+esc(groupName(g))+'</strong>'+
       (groupDescription(g)?'<span class="small muted" style="display:block">'+esc(groupDescription(g))+'</span>':'')+'</span></label>').join('')+'</div>'+
@@ -1111,6 +1139,8 @@ async function logoutAdmin(){
   }finally{location.replace('/admin/login');}
 }
 function simpleCapabilityLabel(key){
+  const entry=permissionSections.flatMap(([,items])=>items).find(item=>item[0]===key);
+  if(entry)return entry[1];
   const labels={
     'timetable.class.pooled.view':'View pooled class timetables','timetable.class.upstream.view':'View own class timetable',
     'timetable.class.boosted_raw.view':'Extended class timetable access','timetable.student.personal.upstream.view':'View own personal timetable',

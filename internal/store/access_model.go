@@ -1042,6 +1042,9 @@ func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, erro
 	if len(defIDs) == 0 {
 		defIDs, _ = s.ListRoleDefaultGroups("", string(role))
 	}
+	// The everyone audience applies to current and future authenticated accounts.
+	everyoneIDs, _ := s.ListRoleDefaultGroups(school, "*")
+	defIDs = append(defIDs, everyoneIDs...)
 	var roleGrants []map[access.Capability]access.Effect
 	for _, id := range defIDs {
 		if m, err := s.groupGrantEffects(id); err == nil {

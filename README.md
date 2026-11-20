@@ -131,6 +131,28 @@ accounts, or create a custom group. People receive the groups configured for
 their role plus any groups assigned directly to them. **People** is for account
 and dashboard-admin management.
 
+The group editor exposes every supported permission separately. Each row has
+**Leave unchanged**, **Allow**, and **Block**, plus an explanation under the info
+icon. Ntfy creation and management are independent permissions; calendar link
+creation is separate for personal, class, teacher, room, subject, and Technik
+feeds. These permissions control user self-service; dashboard administrators
+continue to use the administrative endpoints.
+
+Save a new group with no automatic audience to assign it individually, or pick
+an account type or **Everyone in this school**. Everyone includes existing and
+future authenticated accounts, including account types not classified yet.
+Editing a custom group replaces its rules in one transaction. Built-in groups
+are copied to create an editable custom group, so startup migration cannot
+reset your custom choices. Direct person grants take priority over assigned
+groups; assigned groups take priority over account-type defaults. Within a
+level, a block takes priority over an allow.
+
+Teacher-account timetable permissions currently cover all available elements
+of the selected kind; per-class, per-room, and per-teacher allowlists are not yet
+implemented. Parent/staff defaults require school-specific person-type mappings.
+WebUntis administrator admission rules require verified upstream identity
+metadata and are not inferred from the local dashboard-admin flag.
+
 Built-in groups cover everyday student and teacher access, reconstructed
 timetables, extended timetable access through an authorized staff account,
 class record editing, and proxy-created Technik events. The effective access

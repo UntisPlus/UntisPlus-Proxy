@@ -300,9 +300,9 @@ func (p *Proxy) canNotifyCreate(u *store.User, school, kind string) bool {
 	}
 	switch kind {
 	case "ntfy":
-		return p.effective(u, school, access.CapNotifyNtfyCreate) && p.effective(u, school, access.CapNotifyNtfyManageOwn)
+		return p.effective(u, school, access.CapNotifyNtfyCreate)
 	case "webhooks":
-		return p.effective(u, school, access.CapNotifyWebhookCreate) && p.effective(u, school, access.CapNotifyWebhookManageOwn)
+		return p.effective(u, school, access.CapNotifyWebhookCreate)
 	}
 	return false
 }

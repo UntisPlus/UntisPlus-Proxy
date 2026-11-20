@@ -221,26 +221,31 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
   // account-type defaults. Confirm internal capability names render in plain
   // language in the UI summary.
   must(simpleGroupNames['v2.boosted']==='Extended timetable access', 'extended timetable group has a legacy-facing label');
-  must(simpleCapabilityLabel('timetable.teacher.boosted_raw.view')==='View teacher timetables through a staff account',
+  must(simpleCapabilityLabel('timetable.teacher.boosted_raw.view')==='View teacher timetables through a teacher account',
     'raw staff timetable access has no plain-language label');
 
-  // A friendly group template copies the vetted capability set into a new
-  // named group, so a group created from the simple screen is immediately useful.
-  let createdGroup=null, copied=[];
+  // Every supported capability appears exactly once in the individual editor.
+  const keys=permissionSections.flatMap(([,items])=>items.map(([key])=>key));
+  must(new Set(keys).size===keys.length,'permission editor contains duplicate rules');
+  must(keys.includes('notify.ntfy.create')&&keys.includes('calendar.student.personal.mint'),'notification/calendar choices missing');
+  const canonical=${JSON.stringify(fs.readFileSync(path.join(root,'internal/access/access.go'),'utf8'))};
+  const capBlock=canonical.slice(canonical.indexOf('// Timetable viewing'),canonical.indexOf('// AllCapabilities'));
+  const backendKeys=[...capBlock.matchAll(/Capability = "([^"]+)"/g)].map(m=>m[1]);
+  must(backendKeys.length===keys.length&&backendKeys.every(key=>keys.includes(key)),'editor does not cover the backend capability list');
+  let savedGroup=null;
   fetch=async function(url,opts={}){
-    if(url.indexOf('/access/groups/12')>=0) return jsonResponse({group:{Name:'v2.recon'},grants:[{Capability:'timetable.teacher.reconstructed.view',Effect:1}]});
-    if(url.endsWith('/access/groups')&&opts.method==='POST'){createdGroup=JSON.parse(opts.body);return jsonResponse({ok:true,id:77});}
-    if(url.indexOf('/access/groups/77/grants')>=0&&opts.method==='POST'){copied.push(JSON.parse(opts.body));return jsonResponse({ok:true});}
-    if(url.indexOf('/access/role-defaults')>=0) return jsonResponse({roleDefaults:{}});
-    if(url.indexOf('/access/groups?')>=0) return jsonResponse({groups:[{ID:12,Name:'v2.recon'}]});
-    if(url.indexOf('/admin/users')>=0) return jsonResponse({users:[]});
+    if(url.endsWith('/access/group-editor')){savedGroup=JSON.parse(opts.body);return jsonResponse({ok:true,id:77});}
+    if(url.indexOf('/access/role-defaults')>=0)return jsonResponse({roleDefaults:{}});
+    if(url.indexOf('/access/groups?')>=0)return jsonResponse({groups:[]});
     return jsonResponse({});
   };
   allUsers=[];
-  $('simpleAccessSchool').value='schuldorf'; $('simpleGroupName').value='Math support'; $('simpleGroupTemplate').value='12';
+  $('simpleAccessSchool').value='schuldorf';$('simpleGroupName').value='Calendar only';$('permissionGroupId').value='0';$('permissionGroupAudience').value='';
+  $('permission-notify.ntfy.create').value='-1';$('permission-calendar.student.personal.mint').value='1';
   await createSimpleGroup();
-  must(createdGroup&&createdGroup.name==='Math support', 'group wizard did not create the named group');
-  must(copied.length===1&&copied[0].capability==='timetable.teacher.reconstructed.view', 'group wizard did not copy its selected access set');
+  must(savedGroup&&savedGroup.name==='Calendar only','editor did not save group');
+  must(savedGroup.grants['notify.ntfy.create']===-1&&savedGroup.grants['calendar.student.personal.mint']===1,'individual permission choices were not preserved');
+  must($('permissionGroupMessage').textContent.includes('Saved'),'save feedback missing');
 
   console.log('check-admin-ui: all admin UI checks passed');
 })().catch(function(e){ console.error('FAIL: ' + (e && e.stack || e)); process.exit(1); });
