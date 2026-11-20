@@ -1123,7 +1123,7 @@ func (p *Proxy) isEditor(username string) bool {
 // seeing editing succeed against his own login.
 var writeMethodPrefixes = []string{
 	"set", "add", "update", "delete", "change", "put", "remove", "save",
-	"create", "modify", "insert", "replace", "assign", "unassign", "move",
+	"create", "modify", "insert", "replace", "assign", "unassign", "move", "submit",
 	"copy", "rename", "import", "upload", "clear", "reset", "cancel",
 }
 

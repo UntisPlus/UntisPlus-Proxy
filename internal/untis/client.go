@@ -516,13 +516,19 @@ func (c *Client) PersonInfo(school, cookie string) (*PersonInfo, error) {
 		if json.Unmarshal(b, &cfg) == nil {
 			info.PersonID = cfg.Data.LoginServiceConfig.User.PersonID
 			info.Email = cfg.Data.LoginServiceConfig.User.Email
-			if len(cfg.Data.LoginServiceConfig.User.Persons) > 0 {
-				p := cfg.Data.LoginServiceConfig.User.Persons[0]
+			persons := cfg.Data.LoginServiceConfig.User.Persons
+			for i, p := range persons {
+				// The first person can be a linked child. Use the active identity, and
+				// only fall back to the first entry when no active ID was reported.
+				if p.ID != info.PersonID && !(info.PersonID == 0 && i == 0) {
+					continue
+				}
 				info.PersonType = p.Type
 				if info.PersonID == 0 {
 					info.PersonID = p.ID
 				}
 				info.DisplayName = p.DisplayName
+				break
 			}
 		}
 	}

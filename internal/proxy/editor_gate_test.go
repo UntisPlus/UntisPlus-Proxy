@@ -153,3 +153,33 @@ func TestInternSessionWriteGatedByEditorFlag(t *testing.T) {
 		t.Errorf("editor intern write forwards = %d, want 1", got)
 	}
 }
+
+func TestReadOnlyTeacherSourceCannotReceiveDelegatedWrites(t *testing.T) {
+	f := &fakeUpstream{}
+	p, st := newFakeProxyUpstream(t, f)
+	seedTeacherSource(t, st, "mrTeacher", 5009)
+	seedKeyUser(t, st)
+	if err := st.SetPerm("owen", store.FeatureEditor, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, cap := range []string{"absence.write", "lesson.write"} {
+		if err := st.SetUserCapGrant("testschool", "mrTeacher", cap, -1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, method := range []string{"setAbsencesList", "putLessonInfo"} {
+		publicReq(t, p, "owen", method)
+	}
+	if len(f.Public()) != 0 {
+		t.Fatal("a delegated write reached the teacher account")
+	}
+	teacher, _ := st.GetUser("mrTeacher")
+	for _, method := range []string{"submitAbsencesChecked2017", "submitLessonTopic"} {
+		if !p.sourceAccountWriteDenied("testschool", teacher, method) {
+			t.Fatal("submit mutation not refused")
+		}
+	}
+	if p.sourceAccountWriteDenied("testschool", teacher, "getTimetable2017") {
+		t.Fatal("read-only restriction blocked timetable reads")
+	}
+}

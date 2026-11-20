@@ -1314,7 +1314,7 @@ async function loadUsers(){
     const un = jsq(u.username);
     const accountType=Number(u.personType)===5?'Student':([1,2].includes(Number(u.personType))?'Teacher':'Other account');
     tr.innerHTML =
-      '<td>'+esc(u.username)+(u.displayName?'<div class="small muted">'+esc(u.displayName)+'</div>':'')+'</td>'+
+      '<td>'+esc(u.username)+(u.displayName?'<div class="small muted">'+esc(u.displayName)+'</div>':'')+(u.replayable===false?'<div class="small warn">App setup needed for background timetable fetching</div>':'')+'</td>'+
       '<td>'+esc(u.className||'')+(u.classId?' <span class="small muted">('+esc(u.classId)+')</span>':'')+'</td>'+
       '<td>'+esc(u.school||'')+'</td><td>'+accountType+'</td>'+
       '<td><button class="mini '+(u.admin?'danger':'secondary')+'" onclick="setAdmin('+un+','+(!u.admin)+')">'+(u.admin?'Administrator':'Standard')+'</button></td>'+

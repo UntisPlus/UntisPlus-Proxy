@@ -218,6 +218,17 @@ username/code in browser storage, and routes incomplete setups to onboarding.
 Admin changes and sign-out use same-origin checks; sign-out revokes the active
 proxy session.
 
+The People list marks accounts that still need app enrolment before background
+fetching works. Signing in with an OTP creates a session but does not supply the
+shared secret needed to fetch later. Use the normal app setup flow to enrol a
+replayable account; do not send credentials through support messages.
+
+Explicit per-account absence/lesson write denials also protect that account
+when another person uses it as a saved teacher source. Timetable reads remain
+available. Accounts with unknown or unrelated person types are excluded from
+teacher source selection. Identity lookup chooses the active WebUntis person,
+which may differ from the first person linked to a parent account.
+
 `GET /admin/outbox` reports the notification-delivery backlog — counts by state
 plus the most recent destinations that gave up, with their error. `/admin/status`
 carries the same counts as an `outbox` object. The public `/healthz` and

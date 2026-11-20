@@ -2543,11 +2543,11 @@ func (s *Store) OwnerForClass(school string, classID int64) (*User, error) {
 }
 
 // BoostedSourceAccounts returns all users with replayable secrets (password <> ”)
-// who are non-students (person_type != 5). These are the "teacher accounts
+// who have a recognised teacher identity (person_type 1 or 2). These are the "teacher accounts
 // lying around" that a boosted user draws raw data from.
 func (s *Store) BoostedSourceAccounts(school string) ([]*User, error) {
 	rows, err := s.db.Query(`SELECT `+userCols+`
-		FROM users WHERE password<>'' AND person_type<>5 AND (school=? OR school='')
+		FROM users WHERE password<>'' AND person_type IN (1,2) AND (school=? OR school='')
 		ORDER BY last_seen DESC`, school)
 	if err != nil {
 		return nil, err

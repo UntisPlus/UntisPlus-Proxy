@@ -118,6 +118,10 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 			// exactly that kind of field.
 			rewritten := false
 			if owner := p.classScopedOwner(school, username, m); owner != nil {
+				if p.sourceAccountWriteDenied(school, owner, m) {
+					p.writeJSONRPCError(w, req.ID, "source account is read-only", -32601)
+					return
+				}
 				if swapped, err := p.rewriteAuthForOwner(school, body, owner); err == nil {
 					out = swapped
 					rewritten = true

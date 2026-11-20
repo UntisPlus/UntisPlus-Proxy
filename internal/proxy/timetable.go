@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"untis-proxy/internal/access"
 	"untis-proxy/internal/store"
 	"untis-proxy/internal/untis"
 )
@@ -86,6 +87,13 @@ func (p *Proxy) getTimetable(w http.ResponseWriter, r *http.Request, school stri
 // with a fresh session when the cached upstream session expired server-side.
 // endpoint is "jsonrpc.do" (legacy) or an intern method name.
 func (p *Proxy) escalatedIntern(school string, u *store.User, endpoint string, body []byte) ([]byte, int, error) {
+	method := extractMethod(body)
+	if method == "" {
+		method = endpoint
+	}
+	if p.sourceAccountWriteDenied(school, u, method) {
+		return nil, http.StatusForbidden, fmt.Errorf("source account is read-only for this action")
+	}
 	cookie, err := p.untis.Session(school, u.Username, u.Password, u.Method)
 	if err != nil {
 		return nil, 0, err
@@ -188,4 +196,29 @@ func (c *ttCache) Put(k string, data []byte) {
 		}
 	}
 	c.m[k] = ttEntry{data: data, at: time.Now()}
+}
+
+// Explicit per-account write denials protect a saved source account even when
+// a different user has permission to use that source for timetable reads.
+func (p *Proxy) sourceAccountWriteDenied(school string, u *store.User, method string) bool {
+	if u == nil || !isWriteMethod(method) {
+		return false
+	}
+	grants, err := p.store.ListUserCapGrants(school, u.Username)
+	if err != nil {
+		return true
+	}
+	required := methodWriteCapability(method)
+	for _, g := range grants {
+		if g.Effect >= 0 {
+			continue
+		}
+		if g.Capability == required {
+			return true
+		}
+		if required == "editor" && (g.Capability == string(access.CapAbsenceWrite) || g.Capability == string(access.CapLessonWrite)) {
+			return true
+		}
+	}
+	return false
 }

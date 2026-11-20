@@ -1969,6 +1969,7 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 				"displayName":  u.DisplayName,
 				"email":        u.Email,
 				"lastSeen":     u.LastSeen.Unix(),
+				"replayable":   u.Password != "",
 				"permissions":  perms[u.Username],
 				"boosted":      p.isBoosted(u.Username),
 				"editor":       p.isEditor(u.Username),

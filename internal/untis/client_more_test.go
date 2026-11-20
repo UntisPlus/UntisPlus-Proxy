@@ -471,3 +471,12 @@ func TestRawInternReportsUpstreamStatus(t *testing.T) {
 		t.Errorf("body = %s, want the raw upstream error", b)
 	}
 }
+
+func TestPersonInfoUsesActivePersonInsteadOfFirstLinkedPerson(t *testing.T) {
+	f := &fakeAPI{bodies: map[string]string{"/WebUntis/api/app/config": `{"data":{"loginServiceConfig":{"user":{"personId":77,"persons":[{"id":55,"type":5,"displayName":"Linked child"},{"id":77,"type":2,"displayName":"Active person"}]}}}}`}, status: map[string]int{}}
+	c := newFakeAPI(t, f)
+	info, err := c.PersonInfo("testschool", "JSESSIONID=abc")
+	if err != nil || info.PersonID != 77 || info.PersonType != 2 || info.DisplayName != "Active person" {
+		t.Fatalf("wrong active identity: %+v %v", info, err)
+	}
+}
