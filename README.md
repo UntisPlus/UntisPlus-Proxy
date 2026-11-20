@@ -153,6 +153,22 @@ implemented. Parent/staff defaults require school-specific person-type mappings.
 WebUntis administrator admission rules require verified upstream identity
 metadata and are not inferred from the local dashboard-admin flag.
 
+**Share timetable with the pool** controls whether an account contributes its
+class timetable. It is separate from viewing shared timetables. Use the group
+editor or the checkbox in a person's access details to opt out. Pool membership,
+source selection and reconstruction exclude opted-out accounts. A class stays
+shared if another account still contributes it, and separately granted teacher
+account access remains independent. Opting out does not delete upstream data or
+remove the account's own timetable access. Existing student/teacher baselines
+keep sharing enabled until it is explicitly disabled.
+
+Guardian accounts retain the linked people returned by upstream separately from
+the login identity. A guardian-style account whose account-level person differs
+from its linked students uses guardian defaults and reads those children's
+timetables through its own upstream account. Children are not added as pool
+accounts. Account warnings shows the linked children; an absent account-level
+class is not treated as a student enrolment failure for recognised guardians.
+
 Built-in groups cover everyday student and teacher access, reconstructed
 timetables, extended timetable access through an authorized staff account,
 class record editing, and proxy-created Technik events. The effective access

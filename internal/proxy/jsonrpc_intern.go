@@ -426,6 +426,11 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	// "#anonymous#" as a pool account or owner.
 	if !isAnon {
 		_ = p.store.UpsertUser(user)
+		if info.LinkedPersons != nil {
+			if links, e := json.Marshal(info.LinkedPersons); e == nil {
+				_ = p.store.SaveAccountLinks(school, user.Username, info.PersonID, links)
+			}
+		}
 		p.maybeClaimSetupAdmin(user.Username)
 		// Refresh admin flag in case setup claim promoted this user.
 		if isAdmin, _ := p.store.IsAdmin(user.Username); isAdmin {
@@ -862,6 +867,40 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 	requester, err := p.store.GetUser(requesterName)
 	if err != nil || requester == nil {
 		p.writeJSONRPCError(w, id, "not logged in", -8520)
+		return
+	}
+
+	// Guardian requests remain on their own upstream identity. Linked children
+	// are private targets; they are never converted into shared pool accounts.
+	if links, e := p.store.AccountLinks(school, requesterName); e == nil && links.Guardian {
+		sessionUser := p.sessionUser(r)
+		if sessionUser == nil || !strings.EqualFold(sessionUser.Username, requesterName) || p.userSchool(sessionUser, p.opts.School) != school {
+			verified := p.userFromRequestOTP(pr.Auth.User, normalizedOTP(pr.Auth.OTP), pr.Auth.ClientTime)
+			if verified == nil || p.userSchool(verified, p.opts.School) != school {
+				p.writeJSONRPCError(w, id, "not logged in", -8520)
+				return
+			}
+		}
+		if pr.Type == "STUDENT" {
+			linked := false
+			for _, person := range links.Persons {
+				if person.Type == 5 && person.ID == pr.ID {
+					linked = true
+				}
+			}
+			if !linked || !p.canViewPersonalUpstream(requester, school) {
+				p.writeJSONRPCError(w, id, "no right for timetable", -8509)
+				return
+			}
+		}
+		b, status, e := p.escalatedIntern(school, requester, "getTimetable2017", body)
+		if e != nil {
+			p.writeJSONRPCError(w, id, "upstream timetable unavailable", -8509)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = w.Write(b)
 		return
 	}
 

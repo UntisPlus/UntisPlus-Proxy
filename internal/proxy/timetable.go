@@ -60,6 +60,10 @@ func (p *Proxy) getTimetable(w http.ResponseWriter, r *http.Request, school stri
 		return
 	}
 	owner, err := p.store.OwnerForClass(school, elID)
+	if owner == nil && user.ClassID == elID && p.canViewClassAs(user, school, elID, true) {
+		owner = user
+		err = nil
+	}
 	if err != nil || owner == nil {
 		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 		return

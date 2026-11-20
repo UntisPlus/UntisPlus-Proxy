@@ -288,7 +288,7 @@ func TestPersonInfoSurvivesBrokenConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PersonInfo must not fail on a broken config, got %v", err)
 	}
-	if *info != (PersonInfo{}) {
+	if info.PersonID != 0 || info.PersonType != 0 || info.ClassID != 0 || info.Email != "" || info.DisplayName != "" || len(info.LinkedPersons) > 0 {
 		t.Errorf("info = %+v, want the zero value when upstream is broken", info)
 	}
 }

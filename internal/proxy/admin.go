@@ -1958,6 +1958,7 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 		out := make([]map[string]any, 0, len(users))
 		for _, u := range users {
 			secret, password, credentialErr := p.store.GetCredential(u.Username)
+			links, _ := p.store.AccountLinks(u.School, u.Username)
 			hasSharedSecret := secret != "" || (u.Method == "key" && u.Password != "")
 			hasPassword := password != "" || (u.Method == "password" && u.Password != "")
 			out = append(out, map[string]any{
@@ -1976,6 +1977,7 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 				"credentialStatusKnown": credentialErr == nil,
 				"hasSharedSecret":       hasSharedSecret,
 				"hasPassword":           hasPassword,
+				"accountLinks":          links,
 				"permissions":           perms[u.Username],
 				"boosted":               p.isBoosted(u.Username),
 				"editor":                p.isEditor(u.Username),

@@ -197,6 +197,12 @@ func (p *Proxy) fetchClassChunkMode(school string, classID int64, start, end str
 // bulk sweep bypass the TTL cache entirely: caching every chunk of a full recon
 // would fill the map with data nothing will read before it expires.
 func (p *Proxy) fetchClassChunkImpl(school string, classID int64, start, end string, readCache, writeCache bool) ([]map[string]any, error) {
+	// Check donation before reading shared caches so a removed contribution
+	// cannot be resurrected by a warm reconstruction cache.
+	pooled, err := p.store.PoolContains(school, classID)
+	if err != nil || !pooled {
+		return nil, fmt.Errorf("class is not shared with the pool")
+	}
 	key := fmt.Sprintf("recon|%s|%d|%s|%s", school, classID, start, end)
 	if readCache {
 		if v, ok := p.tt.Get(key); ok {

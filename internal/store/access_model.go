@@ -17,6 +17,7 @@ import (
 
 func migrateAccessSchema(db *sql.DB) error {
 	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS account_person_links (school TEXT NOT NULL,username TEXT NOT NULL,active_person_id INTEGER NOT NULL,persons_json TEXT NOT NULL,PRIMARY KEY(school,username))`,
 		`CREATE TABLE IF NOT EXISTS cap_groups (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			school TEXT NOT NULL DEFAULT '',
@@ -142,6 +143,7 @@ func (s *Store) ensureBuiltinCapGroups() error {
 		{name: CapGroupStudentBase, desc: "Baseline capabilities for authenticated real student accounts", grants: []access.Grant{
 			{Capability: access.CapTimetableClassPooledView, Allow: true},
 			{Capability: access.CapTimetableClassUpstreamView, Allow: true},
+			{Capability: access.CapPoolTimetableShare, Allow: true},
 			{Capability: access.CapTimetableStudentPersonalUpstreamView, Allow: true},
 			{Capability: access.CapPoolClassView, Allow: true},
 			{Capability: access.CapAbsenceOwnRead, Allow: true},
@@ -157,6 +159,7 @@ func (s *Store) ensureBuiltinCapGroups() error {
 		}},
 		{name: CapGroupTeacherBase, desc: "Baseline capabilities for authenticated teacher/staff accounts", grants: []access.Grant{
 			{Capability: access.CapTimetableClassUpstreamView, Allow: true},
+			{Capability: access.CapPoolTimetableShare, Allow: true},
 			{Capability: access.CapAbsenceOwnRead, Allow: true},
 			{Capability: access.CapChangesClassView, Allow: true},
 			{Capability: access.CapChangesClassStream, Allow: true},
@@ -210,6 +213,12 @@ func (s *Store) ensureBuiltinCapGroups() error {
 			{Capability: access.CapCalendarManageOwn, Allow: true},
 			{Capability: access.CapCalendarTechnikMint, Allow: true},
 		}},
+		{name: "v2.guardian_base", desc: "Own upstream linked-child timetable reads for guardian accounts", grants: []access.Grant{
+			{Capability: access.CapTimetableStudentPersonalUpstreamView, Allow: true},
+			{Capability: access.CapAbsenceOwnRead, Allow: true},
+			{Capability: access.CapNotifyNtfyCreate, Allow: true},
+			{Capability: access.CapNotifyNtfyManageOwn, Allow: true},
+		}},
 		{name: CapGroupDefaultNewUser, desc: "Migrated v1 default permissions for newly seen users", grants: nil},
 	}
 	for _, g := range groups {
@@ -222,6 +231,9 @@ func (s *Store) ensureBuiltinCapGroups() error {
 				return err
 			}
 		}
+	}
+	if id, ok, _ := s.groupIDByName("", "v2.guardian_base"); ok {
+		_ = s.ensureRoleDefaultGroup("", "parent", id, 0)
 	}
 	// Ensure base role defaults exist (idempotent).
 	if id, ok, _ := s.groupIDByName("", CapGroupStudentBase); ok {
@@ -1005,6 +1017,9 @@ func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, erro
 		return &EffectiveResult{Role: access.RoleUnknown, Decisions: access.Resolve(access.Inputs{})}, nil
 	}
 	role := s.resolveUserRole(school, u.PersonType)
+	if links, err := s.AccountLinks(school, u.Username); err == nil && links.Guardian {
+		role = access.Role("parent")
+	}
 	gates, _ := s.ServerCapGates(school)
 	serverEnabled := map[access.Capability]bool{}
 	for _, c := range access.AllCapabilities {

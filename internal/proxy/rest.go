@@ -132,6 +132,10 @@ func (p *Proxy) restWeeklyTimetable(w http.ResponseWriter, r *http.Request, scho
 		return
 	case "1": // class
 		owner, err := p.restPoolOwner(school, elID)
+		if owner == nil && user.ClassID == elID && p.canViewClassAs(user, school, elID, true) {
+			owner = user
+			err = nil
+		}
 		if err != nil {
 			p.forbidden(w)
 			return

@@ -8,8 +8,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+	"untis-proxy/internal/access"
 
 	_ "modernc.org/sqlite"
 )
@@ -2495,31 +2497,70 @@ func (s *Store) ClassForPerson(school string, personID int64) (int64, error) {
 // which matches only the legacy rows with no school recorded — so a dashboard
 // overview over a single-school deployment asked for the pool of its own school
 // and was told the pool was empty.
-func (s *Store) Pool(school string) ([]Class, error) {
-	query := `SELECT class_id, COALESCE(MAX(class_name),'') AS name
-		FROM users WHERE class_id > 0 AND (school=? OR school='')
-		GROUP BY class_id ORDER BY class_id`
-	args := []any{school}
-	if school == "" {
-		query = `SELECT class_id, COALESCE(MAX(class_name),'') AS name
-			FROM users WHERE class_id > 0
-			GROUP BY class_id ORDER BY class_id`
-		args = nil
+// Sharing permission controls donation, independently of viewing permissions.
+// Materialise candidates before resolving permissions: nested queries must not
+// hold a users cursor open. Class-specific queries retain the class/school index.
+func (s *Store) poolCandidates(school string, classID int64, replayOnly, allSchools bool) ([]*User, error) {
+	query := `SELECT ` + userCols + ` FROM users WHERE class_id>0`
+	args := []any{}
+	if classID > 0 {
+		query = `SELECT ` + userCols + ` FROM users WHERE class_id=?`
+		args = append(args, classID)
 	}
+	if !allSchools {
+		query += ` AND (school=? OR school='')`
+		args = append(args, school)
+	}
+	if replayOnly {
+		query += ` AND password<>''`
+	}
+	query += ` ORDER BY last_seen DESC,id DESC`
 	rows, err := s.db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []Class
+	var users []*User
 	for rows.Next() {
-		var c Class
-		if err := rows.Scan(&c.ID, &c.Name); err != nil {
-			return nil, err
+		u, e := s.scanUserRow(rows)
+		if e != nil {
+			return nil, e
 		}
-		out = append(out, c)
+		users = append(users, u)
 	}
-	return out, rows.Err()
+	return users, rows.Err()
+}
+
+func (s *Store) SharesTimetable(school string, u *User) bool {
+	if u == nil {
+		return false
+	}
+	if u.School != "" {
+		school = u.School
+	}
+	return s.EffectiveHas(school, u, access.CapPoolTimetableShare)
+}
+
+func (s *Store) Pool(school string) ([]Class, error) {
+	users, err := s.poolCandidates(school, 0, false, school == "")
+	if err != nil {
+		return nil, err
+	}
+	classes := map[int64]string{}
+	for _, u := range users {
+		if u.ClassID <= 0 || (school != "" && u.School != "" && u.School != school) || !s.SharesTimetable(school, u) {
+			continue
+		}
+		if name, ok := classes[u.ClassID]; !ok || u.ClassName > name {
+			classes[u.ClassID] = u.ClassName
+		}
+	}
+	out := make([]Class, 0, len(classes))
+	for id, name := range classes {
+		out = append(out, Class{ID: id, Name: name})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
 }
 
 func (s *Store) UserCount() (int, error) {
@@ -2529,17 +2570,33 @@ func (s *Store) UserCount() (int, error) {
 }
 
 func (s *Store) PoolContains(school string, classID int64) (bool, error) {
-	var n int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM users WHERE class_id=? AND (school=? OR school='')`, classID, school).Scan(&n)
-	return n > 0, err
+	if classID <= 0 {
+		return false, nil
+	}
+	users, err := s.poolCandidates(school, classID, false, false)
+	if err != nil {
+		return false, err
+	}
+	for _, u := range users {
+		if u.ClassID == classID && (u.School == school || u.School == "") && s.SharesTimetable(school, u) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
-// OwnerForClass returns the most recently active user in the given class,
-// preferring accounts that can be replayed (password or key with secret).
+// OwnerForClass never uses an account that has opted out of sharing.
 func (s *Store) OwnerForClass(school string, classID int64) (*User, error) {
-	return s.scanUser(s.db.QueryRow(`SELECT `+userCols+`
-		FROM users WHERE class_id=? AND (school=? OR school='') AND password<>''
-		ORDER BY last_seen DESC, id DESC LIMIT 1`, classID, school))
+	users, err := s.poolCandidates(school, classID, true, false)
+	if err != nil {
+		return nil, err
+	}
+	for _, u := range users {
+		if u.ClassID == classID && u.Password != "" && (u.School == school || u.School == "") && s.SharesTimetable(school, u) {
+			return u, nil
+		}
+	}
+	return nil, nil
 }
 
 // BoostedSourceAccounts returns all users with replayable secrets (password <> ”)
@@ -2636,6 +2693,10 @@ func (s *Store) DeleteUser(username string) (int64, error) {
 		return nil
 	}
 	if err := del(`DELETE FROM users WHERE username=?`, username); err != nil {
+		tx.Rollback()
+		return 0, err
+	}
+	if err := del(`DELETE FROM account_person_links WHERE username=?`, username); err != nil {
 		tx.Rollback()
 		return 0, err
 	}

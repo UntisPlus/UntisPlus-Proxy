@@ -63,7 +63,8 @@ const (
 	CapTimetableSubjectBoostedRawView         Capability = "timetable.subject.boosted_raw.view"
 
 	// Pool/index visibility (discoverability of pooled classes for real users).
-	CapPoolClassView Capability = "pool.class.view"
+	CapPoolClassView      Capability = "pool.class.view"
+	CapPoolTimetableShare Capability = "pool.timetable.share"
 
 	// Change detection / live stream.
 	CapChangesClassView     Capability = "changes.class.view"
@@ -112,6 +113,7 @@ var AllCapabilities = []Capability{
 	CapTimetableSubjectReconstructedView,
 	CapTimetableSubjectBoostedRawView,
 	CapPoolClassView,
+	CapPoolTimetableShare,
 	CapChangesClassView,
 	CapChangesClassStream,
 	CapChangesElementView,

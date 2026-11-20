@@ -1126,6 +1126,11 @@ func checkUsers(st *store.Store, uc userCheckAPI, fallbackSchool string, remove 
 		}
 		info, _ := uc.PersonInfo(userSchool, ck)
 		uc.Logout(userSchool, ck)
+		if info != nil && info.LinkedPersons != nil {
+			if links, e := json.Marshal(info.LinkedPersons); e == nil {
+				_ = st.SaveAccountLinks(userSchool, u.Username, info.PersonID, links)
+			}
+		}
 		if info == nil {
 			info = &untis.PersonInfo{}
 		}

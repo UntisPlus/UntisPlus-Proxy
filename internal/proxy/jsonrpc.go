@@ -144,6 +144,11 @@ func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request, school stri
 	}
 	p.preserveUserIdentity(user)
 	_ = p.store.UpsertUser(user)
+	if info.LinkedPersons != nil {
+		if links, e := json.Marshal(info.LinkedPersons); e == nil {
+			_ = p.store.SaveAccountLinks(school, user.Username, info.PersonID, links)
+		}
+	}
 	p.maybeClaimSetupAdmin(user.Username)
 	if isAdmin, _ := p.store.IsAdmin(user.Username); isAdmin {
 		user.Admin = true

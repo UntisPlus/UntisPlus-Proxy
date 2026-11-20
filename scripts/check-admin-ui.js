@@ -236,6 +236,9 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
   must(accountRegistrationWarnings({...ready,replayable:false}).some(i=>i.code==='credential'),'missing reusable credential not flagged');
   const parentIssues=accountRegistrationWarnings({...ready,classId:-1});
   must(parentIssues.length===1&&parentIssues[0].code==='class','parent-like class warning incorrect');
+  const guardian={...ready,classId:-1,personType:0,accountLinks:{guardian:true,persons:[{id:10,type:5,displayName:'<child>'},{id:20,type:5},{id:30,type:5}]}};
+  must(accountRegistrationWarnings(guardian).length===0,'recognised guardian incorrectly flagged as classless student');
+  must(accountTypeLabel(guardian).includes('3 linked children'),'linked child count missing');
   must(accountRegistrationWarnings({...ready,personType:0}).some(i=>i.code==='type'),'unknown account type not flagged');
   allUsers=[ready,{...ready,username:'<img src=x>',replayable:false,password:'never-render-this-secret'}];
   renderAccountWarnings();

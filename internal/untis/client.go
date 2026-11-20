@@ -456,13 +456,20 @@ func isFlatAuthFailure(b []byte) bool {
 		strings.Contains(m, "not authenticated")
 }
 
+type LinkedPerson struct {
+	ID          int64  `json:"id"`
+	Type        int64  `json:"type"`
+	DisplayName string `json:"displayName"`
+}
+
 type PersonInfo struct {
-	PersonID    int64
-	PersonType  int64
-	ClassID     int64
-	ClassName   string
-	Email       string
-	DisplayName string
+	LinkedPersons []LinkedPerson
+	PersonID      int64
+	PersonType    int64
+	ClassID       int64
+	ClassName     string
+	Email         string
+	DisplayName   string
 }
 
 // PersonInfo fetches identity/class data for a real session.
@@ -517,6 +524,12 @@ func (c *Client) PersonInfo(school, cookie string) (*PersonInfo, error) {
 			info.PersonID = cfg.Data.LoginServiceConfig.User.PersonID
 			info.Email = cfg.Data.LoginServiceConfig.User.Email
 			persons := cfg.Data.LoginServiceConfig.User.Persons
+			if persons != nil {
+				info.LinkedPersons = make([]LinkedPerson, 0, len(persons))
+				for _, person := range persons {
+					info.LinkedPersons = append(info.LinkedPersons, LinkedPerson{ID: person.ID, Type: person.Type, DisplayName: person.DisplayName})
+				}
+			}
 			for i, p := range persons {
 				// The first person can be a linked child. Use the active identity, and
 				// only fall back to the first entry when no active ID was reported.
