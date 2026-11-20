@@ -1072,7 +1072,7 @@ async function loadSchools(){
       '<td>'+fmtDate(s.addedAt)+'</td>'+
       '<td>'+fmtTime(s.lastSeen)+'</td>'+
       '<td>'+(s.blocked?'<span class="badge bad">blocked</span>':'<span class="badge ok">active</span>')+'</td>'+
-      '<td><button class="mini '+(s.anonymous?'danger':'secondary')+'" onclick="setSchoolAnonymous('+n+','+(!s.anonymous)+')+'">'+(s.anonymous?'disable':'enable')+'</button> '+
+      '<td><button class="mini '+(s.anonymous?'danger':'secondary')+'" onclick="setSchoolAnonymous('+n+','+(!s.anonymous)+')">'+(s.anonymous?'disable':'enable')+'</button> '+
       '<span class="small '+(s.anonymous?'':'muted')+'">'+(s.anonymous?'enabled':'disabled')+'</span></td>'+
       '<td>'+actions+'</td>';
     tb.appendChild(tr);
