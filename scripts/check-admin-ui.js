@@ -33,6 +33,19 @@ if (open < 0 || close < 0 || close < open) {
 }
 let script = html.slice(open + '<script>'.length, close);
 
+for (const legacy of ['<th>Boosted</th>', 'boosted — raw teacher-account forwarding', "setPerm(u,f,v)", "card('Boosted'"]) {
+  if (html.indexOf(legacy) >= 0) {
+    console.error('check-admin-ui: legacy permission control is still visible: ' + legacy);
+    process.exit(1);
+  }
+}
+for (const expected of ['People and access groups', 'Default access by account type', 'Advanced permission settings', 'Manage access']) {
+  if (html.indexOf(expected) < 0) {
+    console.error('check-admin-ui: new permissions workflow is missing: ' + expected);
+    process.exit(1);
+  }
+}
+
 // Drop the page's own init IIFE: it wires listeners onto the real DOM and fires
 // async loads on page open, which is noise here. The driver calls the functions
 // under test directly.
@@ -63,6 +76,7 @@ var document = {
   querySelectorAll: function(){ return []; },
   addEventListener: function(){},
 };
+var window = { addEventListener: function(){} };
 var setTimeout = function(){ return 0; };
 var clearTimeout = function(){};
 `;
@@ -71,20 +85,21 @@ var clearTimeout = function(){};
 // offline and deterministic. The recorded POST body is what the driver asserts.
 const stub = `
 var posted=null, roomPosted=null, logs=[];
+function jsonResponse(data){ return {ok:true,status:200,json:async()=>data,text:async()=>JSON.stringify(data)}; }
 var fetch = async function(url, opts){
   if(url.indexOf('/admin/rooms')>=0){
-    if(opts && opts.method==='POST'){ roomPosted=JSON.parse(opts.body); return {ok:true,status:200,json:async()=>({ok:true,school:'schuldorf',rooms:roomPosted.rooms,texts:[]})}; }
-    return {ok:true,status:200,json:async()=>({school:'schuldorf',rooms:{},texts:['Aula','Turnhalle']})};
+    if(opts && opts.method==='POST'){ roomPosted=JSON.parse(opts.body); return jsonResponse({ok:true,school:'schuldorf',rooms:roomPosted.rooms,texts:[]}); }
+    return jsonResponse({school:'schuldorf',rooms:{},texts:['Aula','Turnhalle']});
   }
-  if(opts && opts.method==='POST'){ posted=JSON.parse(opts.body); return {ok:true,status:200,json:async()=>({created:[{eventId:1,username:'dee'},{eventId:2,username:'sam'}]})}; }
-  if(url.indexOf('/admin/users')>=0) return {ok:true,status:200,json:async()=>({users:[
+  if(opts && opts.method==='POST'){ posted=JSON.parse(opts.body); return jsonResponse({created:[{eventId:1,username:'dee'},{eventId:2,username:'sam'}]}); }
+  if(url.indexOf('/admin/users')>=0) return jsonResponse({users:[
     {username:'dee',displayName:'Dee',personType:5,school:'schuldorf',className:'10a'},
     {username:'sam',displayName:'',personType:5,school:'schuldorf',className:'10a'},
     {username:'wils',displayName:'W',personType:2,school:'schuldorf',className:''},
-    {username:'other',personType:5,school:'elsewhere',className:'9z'}]})};
-  if(url.indexOf('type=ROOM')>=0) return {ok:true,status:200,json:async()=>({results:[
-    {type:'ROOM',id:1,name:'R12'},{type:'ROOM',id:2,name:'R13'},{type:'ROOM',id:3,name:'Turnhalle'}]})};
-  return {ok:true,status:200,json:async()=>({events:[],results:[]})};
+    {username:'other',personType:5,school:'elsewhere',className:'9z'}]});
+  if(url.indexOf('type=ROOM')>=0) return jsonResponse({results:[
+    {type:'ROOM',id:1,name:'R12'},{type:'ROOM',id:2,name:'R13'},{type:'ROOM',id:3,name:'Turnhalle'}]});
+  return jsonResponse({events:[],results:[]});
 };
 `;
 
@@ -157,10 +172,10 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
   // signed-in student run script in the admin's session when the dashboard
   // listed the webhook. The same applies to usernames in the users table.
   fetch = async function(url){
-    if(url.indexOf('/admin/webhooks')>=0) return {ok:true,status:200,json:async()=>({webhooks:[
+    if(url.indexOf('/admin/webhooks')>=0) return jsonResponse({webhooks:[
       {id:1,school:'schuldorf',elementType:'CLASS',elementId:1,name:'10a',
-       url:'"><img src=x onerror=alert(1)>',createdBy:'<b>evil</b>'}]})};
-    return {ok:true,status:200,json:async()=>({})};
+       url:'"><img src=x onerror=alert(1)>',createdBy:'<b>evil</b>'}]});
+    return jsonResponse({});
   };
   await loadWebhooks();
   const cell = _sel('__q').children[0]._html;
@@ -191,16 +206,12 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
   must(anonRows[3]._html.indexOf('>on<')>=0, 'enabled live-changes capability did not render on');
   must(anonRows[0]._html.indexOf('setAnonFeature')>=0, 'anonymous toggles disappeared after reload');
 
-  // Default-permission panel: one row per grantable permission, rendered from
-  // the values the API returned, with recon/boosted independent buttons.
-  defaultPerms={recon:true,boosted:false,editor:false,techniker:true};
-  renderDefaultPerms();
-  const permRows=_sel('__q').children;
-  must(permRows.length===4, 'expected 4 default-permission rows, got '+permRows.length);
-  must(permRows[0]._html.indexOf('setDefaultPerm')>=0, 'default recon toggle missing');
-  must(permRows[0]._html.indexOf('>on<')>=0, 'default recon did not render on');
-  must(permRows[1]._html.indexOf('>off<')>=0, 'default boosted did not render off');
-  must(permRows[3]._html.indexOf('>on<')>=0, 'default techniker did not render on');
+  // The former one-toggle-per-feature UI has been replaced by named groups and
+  // account-type defaults. Confirm internal capability names render in plain
+  // language in the UI summary.
+  must(simpleGroupNames['v2.boosted']==='Extended timetable access', 'extended timetable group has a legacy-facing label');
+  must(simpleCapabilityLabel('timetable.teacher.boosted_raw.view')==='View teacher timetables through a staff account',
+    'raw staff timetable access has no plain-language label');
 
   console.log('check-admin-ui: all admin UI checks passed');
 })().catch(function(e){ console.error('FAIL: ' + (e && e.stack || e)); process.exit(1); });

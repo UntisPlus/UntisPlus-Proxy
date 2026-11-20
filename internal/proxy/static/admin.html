@@ -174,8 +174,8 @@
 
     <div class="nav-group">Access &amp; identity</div>
     <nav class="nav">
-      <a href="#access" data-view="access"><span class="dot"></span>Access Control</a>
-      <a href="#users" data-view="users"><span class="dot"></span>Users &amp; Permissions</a>
+      <a href="#access" data-view="access"><span class="dot"></span>Permissions</a>
+      <a href="#users" data-view="users"><span class="dot"></span>People</a>
       <a href="#schools" data-view="schools"><span class="dot"></span>Schools &amp; Anonymous</a>
     </nav>
 
@@ -237,7 +237,7 @@
             <div class="row mt">
               <button class="secondary mini" onclick="showView('onboarding')">Start guided setup</button>
               <button class="secondary mini" onclick="showView('schools')">Schools</button>
-              <button class="secondary mini" onclick="showView('access')">Access Control</button>
+              <button class="secondary mini" onclick="showView('access')">Permissions</button>
               <button class="secondary mini" onclick="showView('users')">Users</button>
               <button class="secondary mini" onclick="showView('notifications')">Notifications</button>
             </div>
@@ -332,14 +332,14 @@
             <div class="flow-num">4</div>
             <div class="flow-body">
               <div class="flow-head"><h4>Create permission groups &amp; roles</h4><span id="stepStatus4" class="step-badge todo">Recommended</span></div>
-              <p>Define how access is granted: create capability groups, set role defaults, map person types to roles, and adjust capability gates as needed. This establishes consistent permissions before adding more users.</p>
+              <p>Set a default access group for each account type, then assign extra groups only where needed. This keeps permissions consistent as people sign in.</p>
               <div class="row">
-                <button onclick="showView('access')">Open Access Control</button>
+                <button onclick="showView('access')">Open Permissions</button>
               </div>
               <ul class="list-plain">
-                <li>Create groups (e.g. students, teachers, staff) and attach capability grants.</li>
-                <li>Set role defaults and person-type mappings so new users receive the right baseline access.</li>
-                <li>Use effective-access inspection to verify a user’s resolved permissions.</li>
+                <li>Choose the default groups students, teachers and staff receive.</li>
+                <li>Add extra groups only for the access people need.</li>
+                <li>Review a person’s effective access before you finish.</li>
               </ul>
             </div>
           </div>
@@ -351,11 +351,11 @@
               <p>Add or promote additional users/admins, assign direct grants/groups when needed, and review per-user permissions.</p>
               <div class="row">
                 <button onclick="focusUsersAdd()">Manage users</button>
-                <button class="secondary" onclick="showView('access')">Assign groups/grants</button>
+                <button class="secondary" onclick="showView('access')">Assign access groups</button>
               </div>
               <ul class="list-plain">
-                <li>Use Users &amp; Permissions for admin flags and quick feature toggles.</li>
-                <li>Use Access Control for fine-grained capability groups, grants, and effective resolution.</li>
+                <li>Use People to manage dashboard administrators.</li>
+                <li>Use Permissions to assign groups and review each person’s access.</li>
               </ul>
             </div>
           </div>
@@ -387,8 +387,34 @@
 
       <!-- ACCESS CONTROL -->
       <section id="view-access" class="view">
-        <h2 class="section-title">Access Control</h2>
-        <p class="section-sub">Fine-grained capability model: server gates, capability groups, direct grants, role defaults, person-type mappings, anonymous profiles, and effective access inspection. Configure access explicitly instead of relying on legacy role behavior.</p>
+        <h2 class="section-title">Permissions</h2>
+        <p class="section-sub">Give people access by assigning clear, reusable groups. Set a default group for each account type, then add extra access only where someone needs it.</p>
+
+        <div class="panel mb">
+            <div class="panel-header"><div><h3>People and access groups</h3><p class="desc">Groups collect related access into one assignment. Account-type defaults apply when someone first signs in; direct group assignments are listed for each person.</p></div><button class="secondary mini" onclick="loadSimpleAccess()">Refresh</button></div>
+          <div class="row stretch">
+            <label class="field">School<select id="simpleAccessSchool" onchange="loadSimpleAccess()"></select></label>
+            <label class="field">Person<select id="simpleAccessUser" onchange="loadSimpleUserAccess()"><option value="">Choose a person</option></select></label>
+          </div>
+          <div id="simpleAccessPeople" class="table-wrap mt"><table><thead><tr><th>Person</th><th>Account type</th><th>Default access</th><th>Extra groups</th><th></th></tr></thead><tbody></tbody></table></div>
+          <div id="simpleAccessDetail" class="mt hidden"></div>
+        </div>
+
+        <div class="grid two">
+          <div class="panel">
+            <div class="panel-header"><div><h3>Default access by account type</h3><p class="desc">These groups are added for people of this account type. Changes apply to current and future accounts.</p></div></div>
+            <div id="simpleRoleDefaults" class="stack"><div class="empty">Loading access groups…</div></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header"><div><h3>Access groups</h3><p class="desc">Use a built-in group or make your own. Assign groups to people or choose them as account-type defaults.</p></div></div>
+            <div class="row mb"><input id="simpleGroupName" placeholder="New group name" style="flex:1;min-width:12rem"><button onclick="createSimpleGroup()">Create group</button></div>
+            <div id="simpleGroupList" class="stack"><div class="empty">Loading access groups…</div></div>
+          </div>
+        </div>
+
+        <details class="panel mt">
+          <summary><strong>Advanced permission settings</strong><span class="small muted"> Capability rules, server limits, account-type mapping, anonymous profiles and effective-access diagnostics</span></summary>
+          <div class="mt">
 
         <div class="panel">
           <div class="panel-header"><div><h3>Inspect effective access</h3><p class="desc">Resolve what a specific user can do in a school, including role, groups, grants, and capability decisions.</p></div></div>
@@ -519,27 +545,23 @@
             <div class="mt"><pre class="out" id="v2AnonOut">No data loaded yet.</pre></div>
           </div>
         </div>
+          </div>
+        </details>
       </section>
 
       <!-- USERS & PERMISSIONS -->
       <section id="view-users" class="view">
-        <h2 class="section-title">Users &amp; Permissions</h2>
-        <p class="section-sub">Manage admins and per-user feature flags, and configure default permissions for newly seen users. For fine-grained capability access, use Access Control.</p>
+        <h2 class="section-title">People</h2>
+        <p class="section-sub">Manage proxy administrators and review who has signed in. Use Permissions to give people access through groups.</p>
 
         <div class="grid two">
           <div class="panel">
-            <div class="panel-header"><div><h3>Users</h3><p class="desc">Promote/demote admins and toggle legacy/user feature flags. Users appear after they have signed in.</p></div><button class="secondary mini" onclick="loadUsers()">Refresh</button></div>
+            <div class="panel-header"><div><h3>Users</h3><p class="desc">Users appear after they have signed in. Proxy administrators can manage this dashboard.</p></div><button class="secondary mini" onclick="loadUsers()">Refresh</button></div>
             <div class="row mb">
               <input id="uName" placeholder="username to promote as admin" style="min-width:14rem; flex:1">
               <button onclick="addUser()">Promote/add admin</button>
             </div>
-            <div class="help mb">Flags: <code>admin</code>, <code>recon</code> (reconstructed views), <code>boosted</code> (raw teacher-account forwarding), <code>editor</code>, <code>techniker</code>. These are user-level toggles; effective access may also depend on access-model groups/gates/grants.</div>
-            <div class="table-wrap"><table id="users"><thead><tr><th>User</th><th>Class</th><th>School</th><th>Admin</th><th>Recon</th><th>Boosted</th><th>Editor</th><th>Techniker</th><th></th></tr></thead><tbody></tbody></table></div>
-          </div>
-          <div class="panel">
-            <div class="panel-header"><div><h3>Default permissions for new users</h3><p class="desc">Defaults applied to newly seen users. Changing defaults does not rewrite existing users' flags.</p></div><button class="secondary mini" onclick="loadDefaultPerms()">Refresh</button></div>
-            <div class="table-wrap"><table id="defaultPerms"><thead><tr><th>Feature</th><th>Default</th></tr></thead><tbody></tbody></table></div>
-            <div class="callout mt"><strong>Tip:</strong> Use Access Control for capability groups, role defaults, and per-user grants when you need precise, auditable access rules across capabilities.</div>
+            <div class="table-wrap"><table id="users"><thead><tr><th>User</th><th>Class</th><th>School</th><th>Account type</th><th>Dashboard admin</th><th></th></tr></thead><tbody></tbody></table></div>
           </div>
         </div>
       </section>
@@ -565,8 +587,8 @@
             <div class="table-wrap"><table id="anon"><thead><tr><th>Capability</th><th>State</th></tr></thead><tbody></tbody></table></div>
           </div>
           <div class="panel">
-            <div class="panel-header"><div><h3>Anonymous profiles (access model)</h3><p class="desc">Detected/override anonymous access profiles are managed in Access Control. Use them for upstream-detected stock access behavior per school.</p></div><button class="secondary mini" onclick="showView('access')">Open Access Control</button></div>
-            <div class="help">If anonymous login is enabled but access is not working as expected, inspect the school's anonymous profile, server gates, and effective access behavior in the Access Control view.</div>
+            <div class="panel-header"><div><h3>Anonymous profiles (access model)</h3><p class="desc">Detected/override anonymous access profiles are managed in Permissions. Use them for upstream-detected access behavior per school.</p></div><button class="secondary mini" onclick="showView('access')">Open Permissions</button></div>
+            <div class="help">If anonymous login is enabled but access is not working as expected, inspect the school's anonymous profile and server access limits in Permissions.</div>
           </div>
         </div>
       </section>
@@ -861,8 +883,8 @@ async function api(method, path, body){
 const viewTitles = {
   overview: 'Overview',
   onboarding: 'Setup & Onboarding',
-  access: 'Access Control',
-  users: 'Users & Permissions',
+  access: 'Permissions',
+  users: 'People',
   schools: 'Schools & Anonymous Access',
   notifications: 'Notifications',
   tokens: 'Calendar Tokens',
@@ -915,6 +937,151 @@ function fillSchoolSelect(id, opts={}){
   if(opts.includeAll && want === '') sel.value = '';
 }
 
+const simpleGroupNames = {
+  'v2.student_base':'Student basics',
+  'v2.teacher_base':'Teacher basics',
+  'v2.recon':'Reconstructed timetables',
+  'v2.boosted':'Extended timetable access',
+  'v2.editor':'Class record editing',
+  'v2.techniker':'Technik events',
+  'v2.default_new_user':'New account extras'
+};
+const simpleGroupDescriptions = {
+  'v2.student_base':'Everyday access for a student account: own timetable, class pool, absences and personal calendar tools.',
+  'v2.teacher_base':'Everyday access for a teacher or staff account, based on what the school account can already see.',
+  'v2.recon':'Browse teacher, room and subject timetables reconstructed from class data.',
+  'v2.boosted':'Access additional timetables using an authorized staff account.',
+  'v2.editor':'Edit attendance and lesson records where the school account permits it.',
+  'v2.techniker':'View and manage proxy-created Technik events.',
+  'v2.default_new_user':'An additional access group available for compatibility with earlier setups.'
+};
+function groupID(g){ return Number(g && (g.ID || g.id) || 0); }
+function groupName(g){ const n=String(g && (g.Name || g.name) || 'Access group'); return simpleGroupNames[n] || n; }
+function groupDescription(g){ const n=String(g && (g.Name || g.name) || ''); return simpleGroupDescriptions[n] || String(g && (g.Description || g.description) || ''); }
+function simpleAccessSchool(){ return ($('simpleAccessSchool')?.value || defaultSchool() || '').trim(); }
+function roleLabel(role){ return ({student:'Students',teacher:'Teachers',staff:'Staff',unknown:'Other accounts',other:'Other accounts',parent:'Parents'})[role] || role; }
+async function loadSimpleAccess(){
+  const schoolSel=$('simpleAccessSchool');
+  if(schoolSel){
+    const previous=schoolSel.value || defaultSchool();
+    schoolSel.innerHTML='';
+    (schoolList||[]).forEach(s=>{const o=document.createElement('option');o.value=s.name;o.textContent=s.name;schoolSel.appendChild(o);});
+    if(previous && Array.from(schoolSel.options).some(o=>o.value===previous)) schoolSel.value=previous;
+  }
+  if(!allUsers){ try{ allUsers=(await api('GET','users')).users||[]; }catch(e){ allUsers=[]; } }
+  const school=simpleAccessSchool();
+  const users=(allUsers||[]).filter(u=>!school || u.school===school);
+  const userSel=$('simpleAccessUser');
+  if(userSel){
+    const prev=userSel.value; userSel.innerHTML='<option value="">Choose a person</option>';
+    users.forEach(u=>{const o=document.createElement('option');o.value=u.username;o.textContent=(u.displayName?u.displayName+' · ':'')+u.username;userSel.appendChild(o);});
+    if(users.some(u=>u.username===prev)) userSel.value=prev;
+  }
+  let groups=[];
+  try{ groups=(await api('GET','access/groups?school='+encodeURIComponent(school))).groups||[]; }
+  catch(e){ $('simpleGroupList').innerHTML='<div class="callout warn">Could not load access groups: '+esc(e.message)+'</div>'; }
+  window.simpleAccessGroups=groups;
+  renderSimpleGroupList(groups);
+  renderSimplePeople(users);
+  await renderSimpleRoleDefaults(school,groups);
+  if(userSel && userSel.value) await loadSimpleUserAccess();
+}
+function renderSimpleGroupList(groups){
+  const box=$('simpleGroupList'); if(!box)return;
+  if(!groups.length){box.innerHTML='<div class="empty">No access groups found.</div>';return;}
+  box.innerHTML=groups.map(g=>'<div class="callout"><strong>'+esc(groupName(g))+'</strong>'+
+    (groupDescription(g)?'<div class="small muted mt">'+esc(groupDescription(g))+'</div>':'')+
+    '<div class="small muted mt">'+(g.School||g.school?'School-specific':'Available to all schools')+'</div></div>').join('');
+}
+async function createSimpleGroup(){
+  const input=$('simpleGroupName'), name=(input?.value||'').trim(), school=simpleAccessSchool();
+  if(!name){log('Enter a name for the access group.');input?.focus();return;}
+  try{
+    const result=await api('POST','access/groups',{school,name,description:''});
+    if(result && result.ok){if(input)input.value='';log('Created access group “'+name+'”.');await loadSimpleAccess();}
+    else log('Could not create access group.');
+  }catch(e){log('Could not create access group: '+e.message);}
+}
+function renderSimplePeople(users){
+  const body=$('simpleAccessPeople')?.querySelector('tbody'); if(!body)return;
+  body.innerHTML='';
+  users.forEach(u=>{
+    const type=Number(u.personType)===5?'Student':([1,2].includes(Number(u.personType))?'Teacher / staff':'Account');
+    const tr=document.createElement('tr');
+    tr.innerHTML='<td><strong>'+esc(u.displayName||u.username)+'</strong><div class="small muted">'+esc(u.username)+'</div></td>'+
+      '<td>'+type+'</td><td class="small muted">'+(u.admin?'Dashboard admin':'Standard account')+'</td><td class="small muted">Select to review assigned groups</td>'+
+      '<td><button class="mini secondary" onclick="selectSimpleAccessUser('+jsq(u.username)+')">Manage access</button></td>';
+    body.appendChild(tr);
+  });
+  if(!users.length)body.innerHTML='<tr><td colspan="5" class="empty">No signed-in users for this school yet.</td></tr>';
+}
+function selectSimpleAccessUser(username){ $('simpleAccessUser').value=username; loadSimpleUserAccess(); }
+async function renderSimpleRoleDefaults(school,groups){
+  const box=$('simpleRoleDefaults');if(!box)return;
+  try{
+    const data=await api('GET','access/role-defaults?school='+encodeURIComponent(school));
+    const defaults=data.roleDefaults||{};
+    const roles=['student','teacher','staff','other'];
+    box.innerHTML=roles.map(role=>{
+      const active=(defaults[role]||[]).map(Number);
+      const relevant=groups;
+      return '<div class="callout"><strong>'+esc(roleLabel(role))+'</strong><div class="small muted mt">Choose the groups this account type receives.</div><div class="stack mt">'+
+        relevant.map(g=>'<label class="row small"><input type="checkbox" '+(active.includes(groupID(g))?'checked':'')+' onchange="toggleSimpleRoleGroup('+jsq(role)+','+groupID(g)+',this.checked)"><span>'+esc(groupName(g))+'</span></label>').join('')+
+        '</div></div>';
+    }).join('');
+  }catch(e){box.innerHTML='<div class="callout warn">Could not load role defaults: '+esc(e.message)+'</div>';}
+}
+async function toggleSimpleRoleGroup(role,groupId,enabled){
+  const school=simpleAccessSchool();
+  try{
+    if(enabled) await api('POST','access/role-defaults/set',{school,role,groupId,priority:0});
+    else {
+      await api('DELETE','access/role-defaults?school='+encodeURIComponent(school)+'&role='+encodeURIComponent(role)+'&groupId='+groupId);
+      if(school) await api('DELETE','access/role-defaults?school=&role='+encodeURIComponent(role)+'&groupId='+groupId);
+    }
+    log((enabled?'Added ':'Removed ')+groupName((window.simpleAccessGroups||[]).find(g=>groupID(g)===groupId)||{name:'access group'})+' default for '+roleLabel(role).toLowerCase());
+  }catch(e){log('Could not update account-type access: '+e.message);await renderSimpleRoleDefaults(school,window.simpleAccessGroups||[]);}
+}
+async function loadSimpleUserAccess(){
+  const school=simpleAccessSchool(), user=$('simpleAccessUser')?.value||'', box=$('simpleAccessDetail');
+  if(!box)return;
+  if(!school||!user){box.classList.add('hidden');box.innerHTML='';return;}
+  box.classList.remove('hidden');box.innerHTML='<div class="callout">Loading access…</div>';
+  try{
+    const [eff,assigned]=await Promise.all([
+      api('GET','access/effective?school='+encodeURIComponent(school)+'&user='+encodeURIComponent(user)),
+      api('GET','access/user-groups?school='+encodeURIComponent(school)+'&user='+encodeURIComponent(user))
+    ]);
+    const groups=(window.simpleAccessGroups||[]).filter(g=>!['v2.student_base','v2.teacher_base'].includes(String(g.Name||g.name||''))), assignedIds=new Set((assigned.groups||[]).map(groupID));
+    box.innerHTML='<div class="panel"><div class="panel-header"><div><h3>'+esc(user)+' · '+esc(roleLabel(eff.role||'account'))+'</h3><p class="desc">Default groups come from the account type. Add or remove extra groups below.</p></div></div>'+
+      '<div class="stack">'+groups.map(g=>'<label class="row callout"><input type="checkbox" '+(assignedIds.has(groupID(g))?'checked':'')+' onchange="toggleSimpleUserGroup('+jsq(user)+','+groupID(g)+',this.checked)"><span><strong>'+esc(groupName(g))+'</strong>'+
+      (groupDescription(g)?'<span class="small muted" style="display:block">'+esc(groupDescription(g))+'</span>':'')+'</span></label>').join('')+'</div>'+
+      '<details class="mt"><summary>What this person can currently access</summary><div class="row mt">'+(eff.effective||[]).map(c=>'<span class="chip">'+esc(simpleCapabilityLabel(c))+'</span>').join('')+'</div></details></div>';
+  }catch(e){box.innerHTML='<div class="callout warn">Could not resolve this person’s access: '+esc(e.message)+'</div>';}
+}
+async function toggleSimpleUserGroup(user,groupId,enabled){
+  const school=simpleAccessSchool();
+  try{
+    await api('POST','access/user-groups/'+(enabled?'assign':'unassign'),{school,user,groupId});
+    log((enabled?'Added ':'Removed ')+groupName((window.simpleAccessGroups||[]).find(g=>groupID(g)===groupId)||{name:'access group'})+' for '+user);
+    await loadSimpleUserAccess();
+  }catch(e){log('Could not update access for '+user+': '+e.message);await loadSimpleUserAccess();}
+}
+function simpleCapabilityLabel(key){
+  const labels={
+    'timetable.class.pooled.view':'View pooled class timetables','timetable.class.upstream.view':'View own class timetable',
+    'timetable.class.boosted_raw.view':'Extended class timetable access','timetable.student.personal.upstream.view':'View own personal timetable',
+    'timetable.student.personal.boosted_raw.view':'Extended personal timetable access','timetable.teacher.reconstructed.view':'View reconstructed teacher timetables',
+    'timetable.teacher.boosted_raw.view':'View teacher timetables through a staff account','timetable.room.reconstructed.view':'View reconstructed room timetables',
+    'timetable.room.boosted_raw.view':'View room timetables through a staff account','timetable.subject.reconstructed.view':'View reconstructed subject timetables',
+    'timetable.subject.boosted_raw.view':'View subject timetables through a staff account','pool.class.view':'Browse available classes',
+    'absence.own.read':'Read own absences','absence.write':'Edit absences','lesson.write':'Edit lesson records',
+    'events.technik.view':'View Technik events','events.technik.manage':'Manage Technik events'
+  };
+  if(labels[key])return labels[key];
+  return String(key).replaceAll('.',' ').replace(/\b\w/g,c=>c.toUpperCase());
+}
+
 function updateTopStatus(){
   const side = $('sideStatus');
   const sp = $('setupPill');
@@ -945,7 +1112,6 @@ function renderInstanceInfo(){
     ['Users / admins', (status.users||0) + ' / ' + (status.admins||0)],
     ['Schools', status.schools || 0],
     ['Pooled classes', status.pool || 0],
-    ['Recon / boosted / editors', (status.recon||0)+' / '+(status.boosted||0)+' / '+(status.editors||0)],
     ['Notifications outbox', 'pending '+(ob.pending||0)+', sending '+(ob.sending||0)+', dead '+(ob.dead||0)+', sent '+(ob.sent||0)],
   ];
   tb.innerHTML = rows.map(r => '<tr><th style="width:38%">'+esc(r[0])+'</th><td>'+esc(String(r[1]))+'</td></tr>').join('');
@@ -966,9 +1132,6 @@ async function renderCards(){
   c.insertAdjacentHTML('beforeend', card('Queued deliveries', ob.pending));
   c.insertAdjacentHTML('beforeend', card('Failed deliveries', ob.dead, ob.dead ? 'warn' : ''));
   c.insertAdjacentHTML('beforeend', card('Delivered', ob.sent));
-  c.insertAdjacentHTML('beforeend', card('Recon enabled', status.recon));
-  c.insertAdjacentHTML('beforeend', card('Boosted', status.boosted));
-  c.insertAdjacentHTML('beforeend', card('Editors', status.editors));
 
   const ids = ['whSchool','ntfySchool','tokSchool','poolSchool','evSchool','rmSchool','abSchool','sseSchool','v2School','v2UGSchool','v2AnonSchool'];
   for(const id of ids) fillSchoolSelect(id);
@@ -1076,19 +1239,17 @@ async function loadUsers(){
   for(const u of (d.users||[])){
     const tr = document.createElement('tr');
     const un = jsq(u.username);
+    const accountType=Number(u.personType)===5?'Student':([1,2].includes(Number(u.personType))?'Teacher / staff':'Account');
     tr.innerHTML =
       '<td>'+esc(u.username)+(u.displayName?'<div class="small muted">'+esc(u.displayName)+'</div>':'')+'</td>'+
-      '<td>'+esc(u.classId||'')+' '+esc(u.className||'')+'</td>'+
-      '<td>'+esc(u.school||'')+'</td>'+
-      '<td><button class="mini '+(u.admin?'danger':'secondary')+'" onclick="setAdmin('+un+','+(!u.admin)+')">'+(u.admin?'on':'off')+'</button></td>'+
-      '<td><button class="mini '+(u.reconAllowed?'danger':'secondary')+'" onclick="setPerm('+un+',\'recon\','+(!u.reconAllowed)+')">'+(u.reconAllowed?'on':'off')+'</button></td>'+
-      '<td><button class="mini '+(u.boosted?'danger':'secondary')+'" onclick="setPerm('+un+',\'boosted\','+(!u.boosted)+')">'+(u.boosted?'on':'off')+'</button></td>'+
-      '<td><button class="mini '+(u.editor?'danger':'secondary')+'" onclick="setPerm('+un+',\'editor\','+(!u.editor)+')">'+(u.editor?'on':'off')+'</button></td>'+
-      '<td><button class="mini '+(u.techniker?'danger':'secondary')+'" onclick="setPerm('+un+',\'techniker\','+(!u.techniker)+')">'+(u.techniker?'on':'off')+'</button></td>'+
-      '<td><button class="mini danger" onclick="delUser('+un+')">Delete</button></td>';
+      '<td>'+esc(u.className||'')+(u.classId?' <span class="small muted">('+esc(u.classId)+')</span>':'')+'</td>'+
+      '<td>'+esc(u.school||'')+'</td><td>'+accountType+'</td>'+
+      '<td><button class="mini '+(u.admin?'danger':'secondary')+'" onclick="setAdmin('+un+','+(!u.admin)+')">'+(u.admin?'Administrator':'Standard')+'</button></td>'+
+      '<td><button class="mini secondary" onclick="showView(\'access\');setTimeout(()=>selectSimpleAccessUser('+un+'),0)">Manage access</button> <button class="mini danger" onclick="delUser('+un+')">Delete</button></td>';
     tb.appendChild(tr);
   }
-  if(!(d.users||[]).length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="9" class="empty">No users yet.</td>'; tb.appendChild(tr); }
+  if(!(d.users||[]).length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="6" class="empty">No users yet.</td>'; tb.appendChild(tr); }
+  if($('simpleAccessSchool')) await loadSimpleAccess();
   try { renderOnboardingFlow(); } catch(e){}
 }
 async function addUser(){
@@ -1098,40 +1259,7 @@ async function addUser(){
   await loadUsers(); await renderCards();
 }
 async function setAdmin(u,v){ await api('POST','users/'+u,{admin:v}); log('admin '+(v?'enabled':'disabled')+' for '+u); await loadUsers(); await renderCards(); }
-async function setPerm(u,f,v){ await api('POST','users/'+u,{feature:f,allowed:v}); log(f+' '+(v?'enabled':'disabled')+' for '+u); await loadUsers(); await renderCards(); }
 async function delUser(u){ if(!confirm('Delete user '+u+'?')) return; await api('DELETE','users/'+u); log('deleted '+u); await loadUsers(); await renderCards(); }
-
-let defaultPerms = {};
-const defaultPermLabels = {
-  recon:'recon — reconstructed teacher/room/subject views',
-  boosted:'boosted — raw teacher-account forwarding',
-  editor:'editor — absences, lessons and subjects',
-  techniker:'techniker — merged Technik class',
-};
-function renderDefaultPerms(){
-  const tb=$('defaultPerms').querySelector('tbody'); if(!tb) return;
-  tb.innerHTML='';
-  for(const feature of ['recon','boosted','editor','techniker']){
-    const on = !!defaultPerms[feature];
-    const tr=document.createElement('tr');
-    tr.innerHTML='<td>'+esc(defaultPermLabels[feature]||feature)+'</td>'+
-      '<td><button class="mini '+(on?'danger':'secondary')+'" onclick="setDefaultPerm(\''+feature+'\','+(!on)+')">'+(on?'on':'off')+'</button></td>';
-    tb.appendChild(tr);
-  }
-}
-async function loadDefaultPerms(){
-  const d = await api('GET','perms');
-  if(d.error){ log('default perms: '+d.error); return; }
-  defaultPerms = d.defaults || {};
-  renderDefaultPerms();
-}
-async function setDefaultPerm(feature, allowed){
-  const d = await api('POST','perms/default',{feature, allowed});
-  if(d.error){ log('default '+feature+': '+d.error); return; }
-  defaultPerms = d.defaults || {};
-  renderDefaultPerms();
-  log('default '+feature+' '+(allowed?'enabled':'disabled')+' for newly seen users');
-}
 
 // ---------- schools / anonymous ----------
 async function loadSchools(){
@@ -1928,6 +2056,7 @@ async function overrideAccessAnonProfile(){
   catch(e){ v2Show('v2AnonOut','Failed: '+e.message); }
 }
 async function loadAccessAll(){
+  try { await loadSimpleAccess(); } catch(e){ log('permissions: '+e.message); }
   try { await loadAccessGates(); } catch(e){ v2Show('v2GatesOut','load failed: '+e.message); }
   try { await loadAccessAnonProfiles(); } catch(e){ v2Show('v2AnonOut','load failed: '+e.message); }
 }
@@ -1949,7 +2078,6 @@ async function refreshAll(){
     roommap: loadRoomMap,
     audit: loadAudit,
     anonymous: loadAnonymous,
-    defaultPerms: loadDefaultPerms,
     access: loadAccessAll,
     outbox: loadOutboxInfo,
     eventPickers: loadEventPickers,

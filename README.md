@@ -124,59 +124,29 @@ school.
 
 ## Permissions
 
-Access is a set of per-user flags on top of a Basic default:
+Access is resolved from capability groups, account roles, role defaults, and
+optional direct grants. In the dashboard, use **Permissions** to assign groups
+to people, choose default groups for students, teachers, staff, and other
+accounts, or create a custom group. People receive the groups configured for
+their role plus any groups assigned directly to them. **People** is for account
+and dashboard-admin management.
 
-| Tier | Flag | Scope | What you get |
-|---|---|---|---|
-| **Basic** | *(none)* | everyone by default | Pool of classes + your own personal student timetable + **reading your own absences**. |
-| **Reconstruction** | `recon` | global switch **or** per-user override | Teacher / room / subject timetables **reconstructed 100% from pooled class data**. |
-| **Boosted** | `boosted` | per-user only | Class/teacher/room/subject timetables **raw-forwarded through any saved teacher account** — no reconstruction. Your own personal (STUDENT) timetable is served the same way, giving it teacher-grade visibility (e.g. unlimited future weeks). **No** write / absence-editing powers on its own. If no teacher account is saved, boosted falls back to Basic. |
-| **Editor** | `editor` | per-user only | **Boosted plus editing**: unlocks the absence + lesson/subject **write (editing) methods** for the user's own requests, **and** runs the class-scoped editor data calls through the boosted teacher account. Holding `editor` alone is enough — it implies `boosted`. |
-| **Techniker** | `techniker` | per-user only | Sees one synthetic **Technik** class whose timetable is the union of every student's admin-authored events in the requested range, plus those events where they happen (the room / organiser timetable they name) and a proxy-local absence register on them. Independent of `recon`/`boosted`/`editor`; granted per user from the dashboard's *Users* section. |
+Built-in groups cover everyday student and teacher access, reconstructed
+timetables, extended timetable access through an authorized staff account,
+class record editing, and proxy-created Technik events. The effective access
+view explains which capabilities a person receives. Less common capability
+rules, server gates, role mappings, and direct grants are under **Advanced
+permission settings**.
 
-**Boosted XOR Recon**: the flags are mutually exclusive per user — granting one
-auto-revokes the other.
+Absence reads (`getStudentAbsences2017`) are available by default; write
+methods require the relevant editing capability and the upstream account's own
+authorization. Being an admin of this proxy does not by itself grant write
+access to Untis.
 
-```sh
-untisctl perms list                              # global switches + overrides
-untisctl perms grant --global recon              # enable recon for everyone
-untisctl perms grant --user Jdoe recon         # per-user override
-untisctl perms grant --user Jdoe boosted       # per-user boosted (raw forwarding)
-untisctl perms grant --user Jdoe editor        # + absence/lesson/subject editing
-untisctl perms grant --user Jdoe techniker     # synthetic "Technik" aggregate class
-untisctl perms clear --user Jdoe               # drop overrides -> fall back to global
-untisctl perms reset                             # wipe all -> Basic for everyone
-```
-
-> Flags come **before** the positional type: `perms grant --user X recon`
-> (Go's `flag` package does not intersperse flags after positionals).
-
-`boosted`, `editor` and `techniker` are **per-user only** (no `--global`), because
-each grants access to data pooled from several accounts.
-
-### Default permissions for new users
-
-A user's flags are copied **once**, the first time the proxy sees their
-account. Existing users keep exactly the flags an admin gave them; changing the
-default set never rewrites them. Recon is the shipped default, and the operator
-can choose any combination:
-
-```sh
-untisctl perms default list                  # what a newly seen user gets
-untisctl perms default grant recon           # add to the default set
-untisctl perms default grant boosted         # auto-revokes default recon
-untisctl perms default revoke editor         # remove from the default set
-untisctl perms default clear                 # new users start with no flags
-```
-
-The same set is editable from the dashboard's **Default permissions for new
-users** panel. Recon and boosted remain mutually exclusive in the defaults,
-exactly like per-user rows.
-
-Absence **reads** (`getStudentAbsences2017`) are available to **everyone** by
-default; only the **write/mutation** methods need `editor`. Being an **admin of
-this proxy does not imply editing**: admins manage accounts here, they do not
-write to Untis unless they hold `editor`.
+The `untisctl perms` commands and the older `/admin/perms` endpoints remain for
+compatibility with existing installations and scripts. For new configuration,
+use capability groups and role defaults in the dashboard or the `/admin/v2`
+access endpoints.
 
 > `getStudentAbsences2017` takes only `startDate`, `endDate`,
 > `includeExcused` and `includeUnExcused` — **no `id` or `type`**; the student is
