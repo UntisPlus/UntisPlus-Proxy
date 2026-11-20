@@ -173,35 +173,40 @@ func (p *Proxy) handleRoot(w http.ResponseWriter, r *http.Request) {
 	needed, _ := p.store.SetupNeeded()
 	title := "UntisPlus Proxy"
 	heading := "UntisPlus Proxy"
-	msg := "Administration dashboard, access control, notifications, and operations for this proxy instance."
-	linkText := "Open dashboard"
+	msg := "Administration dashboard for proxy setup, schools, access control, users, and notifications."
+	linkText := "Open admin dashboard"
 	badge := "Ready"
-	badgeStyle := "background:rgba(47,158,99,.16);border:1px solid rgba(47,158,99,.35);color:#8fe0b3;"
+	badgeStyle := "background:#e8f7ee;border:1px solid #b7e2c7;color:#166534;"
+	sub := "Use the guided onboarding to configure trusted proxy/real client IP handling, add a school, set up the first admin, create permission groups/roles, and onboard users."
 	if needed {
 		title = "UntisPlus Proxy — Setup"
 		heading = "Initial setup required"
-		msg = "Sign in to claim admin access and complete onboarding. You'll be guided to configure trusted reverse-proxy client IPs, roles/access, ntfy/webhook alerts, and users/admins."
-		linkText = "Continue to setup & login"
+		msg = "Sign in to claim admin access and complete guided onboarding in a clear step-by-step flow."
+		linkText = "Continue to guided setup & login"
 		badge = "Setup pending"
-		badgeStyle = "background:rgba(217,119,6,.16);border:1px solid rgba(217,119,6,.35);color:#ffd08a;"
+		badgeStyle = "background:#fff4e5;border:1px solid #f3d19c;color:#92400e;"
+		sub = "Guided flow: configure proxy & real client IP → add a school → add first user/admin → create permission groups/roles → add other users → notifications."
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	_, _ = w.Write([]byte(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>` + title + `</title>
 <style>
-:root{color-scheme:dark;--bg:#0f1115;--panel:#171a21;--border:#2a2f3a;--text:#e8edf7;--muted:#9aa6b8;--accent:#4f8cff}
-*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:1rem;background:radial-gradient(1000px 500px at 10% -10%,rgba(79,140,255,.18),transparent),var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif}
-.card{width:min(640px,100%);background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:1.4rem 1.4rem 1.2rem;box-shadow:0 20px 50px rgba(0,0,0,.35)}
-.badge{display:inline-flex;align-items:center;padding:.2rem .55rem;border-radius:999px;font-size:.75rem;margin-bottom:.65rem}
-h1{font-size:1.35rem;margin:0 0 .4rem}p{color:var(--muted);line-height:1.55;margin:.3rem 0 .95rem}
+:root{color-scheme:light;--bg:#f3f5f7;--panel:#ffffff;--border:#d9e0e8;--text:#1f2937;--muted:#5b6778;--accent:#ff9800;--accent-dark:#ef6c00}
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:grid;place-items:center;padding:1rem;background:linear-gradient(180deg,#fffaf3 0%,#f3f5f7 35%,#f3f5f7 100%);color:var(--text);font-family:"Segoe UI",Inter,Roboto,Helvetica,Arial,sans-serif}
+.card{width:min(760px,100%);background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:1.4rem 1.4rem 1.2rem;box-shadow:0 12px 30px rgba(31,41,55,.08)}
+.badge{display:inline-flex;align-items:center;padding:.22rem .55rem;border-radius:999px;font-size:.75rem;margin-bottom:.65rem;font-weight:600}
+h1{font-size:1.45rem;margin:0 0 .4rem;color:#111827}p{color:var(--muted);line-height:1.55;margin:.3rem 0 .9rem}
 .actions{display:flex;gap:.5rem;flex-wrap:wrap;align-items:center}
-a.btn{display:inline-block;background:var(--accent);color:#fff;text-decoration:none;padding:.65rem .9rem;border-radius:10px;font-weight:600}
-a.btn.secondary{background:#2a3140;border:1px solid #394150;color:var(--text)}
+a.btn{display:inline-block;background:var(--accent);color:#fff;text-decoration:none;padding:.68rem .95rem;border-radius:10px;font-weight:700;border:1px solid var(--accent-dark)}
+a.btn:hover{background:#fb8c00}
 .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.6rem;margin-top:1rem}
-.item{border:1px solid var(--border);border-radius:10px;padding:.65rem .7rem;background:rgba(255,255,255,.02)}
-.item b{display:block;font-size:.86rem;margin-bottom:.15rem;color:var(--text)}.item span{font-size:.8rem;color:var(--muted);line-height:1.4}
-.small{font-size:.82rem;color:var(--muted);margin-top:1rem;line-height:1.45}
+.item{border:1px solid var(--border);border-radius:10px;padding:.7rem .75rem;background:#f8fafc}
+.item b{display:block;font-size:.86rem;margin-bottom:.15rem;color:#111827}.item span{font-size:.8rem;color:var(--muted);line-height:1.45}
+.steps{margin:.9rem 0 0;padding-left:1.15rem;color:var(--muted);font-size:.86rem;line-height:1.5}
+.steps li{margin:.2rem 0}
+.small{font-size:.82rem;color:var(--muted);margin-top:1rem;line-height:1.5;border-top:1px solid var(--border);padding-top:.8rem}
 </style></head><body><div class="card"><div class="badge" style="` + badgeStyle + `">` + badge + `</div><h1>` + heading + `</h1><p>` + msg + `</p><div class="actions"><a class="btn" href="/admin">` + linkText + `</a></div>
-<div class="grid"><div class="item"><b>Trusted proxy / real IP</b><span>Configure trusted reverse proxies so the server sees real client IPs for rate limiting and logs.</span></div><div class="item"><b>Access control</b><span>Define capability groups, role defaults, mappings, and grants for precise permissions.</span></div><div class="item"><b>Notifications</b><span>Set up ntfy topics, webhooks, and outage alerts for operations and changes.</span></div><div class="item"><b>Users & schools</b><span>Manage admins, user permissions, schools, anonymous access, tokens, and events.</span></div></div>
-<div class="small">If running behind a reverse proxy/load balancer, complete trusted-proxy setup during onboarding to ensure forwarded client IP headers are handled safely.</div></div></body></html>`))
+<div class="grid"><div class="item"><b>1. Proxy &amp; real client IP</b><span>Configure trusted reverse proxies so the server sees real client IPs for rate limiting and logs.</span></div><div class="item"><b>2. School &amp; first admin</b><span>Add a school, then sign in to claim/create the first admin user on a fresh setup.</span></div><div class="item"><b>3. Groups &amp; roles</b><span>Create capability groups, role defaults, and mappings for clear permissions.</span></div><div class="item"><b>4. Users &amp; notifications</b><span>Add more users/admins and configure ntfy/webhook/outage alerts.</span></div></div>
+<ol class="steps"><li>Configure trusted proxy/real client IP (if behind reverse proxy)</li><li>Add a school</li><li>Add first user/admin (claim on first login for fresh setup)</li><li>Create permission groups and roles</li><li>Add other users and fine-tune access</li><li>Set up notifications and finish onboarding</li></ol>
+<div class="small">` + sub + `</div></div></body></html>`))
 }

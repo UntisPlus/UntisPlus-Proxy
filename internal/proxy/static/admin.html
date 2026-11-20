@@ -6,212 +6,240 @@
 <title>UntisPlus Proxy Admin</title>
 <style>
   :root {
-    color-scheme: dark;
-    --bg: #0f1115;
-    --bg-elev: #171a21;
-    --bg-elev-2: #1e222b;
-    --bg-soft: #141820;
-    --border: #2a2f3a;
-    --border-strong: #394150;
-    --text: #e8edf7;
-    --muted: #9aa6b8;
-    --muted-2: #7f8a9b;
-    --accent: #4f8cff;
-    --accent-2: #3b74d9;
-    --ok: #2f9e63;
-    --ok-bg: rgba(47,158,99,.15);
-    --warn: #d97706;
-    --warn-bg: rgba(217,119,6,.16);
-    --danger: #d14b4b;
-    --danger-bg: rgba(209,75,75,.15);
-    --code: #0c0f14;
-    --shadow: 0 10px 30px rgba(0,0,0,.25);
+    color-scheme: light;
+    --bg: #f3f5f7;
+    --bg-soft: #eef2f6;
+    --surface: #ffffff;
+    --surface-2: #f8fafc;
+    --border: #d9e0e8;
+    --border-strong: #c7d2de;
+    --text: #1f2937;
+    --muted: #5b6778;
+    --muted-2: #738195;
+    --brand: #ff9800;
+    --brand-dark: #ef6c00;
+    --brand-soft: #fff3e0;
+    --brand-soft-2: #ffe0b2;
+    --nav-bg: #ffffff;
+    --nav-active: #fff7ed;
+    --ok: #1f8f4e;
+    --ok-bg: #e8f7ee;
+    --warn: #b45309;
+    --warn-bg: #fff4e5;
+    --danger: #c62828;
+    --danger-bg: #fdeaea;
+    --info: #1565c0;
+    --info-bg: #e8f1ff;
+    --code: #f3f4f6;
+    --shadow: 0 8px 24px rgba(31,41,55,.08);
     --radius: 12px;
     --radius-sm: 8px;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif; }
   body { min-height: 100vh; }
-  a { color: #8ab4ff; }
-  code { background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.06); padding: .12rem .35rem; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; }
-  .app { display: grid; grid-template-columns: 260px minmax(0,1fr); min-height: 100vh; }
-  .sidebar { position: sticky; top: 0; align-self: start; height: 100vh; overflow: auto; background: linear-gradient(180deg, #141821 0%, #11151d 100%); border-right: 1px solid var(--border); padding: 1rem .75rem; }
-  .brand { padding: .5rem .6rem .9rem; border-bottom: 1px solid var(--border); margin-bottom: .7rem; }
-  .brand h1 { font-size: 1.05rem; margin: 0; font-weight: 700; letter-spacing: .2px; }
-  .brand .sub { color: var(--muted); font-size: .78rem; margin-top: .2rem; }
-  .nav-group { margin: .5rem 0 .9rem; }
-  .nav-label { font-size: .72rem; text-transform: uppercase; letter-spacing: .08em; color: var(--muted-2); padding: .2rem .55rem; margin-bottom: .2rem; }
-  .nav a { display: flex; align-items: center; gap: .5rem; color: var(--text); text-decoration: none; padding: .55rem .6rem; border-radius: 8px; font-size: .9rem; border: 1px solid transparent; }
-  .nav a:hover { background: rgba(255,255,255,.04); border-color: rgba(255,255,255,.04); }
-  .nav a.active { background: rgba(79,140,255,.14); border-color: rgba(79,140,255,.28); color: #fff; }
-  .nav .dot { width: 8px; height: 8px; border-radius: 999px; background: #55607a; flex: 0 0 auto; }
-  .nav a.active .dot { background: var(--accent); box-shadow: 0 0 0 3px rgba(79,140,255,.2); }
-  .main { min-width: 0; }
-  .topbar { position: sticky; top: 0; z-index: 20; backdrop-filter: blur(8px); background: rgba(15,17,21,.82); border-bottom: 1px solid var(--border); padding: .75rem 1.2rem; display: flex; gap: .8rem; align-items: center; justify-content: space-between; }
-  .topbar .left { display: flex; align-items: center; gap: .7rem; min-width: 0; }
-  .topbar h2 { margin: 0; font-size: 1rem; font-weight: 650; }
-  .pill { display: inline-flex; align-items: center; gap: .35rem; padding: .2rem .55rem; border-radius: 999px; font-size: .75rem; border: 1px solid var(--border); color: var(--muted); background: rgba(255,255,255,.02); }
-  .pill.ok { color: #8fe0b3; border-color: rgba(47,158,99,.35); background: var(--ok-bg); }
-  .pill.warn { color: #ffd08a; border-color: rgba(217,119,6,.35); background: var(--warn-bg); }
-  .content { padding: 1rem 1.2rem 2rem; max-width: 1400px; }
+  a { color: #1565c0; }
+  code { background: #f1f5f9; border: 1px solid #e2e8f0; padding: .12rem .35rem; border-radius: 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em; color: #334155; }
+  .app { display: grid; grid-template-columns: 270px 1fr; min-height: 100vh; }
+  .sidebar {
+    border-right: 1px solid var(--border); background: var(--nav-bg); padding: 1rem .85rem; position: sticky; top: 0; height: 100vh; overflow: auto;
+  }
+  .brand { display: flex; align-items: center; gap: .7rem; padding: .3rem .35rem .95rem; margin-bottom: .6rem; border-bottom: 1px solid var(--border); }
+  .brand-mark { width: 38px; height: 38px; border-radius: 10px; background: linear-gradient(135deg, var(--brand), #ffb74d); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 800; font-size: 1rem; box-shadow: 0 6px 14px rgba(239,108,0,.25); }
+  .brand h1 { font-size: .98rem; margin: 0; line-height: 1.2; color: #111827; }
+  .brand .sub { color: var(--muted); font-size: .75rem; margin-top: .15rem; }
+  .side-status { margin: .8rem .35rem 1rem; font-size: .78rem; color: var(--muted); display: grid; gap: .35rem; }
+  .pill { display: inline-flex; align-items: center; gap: .4rem; padding: .2rem .55rem; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); font-size: .74rem; width: fit-content; }
+  .pill.ok { border-color: #b7e2c7; background: var(--ok-bg); color: #166534; }
+  .pill.warn { border-color: #f3d19c; background: var(--warn-bg); color: #92400e; }
+  .nav-group { margin: .95rem 0 .45rem; padding: 0 .45rem; font-size: .7rem; letter-spacing: .08em; text-transform: uppercase; color: #7b8794; font-weight: 700; }
+  .nav { display: flex; flex-direction: column; gap: .2rem; }
+  .nav a { color: #374151; text-decoration: none; padding: .5rem .55rem; border-radius: 10px; display: flex; align-items: center; gap: .55rem; font-size: .9rem; border: 1px solid transparent; }
+  .nav a:hover { background: #f8fafc; border-color: #e5edf5; }
+  .nav a.active { background: var(--nav-active); border-color: #ffd8a8; color: #9a3412; font-weight: 600; }
+  .dot { width: .45rem; height: .45rem; border-radius: 50%; background: #f59e0b; opacity: .75; }
+  .content { padding: 1.1rem 1.2rem 2rem; max-width: 1500px; width: 100%; }
+  .topbar { display: flex; gap: 1rem; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; background: linear-gradient(90deg, #fff, #fffaf3); border: 1px solid var(--border); border-radius: 14px; padding: .8rem 1rem; box-shadow: var(--shadow); }
+  .title h2 { margin: 0; font-size: 1.2rem; color: #111827; }
+  .title p { margin: .15rem 0 0; color: var(--muted); font-size: .86rem; }
+  .actions { display: flex; gap: .45rem; align-items: center; flex-wrap: wrap; }
+  button, input, select, textarea { font: inherit; }
+  button { background: var(--brand); color: #fff; border: 1px solid var(--brand-dark); border-radius: 8px; padding: .48rem .75rem; font-size: .84rem; cursor: pointer; font-weight: 600; }
+  button:hover { background: #fb8c00; }
+  button.secondary { background: #fff; color: #374151; border-color: var(--border-strong); }
+  button.secondary:hover { background: #f8fafc; }
+  button.danger { background: var(--danger-bg); color: #991b1b; border-color: #f2b8b5; }
+  button.ghost { background: transparent; color: var(--muted); border-color: var(--border); }
+  button:disabled { opacity: .55; cursor: default; }
+  input, select, textarea { background: #fff; color: var(--text); border: 1px solid var(--border-strong); border-radius: 8px; padding: .48rem .58rem; font-size: .85rem; }
+  input:focus, select:focus, textarea:focus { outline: 3px solid rgba(255,152,0,.18); border-color: #ffb74d; }
+  textarea { width: 100%; min-height: 5.5rem; resize: vertical; }
   .view { display: none; }
   .view.active { display: block; }
-  .grid { display: grid; gap: .8rem; }
-  .grid.cards { grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); }
-  .grid.two { grid-template-columns: repeat(2, minmax(0,1fr)); }
-  .grid.three { grid-template-columns: repeat(3, minmax(0,1fr)); }
-  @media (max-width: 1100px) { .grid.two, .grid.three { grid-template-columns: 1fr; } }
-  @media (max-width: 900px) {
-    .app { grid-template-columns: 1fr; }
-    .sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
-    .content { padding: .9rem; }
-  }
-  .card, .panel { background: var(--bg-elev); border: 1px solid var(--border); border-radius: var(--radius); padding: .9rem 1rem; box-shadow: 0 0 0 1px rgba(255,255,255,.01) inset; }
-  .panel + .panel { margin-top: .8rem; }
-  .card .num { font-size: 1.55rem; font-weight: 700; line-height: 1.1; }
-  .card .lbl { font-size: .78rem; color: var(--muted); margin-top: .15rem; }
-  .card.warn { border-color: rgba(209,75,75,.45); background: linear-gradient(180deg, rgba(209,75,75,.08), var(--bg-elev)); }
-  .card.warn .num { color: #ff9a9a; }
+  .section-title { margin: 0 0 .25rem; font-size: 1.08rem; color: #111827; }
+  .section-sub { margin: 0 0 1rem; color: var(--muted); font-size: .88rem; line-height: 1.5; }
+  .grid { display: grid; gap: .9rem; }
+  .grid.cards { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
+  .grid.two { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: .85rem .9rem; box-shadow: 0 2px 8px rgba(31,41,55,.04); }
+  .card h3 { margin: 0 0 .25rem; font-size: .78rem; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+  .card .val { font-size: 1.35rem; font-weight: 700; color: #111827; }
+  .card .hint { margin-top: .2rem; color: var(--muted); font-size: .78rem; }
+  .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: .95rem 1rem; box-shadow: 0 2px 8px rgba(31,41,55,.04); }
+  .panel + .panel { margin-top: .9rem; }
   .panel-header { display: flex; align-items: flex-start; justify-content: space-between; gap: .8rem; margin-bottom: .7rem; }
-  .panel h3 { margin: 0; font-size: 1rem; }
-  .panel p.desc { margin: .25rem 0 0; color: var(--muted); font-size: .86rem; line-height: 1.45; }
-  .section-title { font-size: 1.15rem; margin: 0 0 .25rem; }
-  .section-sub { color: var(--muted); margin: 0 0 .9rem; font-size: .92rem; }
-  .row { display: flex; flex-wrap: wrap; gap: .45rem; align-items: center; }
-  .row.stretch > * { flex: 1 1 180px; }
-  .stack { display: flex; flex-direction: column; gap: .45rem; }
-  .spacer { height: .4rem; }
-  label.field { display: flex; flex-direction: column; gap: .25rem; font-size: .8rem; color: var(--muted); }
-  input, select, textarea, button { font: inherit; }
-  input, select, textarea { background: var(--bg-soft); color: var(--text); border: 1px solid var(--border-strong); border-radius: 8px; padding: .48rem .55rem; min-height: 36px; }
-  input:focus, select:focus, textarea:focus { outline: 2px solid rgba(79,140,255,.35); border-color: rgba(79,140,255,.55); }
-  textarea { min-height: 90px; resize: vertical; }
-  button { background: var(--accent); color: #fff; border: 1px solid rgba(255,255,255,.08); border-radius: 8px; padding: .48rem .7rem; cursor: pointer; font-weight: 600; }
-  button:hover { background: var(--accent-2); }
-  button.secondary { background: #2a3140; color: var(--text); border-color: var(--border-strong); }
-  button.secondary:hover { background: #323a4b; }
-  button.danger { background: #a83b3b; }
-  button.danger:hover { background: #933333; }
-  button.ghost { background: transparent; border-color: var(--border-strong); color: var(--text); }
-  button.mini { padding: .28rem .5rem; font-size: .78rem; border-radius: 7px; min-height: 0; }
-  button:disabled { opacity: .55; cursor: default; }
+  .panel-header h3 { margin: 0; font-size: .98rem; color: #111827; }
+  .panel-header .desc { margin: .2rem 0 0; color: var(--muted); font-size: .82rem; line-height: 1.45; }
+  .row { display: flex; gap: .45rem; flex-wrap: wrap; align-items: center; }
+  .field { display: flex; flex-direction: column; gap: .25rem; min-width: 140px; flex: 1; }
+  .field label, label.field { font-size: .78rem; color: var(--muted); font-weight: 600; }
   .muted { color: var(--muted); }
-  .small { font-size: .8rem; }
+  .small { font-size: .78rem; }
   .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-  .table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: rgba(255,255,255,.01); }
-  table { width: 100%; border-collapse: collapse; font-size: .86rem; }
-  th, td { text-align: left; padding: .5rem .55rem; border-bottom: 1px solid var(--border); vertical-align: top; }
-  th { color: var(--muted); font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; background: rgba(255,255,255,.02); position: sticky; top: 0; }
-  tr:last-child td { border-bottom: 0; }
-  .empty { color: var(--muted); font-style: italic; }
-  pre.out { margin: 0; background: var(--code); border: 1px solid var(--border); border-radius: 10px; padding: .7rem; overflow: auto; max-height: 22rem; font-size: .78rem; line-height: 1.4; color: #dce6f5; }
-  .logbox { max-height: 18rem; }
-  .badge { display: inline-flex; align-items: center; padding: .12rem .45rem; border-radius: 999px; font-size: .72rem; border: 1px solid var(--border-strong); color: var(--muted); }
-  .badge.ok { color: #8fe0b3; border-color: rgba(47,158,99,.4); background: var(--ok-bg); }
-  .badge.bad { color: #ffaaaa; border-color: rgba(209,75,75,.4); background: var(--danger-bg); }
-  .help { font-size: .82rem; color: var(--muted); line-height: 1.45; }
-  .callout { border: 1px solid var(--border-strong); background: var(--bg-soft); border-radius: 10px; padding: .75rem .85rem; }
-  .callout.ok { border-color: rgba(47,158,99,.35); background: rgba(47,158,99,.08); }
-  .callout.warn { border-color: rgba(217,119,6,.35); background: rgba(217,119,6,.08); }
-  .callout strong { color: var(--text); }
+  .ok { color: var(--ok); } .warn { color: var(--warn); } .danger-text { color: var(--danger); }
+  .badge { display: inline-flex; align-items: center; padding: .15rem .5rem; border-radius: 999px; font-size: .72rem; border: 1px solid var(--border); background: #f8fafc; color: var(--muted); }
+  .badge.ok { background: var(--ok-bg); border-color: #b7e2c7; color: #166534; }
+  .badge.warn { background: var(--warn-bg); border-color: #f3d19c; color: #92400e; }
+  .badge.bad { background: var(--danger-bg); border-color: #f2b8b5; color: #991b1b; }
+  .badge.info { background: var(--info-bg); border-color: #bfd4ff; color: #0b5394; }
+  .callout { border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: .7rem .8rem; font-size: .86rem; line-height: 1.45; }
+  .callout.warn { border-color: #f3d19c; background: var(--warn-bg); color: #7c2d12; }
+  .callout.ok { border-color: #b7e2c7; background: var(--ok-bg); color: #14532d; }
+  .callout.info { border-color: #bfd4ff; background: var(--info-bg); color: #0b3d91; }
+  .table-wrap { overflow: auto; border: 1px solid var(--border); border-radius: 10px; background: #fff; }
+  table { width: 100%; border-collapse: collapse; font-size: .84rem; }
+  th, td { text-align: left; padding: .52rem .6rem; border-bottom: 1px solid #edf2f7; vertical-align: top; }
+  th { font-size: .75rem; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; background: #f8fafc; position: sticky; top: 0; z-index: 1; }
+  tr:hover td { background: #fcfcfd; }
+  .empty { color: var(--muted); font-style: italic; padding: .8rem .2rem; }
+  .mt { margin-top: .9rem; } .mb { margin-bottom: .9rem; }
+  .hidden { display: none !important; }
+  pre.out { background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: .7rem; overflow: auto; max-height: 20rem; font-size: .78rem; line-height: 1.45; margin: .4rem 0 0; color: #334155; }
+  .pickwrap { position: relative; display: inline-flex; flex-direction: column; }
+  .pickmenu { position: absolute; z-index: 30; top: 100%; left: 0; right: 0; background: #fff; border: 1px solid var(--border-strong); border-radius: 8px; max-height: 14rem; overflow: auto; display: none; box-shadow: var(--shadow); }
+  .pickitem { padding: .38rem .5rem; cursor: pointer; font-size: .84rem; border-bottom: 1px solid #f1f5f9; }
+  .pickitem:last-child { border-bottom: 0; }
+  .pickitem:hover { background: #f8fafc; }
+  .pickitem.sel { background: #fff3e0; color: #9a3412; }
+  .mini { font-size: .74rem; padding: .28rem .5rem; border-radius: 7px; }
+  .list-plain { margin: .35rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: .84rem; line-height: 1.5; }
+  .list-plain li { margin: .2rem 0; }
+  .kvs { display: grid; grid-template-columns: 170px 1fr; gap: .35rem .7rem; font-size: .84rem; }
+  .kvs .k { color: var(--muted); } .kvs .v { word-break: break-word; }
+  .scrollbox { max-height: 20rem; overflow: auto; border: 1px solid var(--border); border-radius: 8px; padding: .45rem; background: #fff; }
+  .chip { display: inline-flex; align-items: center; gap: .3rem; padding: .15rem .45rem; border-radius: 999px; border: 1px solid var(--border); background: #f8fafc; color: var(--muted); font-size: .72rem; }
+  .flow { display: grid; gap: .8rem; }
+  .flow-step { display: grid; grid-template-columns: 42px 1fr; gap: .75rem; align-items: start; background: #fff; border: 1px solid var(--border); border-radius: 12px; padding: .85rem .9rem; box-shadow: 0 2px 8px rgba(31,41,55,.04); }
+  .flow-num { width: 34px; height: 34px; border-radius: 50%; background: linear-gradient(135deg, var(--brand), #ffb74d); color: #fff; display: inline-flex; align-items: center; justify-content: center; font-weight: 800; margin-top: .05rem; }
+  .flow-head { display: flex; align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap; }
+  .flow-head h4 { margin: 0; font-size: .98rem; color: #111827; }
+  .flow-body p { margin: .2rem 0 .55rem; color: var(--muted); font-size: .86rem; line-height: 1.5; }
+  .step-badge { display: inline-flex; align-items: center; padding: .18rem .55rem; border-radius: 999px; font-size: .72rem; font-weight: 700; border: 1px solid var(--border); background: #f8fafc; color: #475569; }
+  .step-badge.done { background: var(--ok-bg); border-color: #b7e2c7; color: #166534; }
+  .step-badge.warn { background: var(--warn-bg); border-color: #f3d19c; color: #92400e; }
+  .step-badge.todo { background: #f8fafc; border-color: var(--border); color: #475569; }
   .steps { display: grid; gap: .7rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
-  .step { border: 1px solid var(--border-strong); background: var(--bg-soft); border-radius: 10px; padding: .8rem; }
+  .step { border: 1px solid var(--border); background: var(--surface-2); border-radius: 10px; padding: .8rem; }
   .step h4 { margin: 0 0 .3rem; font-size: .95rem; }
   .step p { margin: 0 0 .55rem; color: var(--muted); font-size: .83rem; line-height: 1.45; }
-  .pickwrap { position: relative; display: inline-flex; flex-direction: column; }
-  .pickmenu { position: absolute; z-index: 30; top: 100%; left: 0; right: 0; background: #171b23; border: 1px solid var(--border-strong); border-radius: 8px; max-height: 14rem; overflow: auto; display: none; box-shadow: var(--shadow); }
-  .pickitem { padding: .38rem .5rem; cursor: pointer; font-size: .84rem; border-bottom: 1px solid rgba(255,255,255,.04); }
-  .pickitem:last-child { border-bottom: 0; }
-  .pickitem:hover { background: rgba(255,255,255,.05); }
-  .pickitem.sel { background: rgba(79,140,255,.18); }
-  .pickbox { border: 1px solid var(--border-strong); border-radius: 8px; background: var(--bg-soft); max-height: 13rem; overflow: auto; min-height: 4rem; }
-  .kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .75rem; padding: .05rem .35rem; border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 6px; color: var(--muted); }
-  .hr { height: 1px; background: var(--border); margin: .8rem 0; }
-  .hidden { display: none !important; }
-  .statusline { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap; }
-  .top-actions { display:flex; gap:.45rem; align-items:center; }
-  details.advanced { border: 1px solid var(--border); border-radius: 10px; padding: .55rem .7rem; background: rgba(255,255,255,.015); }
-  details.advanced > summary { cursor: pointer; color: var(--muted); font-size: .86rem; }
-  .mt { margin-top: .6rem; }
-  .mb { margin-bottom: .6rem; }
-  .w-full { width: 100%; }
+  .checklist { margin: 0; padding-left: 1.15rem; color: var(--muted); font-size: .84rem; line-height: 1.5; }
+  .checklist li { margin: .2rem 0; }
+  @media (max-width: 980px) {
+    .app { grid-template-columns: 1fr; }
+    .sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
+  }
 </style>
 </head>
 <body>
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <h1>UntisPlus Proxy</h1>
-      <div class="sub">Admin dashboard &amp; setup</div>
-      <div id="sideStatus" class="small muted" style="margin-top:.45rem">Loading…</div>
+      <div class="brand-mark">U+</div>
+      <div>
+        <h1>UntisPlus Proxy</h1>
+        <div class="sub">Admin Console</div>
+      </div>
     </div>
-    <div class="nav-group">
-      <div class="nav-label">General</div>
-      <nav class="nav" id="nav">
-        <a href="#overview" data-view="overview"><span class="dot"></span>Overview</a>
-        <a href="#onboarding" data-view="onboarding"><span class="dot"></span>Setup &amp; Onboarding</a>
-      </nav>
+    <div class="side-status">
+      <span id="sideStatus" class="pill">Loading…</span>
+      <span id="setupPill" class="pill">Setup: unknown</span>
+      <span id="proxyPill" class="pill">Proxy: unknown</span>
     </div>
-    <div class="nav-group">
-      <div class="nav-label">Access &amp; Identity</div>
-      <nav class="nav">
-        <a href="#access" data-view="access"><span class="dot"></span>Access Control</a>
-        <a href="#users" data-view="users"><span class="dot"></span>Users &amp; Permissions</a>
-        <a href="#schools" data-view="schools"><span class="dot"></span>Schools &amp; Anonymous</a>
-      </nav>
-    </div>
-    <div class="nav-group">
-      <div class="nav-label">Integrations</div>
-      <nav class="nav">
-        <a href="#notifications" data-view="notifications"><span class="dot"></span>Notifications</a>
-        <a href="#tokens" data-view="tokens"><span class="dot"></span>Calendar Tokens</a>
-      </nav>
-    </div>
-    <div class="nav-group">
-      <div class="nav-label">Data &amp; Operations</div>
-      <nav class="nav">
-        <a href="#events" data-view="events"><span class="dot"></span>Events &amp; Absences</a>
-        <a href="#operations" data-view="operations"><span class="dot"></span>Pool, Audit &amp; Tools</a>
-        <a href="#activity" data-view="activity"><span class="dot"></span>Activity Log</a>
-      </nav>
-    </div>
+
+    <div class="nav-group">Getting started</div>
+    <nav class="nav" id="nav">
+      <a href="#overview" data-view="overview"><span class="dot"></span>Overview</a>
+      <a href="#onboarding" data-view="onboarding"><span class="dot"></span>Setup &amp; Onboarding</a>
+    </nav>
+
+    <div class="nav-group">Access &amp; identity</div>
+    <nav class="nav">
+      <a href="#access" data-view="access"><span class="dot"></span>Access Control</a>
+      <a href="#users" data-view="users"><span class="dot"></span>Users &amp; Permissions</a>
+      <a href="#schools" data-view="schools"><span class="dot"></span>Schools &amp; Anonymous</a>
+    </nav>
+
+    <div class="nav-group">Integrations</div>
+    <nav class="nav">
+      <a href="#notifications" data-view="notifications"><span class="dot"></span>Notifications</a>
+      <a href="#tokens" data-view="tokens"><span class="dot"></span>Calendar Tokens</a>
+    </nav>
+
+    <div class="nav-group">Operations</div>
+    <nav class="nav">
+      <a href="#events" data-view="events"><span class="dot"></span>Events &amp; Absences</a>
+      <a href="#operations" data-view="operations"><span class="dot"></span>Pool, Audit &amp; Tools</a>
+      <a href="#activity" data-view="activity"><span class="dot"></span>Activity Log</a>
+    </nav>
   </aside>
 
-  <main class="main">
+  <main class="content">
     <div class="topbar">
-      <div class="left">
+      <div class="title">
         <h2 id="viewTitle">Overview</h2>
-        <span id="setupPill" class="pill hidden"></span>
-        <span id="proxyPill" class="pill hidden"></span>
+        <p>WebUntis-style guided admin for proxy setup, schools, access, users, and notifications.</p>
       </div>
-      <div class="top-actions">
-        <span id="refreshHint" class="small muted"></span>
+      <div class="actions">
+        <span class="small muted" id="refreshHint"></span>
+        <button class="secondary mini" onclick="showView('onboarding')">Guided setup</button>
         <button class="secondary mini" onclick="refreshAll()">Refresh all</button>
+        <a href="/admin/logout"><button class="secondary mini">Logout</button></a>
       </div>
     </div>
-    <div class="content">
+
+    <div id="view-root">
       <!-- OVERVIEW -->
       <section id="view-overview" class="view active">
         <h2 class="section-title">Overview</h2>
-        <p class="section-sub">Health, quick stats, and shortcuts for managing this UntisPlus Proxy instance.</p>
-        <div id="overviewSetupCallout" class="callout warn mb hidden"></div>
-        <div class="grid cards" id="cards"></div>
+        <p class="section-sub">A clear starting point for your instance. Follow guided onboarding to configure real client IP handling, add a school, create the first admin/user, define permission groups, and onboard more users.</p>
 
-        <div class="grid two mt">
+        <div id="overviewSetupCallout" class="callout warn mb hidden"></div>
+
+        <div class="grid cards mb" id="cards"></div>
+
+        <div class="grid two">
           <div class="panel">
             <div class="panel-header">
               <div>
-                <h3>Quick actions</h3>
-                <p class="desc">Jump to common management tasks.</p>
+                <h3>Recommended first-run flow</h3>
+                <p class="desc">Complete these steps in order for a clean, production-ready setup.</p>
               </div>
+              <button class="secondary mini" onclick="showView('onboarding')">Open guided onboarding</button>
             </div>
-            <div class="row">
-              <button class="secondary" onclick="showView('onboarding')">Setup &amp; onboarding</button>
-              <button class="secondary" onclick="showView('access')">Configure access</button>
-              <button class="secondary" onclick="showView('users')">Manage users/admins</button>
-              <button class="secondary" onclick="showView('notifications')">Notifications</button>
-              <button class="secondary" onclick="showView('schools')">Schools &amp; anonymous</button>
-              <button class="secondary" onclick="showView('events')">Events &amp; absences</button>
+            <ol class="checklist">
+              <li><strong>Proxy &amp; real client IP:</strong> configure trusted proxies if behind reverse proxy/load balancer.</li>
+              <li><strong>Add a school:</strong> register the Untis school this instance should serve.</li>
+              <li><strong>First user/admin:</strong> sign in to claim admin on fresh setup, then verify admin access.</li>
+              <li><strong>Permission groups &amp; roles:</strong> define capability groups, role defaults, and mappings.</li>
+              <li><strong>Add other users:</strong> promote/manage users and fine-tune permissions.</li>
+              <li><strong>Notifications:</strong> add ntfy/webhooks/outage alerts, then mark onboarding complete.</li>
+            </ol>
+            <div class="row mt">
+              <button class="secondary mini" onclick="showView('onboarding')">Start guided setup</button>
+              <button class="secondary mini" onclick="showView('schools')">Schools</button>
+              <button class="secondary mini" onclick="showView('access')">Access Control</button>
+              <button class="secondary mini" onclick="showView('users')">Users</button>
+              <button class="secondary mini" onclick="showView('notifications')">Notifications</button>
             </div>
           </div>
           <div class="panel">
@@ -233,81 +261,130 @@
       <!-- ONBOARDING -->
       <section id="view-onboarding" class="view">
         <h2 class="section-title">Setup &amp; Onboarding</h2>
-        <p class="section-sub">Configure this instance for real-world use. Fresh installs should start here: fix trusted proxy/real client IP detection, define access roles, add notification links, and manage users/admins.</p>
+        <p class="section-sub">A guided, step-by-step flow to get UntisPlus Proxy ready: configure trusted proxy handling for real client IPs, add a school, claim/add the first admin, create permission groups/roles, then onboard additional users and notifications.</p>
 
         <div id="setupStateCallout" class="callout mb"></div>
+        <div id="onboardingFlowNote" class="callout info mb">Loading guided setup status…</div>
 
-        <div class="steps mb">
-          <div class="step">
-            <h4>1. Real client IPs (trusted proxies)</h4>
-            <p>If this server is behind a reverse proxy or load balancer, trust that proxy so <code>X-Forwarded-For</code>/<code>X-Real-IP</code> are honored for the real client IP (used for rate limiting and logging). Leave empty when directly exposed.</p>
-            <button class="secondary mini" onclick="document.getElementById('trustedProxyPanel').scrollIntoView({behavior:'smooth'})">Configure trusted proxies</button>
-          </div>
-          <div class="step">
-            <h4>2. Roles &amp; access control</h4>
-            <p>Create capability groups and grants, role defaults, and person-type mappings. Control who can access pooled, reconstructed, boosted/raw, ntfy/webhook, calendar, and other capabilities without relying on legacy role defaults.</p>
-            <button class="secondary mini" onclick="showView('access')">Open Access Control</button>
-          </div>
-          <div class="step">
-            <h4>3. Notifications &amp; alerts</h4>
-            <p>Add ntfy topics, webhook subscriptions, and outage alert destinations so operators and users receive timetable/change/outage notifications.</p>
-            <button class="secondary mini" onclick="showView('notifications')">Open Notifications</button>
-          </div>
-          <div class="step">
-            <h4>4. Users &amp; admins</h4>
-            <p>Promote admins, review signed-in users, and configure default permissions for newly seen users where appropriate.</p>
-            <button class="secondary mini" onclick="showView('users')">Open Users &amp; Permissions</button>
-          </div>
-        </div>
-
-        <div class="panel" id="trustedProxyPanel">
-          <div class="panel-header">
-            <div>
-              <h3>Trusted reverse proxies &amp; client IP diagnostics</h3>
-              <p class="desc">Save trusted proxy IPs/CIDRs (comma-separated). The server will only honor forwarded client IP headers from trusted peers. Use the live diagnostics below to confirm the resolved client IP when accessing through your reverse proxy.</p>
-            </div>
-            <div class="row">
-              <button class="secondary mini" onclick="loadSetupStatus()">Refresh diagnostics</button>
+        <div class="flow mb">
+          <div class="flow-step">
+            <div class="flow-num">1</div>
+            <div class="flow-body">
+              <div class="flow-head"><h4>Proxy &amp; Real Client IP</h4><span id="stepStatus1" class="step-badge todo">Review</span></div>
+              <p>If this instance runs behind a reverse proxy or load balancer (Cloudflare Tunnel, Traefik, nginx, etc.), configure trusted proxy IPs/CIDRs so <code>X-Forwarded-For</code>/<code>X-Real-IP</code> are only honored from trusted peers. This ensures correct real client IPs for rate limiting and logs.</p>
+              <div id="trustedProxyPanel" class="panel" style="margin:0">
+                <div class="panel-header">
+                  <div>
+                    <h3>Trusted proxy configuration</h3>
+                    <p class="desc">Comma-separated IPs/CIDRs. Leave empty when directly exposed. Save, then reload through your proxy to verify the resolved client IP.</p>
+                  </div>
+                  <button class="secondary mini" onclick="loadSetupStatus()">Refresh diagnostics</button>
+                </div>
+                <div class="row mb">
+                  <label class="field" style="min-width:260px;flex:2">Trusted proxies (IPs/CIDRs)
+                    <input id="setupTrustedProxies" placeholder="e.g. 10.0.0.0/8, 172.16.0.0/12, 192.168.1.10">
+                  </label>
+                  <div class="row" style="align-self:flex-end">
+                    <button onclick="saveSetupTrustedProxies()">Save trusted proxies</button>
+                    <button class="secondary" onclick="loadSetupStatus()">Check client IP</button>
+                  </div>
+                </div>
+                <div class="small muted" id="setupMsg"></div>
+                <pre class="out" id="setupIpOut" style="margin-top:.6rem"></pre>
+              </div>
             </div>
           </div>
-          <div class="grid two">
-            <div class="stack">
-              <label class="field">Trusted proxies (IPs or CIDRs, comma-separated)
-                <textarea id="setupTrustedProxies" rows="3" placeholder="e.g. 127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"></textarea>
-              </label>
-              <div class="help">Examples: a single reverse proxy IP, your Docker/proxy network CIDR, or localhost entries. If left empty, forwarded headers are not trusted and the direct peer IP is used.</div>
+
+          <div class="flow-step">
+            <div class="flow-num">2</div>
+            <div class="flow-body">
+              <div class="flow-head"><h4>Add a school</h4><span id="stepStatus2" class="step-badge todo">Required</span></div>
+              <p>Register the Untis school(s) this proxy should serve. Users authenticate against a school; adding it here makes it available for login, access control, and operations.</p>
               <div class="row">
-                <button onclick="saveSetupTrustedProxies()">Save trusted proxies</button>
+                <button onclick="focusSchoolsAdd()">Add/manage schools</button>
+                <button class="secondary" onclick="showView('schools')">Open Schools &amp; Anonymous</button>
+              </div>
+              <ul class="list-plain">
+                <li>Use the school identifier as expected by your Untis/WebUntis setup.</li>
+                <li>You can control anonymous login per school and registration behavior in the Schools section.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="flow-step">
+            <div class="flow-num">3</div>
+            <div class="flow-body">
+              <div class="flow-head"><h4>First user / admin</h4><span id="stepStatus3" class="step-badge todo">Required</span></div>
+              <p>On a fresh install, the first successful authenticated non-anonymous Untis login can claim admin access. After that, use Users &amp; Permissions to promote/manage admins and access for known users.</p>
+              <div class="row">
+                <button onclick="focusUsersAdd()">Add/promote user or admin</button>
+                <button class="secondary" onclick="showView('users')">Open Users &amp; Permissions</button>
+                <a href="/admin/logout"><button class="ghost">Switch/login as another account</button></a>
+              </div>
+              <ul class="list-plain">
+                <li>If setup shows “can claim admin”, sign out and sign in with the intended first admin Untis account.</li>
+                <li>Once claimed, return here to continue configuring access and users.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="flow-step">
+            <div class="flow-num">4</div>
+            <div class="flow-body">
+              <div class="flow-head"><h4>Create permission groups &amp; roles</h4><span id="stepStatus4" class="step-badge todo">Recommended</span></div>
+              <p>Define how access is granted: create capability groups, set role defaults, map person types to roles, and adjust capability gates as needed. This establishes consistent permissions before adding more users.</p>
+              <div class="row">
+                <button onclick="showView('access')">Open Access Control</button>
+              </div>
+              <ul class="list-plain">
+                <li>Create groups (e.g. students, teachers, staff) and attach capability grants.</li>
+                <li>Set role defaults and person-type mappings so new users receive the right baseline access.</li>
+                <li>Use effective-access inspection to verify a user’s resolved permissions.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="flow-step">
+            <div class="flow-num">5</div>
+            <div class="flow-body">
+              <div class="flow-head"><h4>Add other users &amp; fine-tune permissions</h4><span id="stepStatus5" class="step-badge todo">Next</span></div>
+              <p>Add or promote additional users/admins, assign direct grants/groups when needed, and review per-user permissions.</p>
+              <div class="row">
+                <button onclick="focusUsersAdd()">Manage users</button>
+                <button class="secondary" onclick="showView('access')">Assign groups/grants</button>
+              </div>
+              <ul class="list-plain">
+                <li>Use Users &amp; Permissions for admin flags and quick feature toggles.</li>
+                <li>Use Access Control for fine-grained capability groups, grants, and effective resolution.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="flow-step">
+            <div class="flow-num">6</div>
+            <div class="flow-body">
+              <div class="flow-head"><h4>Notifications &amp; finish</h4><span id="stepStatus6" class="step-badge todo">Optional</span></div>
+              <p>Configure operational and change notifications (ntfy, webhooks, outage alerts), then mark onboarding complete. You can reopen onboarding anytime.</p>
+              <div class="row">
+                <button onclick="showView('notifications')">Open Notifications</button>
                 <button class="secondary" onclick="completeSetup()">Mark onboarding complete</button>
                 <button class="ghost" onclick="reopenSetup()">Reopen onboarding</button>
               </div>
-              <div id="setupMsg" class="small muted"></div>
-            </div>
-            <div class="stack">
-              <div class="help"><strong>Live request diagnostics</strong> (how this dashboard request was seen by the server):</div>
-              <pre class="out" id="setupIpOut">Loading…</pre>
+              <ul class="list-plain">
+                <li>Recommended: set up outage alerts and relevant ntfy topics/webhooks for your school(s).</li>
+                <li>Review calendar tokens, events, pool/audit/tools in Operations as needed.</li>
+              </ul>
             </div>
           </div>
         </div>
 
-        <div class="grid two mt">
-          <div class="panel">
-            <div class="panel-header"><div><h3>Schools</h3><p class="desc">Register schools and control anonymous login availability per school.</p></div><button class="secondary mini" onclick="showView('schools')">Manage schools</button></div>
-            <div class="help">Use the Schools &amp; Anonymous section to add/register schools, block/unblock, and enable anonymous login only where intended.</div>
-          </div>
-          <div class="panel">
-            <div class="panel-header"><div><h3>Access checklist</h3><p class="desc">Recommended baseline after first login.</p></div></div>
-            <ul class="help" style="margin:.2rem 0 0; padding-left:1.1rem; line-height:1.55">
-              <li>Verify trusted proxy/client IP resolution if behind a reverse proxy.</li>
-              <li>Review/create capability groups and role defaults for your school/users.</li>
-              <li>Set person-type → role mappings if needed for your Untis setup.</li>
-              <li>Inspect effective access for key users and adjust grants/gates.</li>
-              <li>Configure ntfy/webhook/outage destinations and add additional admins.</li>
-              <li>Mark onboarding complete when finished.</li>
-            </ul>
-          </div>
+        <div class="panel">
+          <div class="panel-header"><div><h3>Advanced setup status (raw)</h3><p class="desc">Full setup diagnostics payload for troubleshooting.</p></div></div>
+          <div class="small muted">Diagnostics and resolved client IP details are shown in Step 1 above. Use “Refresh diagnostics” there to update.</div>
         </div>
       </section>
+
+
       <!-- ACCESS CONTROL -->
       <section id="view-access" class="view">
         <h2 class="section-title">Access Control</h2>
@@ -739,6 +816,9 @@
   </main>
 </div>
 
+    </div>
+  </main>
+</div>
 <script>
 // ---------- helpers / state ----------
 let allUsers = null;
@@ -907,6 +987,7 @@ async function renderCards(){
   if(!$('rmSchool').dataset.bound){ $('rmSchool').dataset.bound='1'; $('rmSchool').addEventListener('change', loadRoomMap); }
   if($('abSchool') && !$('abSchool').dataset.bound){ $('abSchool').dataset.bound='1'; $('abSchool').addEventListener('change', loadEventAbsences); }
   refreshDependentLists();
+  try { renderOnboardingFlow(); } catch(e){}
 }
 
 function refreshDependentLists(){
@@ -950,6 +1031,7 @@ async function loadSetupStatus(){
       }
     }
     updateTopStatus();
+    try { renderOnboardingFlow(); } catch(e){}
     return d;
   } catch(e){
     if($('setupIpOut')) $('setupIpOut').textContent = 'Setup status unavailable: ' + e.message;
@@ -1007,6 +1089,7 @@ async function loadUsers(){
     tb.appendChild(tr);
   }
   if(!(d.users||[]).length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="9" class="empty">No users yet.</td>'; tb.appendChild(tr); }
+  try { renderOnboardingFlow(); } catch(e){}
 }
 async function addUser(){
   const name = ($('uName').value||'').trim(); if(!name) return;
@@ -1079,6 +1162,7 @@ async function loadSchools(){
   }
   if(!(d.schools||[]).length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="6" class="empty">No schools registered yet.</td>'; tb.appendChild(tr); }
   fillSchoolDatalist();
+  try { renderOnboardingFlow(); } catch(e){}
 }
 async function addSchool(){ const n=($('sName').value||'').trim(); if(!n) return; await api('POST','schools/'+encodeURIComponent(n)); $('sName').value=''; log('registered school '+n); await loadSchools(); await renderCards(); }
 async function toggleAllowNew(v){ const d=await api('POST','schools/settings',{allowNew:v}); log('new-school auto-registration '+(d.allowNew?'enabled':'disabled')); await loadSchools(); await renderCards(); }
@@ -1875,6 +1959,57 @@ async function refreshAll(){
     try { await jobs[k](); } catch(e){ log(k+' load: '+e.message); }
   }));
 }
+
+
+function renderOnboardingFlow(){
+  const el = (id)=>document.getElementById(id);
+  const set = (id, text, kind)=>{
+    const n = el(id); if(!n) return;
+    n.textContent = text;
+    n.className = 'step-badge ' + (kind||'todo');
+  };
+  const hasSchools = !!(schoolList && schoolList.length);
+  const hasAdmin = !!((setupState && setupState.hasAdmin) || (status && status.admins > 0));
+  const usersCount = status ? (status.users||0) : (allUsers ? allUsers.length : 0);
+  const setupDone = !!(setupState && setupState.setupCompleted);
+  const trusted = setupState && setupState.trustedProxies ? String(setupState.trustedProxies).trim() : '';
+  const cip = setupState && setupState.clientIP ? setupState.clientIP : null;
+  // Step 1: proxy
+  if(cip && cip.usingForwarded){
+    set('stepStatus1','Real IP active','done');
+  } else if(trusted){
+    set('stepStatus1','Configured','done');
+  } else if(cip && (cip.xForwardedFor || cip.xRealIP) && !cip.peerTrusted){
+    set('stepStatus1','Action needed','warn');
+  } else {
+    set('stepStatus1','Review','todo');
+  }
+  // Step 2: school
+  set('stepStatus2', hasSchools ? (schoolList.length+' school'+(schoolList.length===1?'':'s')) : 'Required', hasSchools ? 'done' : 'warn');
+  // Step 3: first admin/user
+  if(hasAdmin){
+    set('stepStatus3','Admin ready','done');
+  } else if(setupState && setupState.canClaimAdmin){
+    set('stepStatus3','Claim on login','warn');
+  } else {
+    set('stepStatus3','Required','warn');
+  }
+  // Step 4: permissions/groups
+  set('stepStatus4','Recommended','todo');
+  // Step 5: users
+  set('stepStatus5', usersCount>0 ? (usersCount+' user'+(usersCount===1?'':'s')) : 'Add users', usersCount>1 ? 'done' : (usersCount===1 ? 'todo':'todo'));
+  // Step 6: finish/notifications
+  set('stepStatus6', setupDone ? 'Completed' : 'Optional / finish', setupDone ? 'done' : 'todo');
+  const flowNote = el('onboardingFlowNote');
+  if(flowNote){
+    if(!hasSchools) flowNote.textContent = 'Start by verifying real client IP (if behind a proxy), then add your first school.';
+    else if(!hasAdmin) flowNote.textContent = 'School added. Next: sign in with the first admin account to claim admin access, or promote a user.';
+    else if(!setupDone) flowNote.textContent = 'Core setup looks good. Configure permission groups/roles and add more users, then mark onboarding complete.';
+    else flowNote.textContent = 'Onboarding is complete. You can revisit any step to adjust configuration.';
+  }
+}
+function focusSchoolsAdd(){ showView('schools'); setTimeout(function(){ var e=document.getElementById('sName'); if(e){ try{e.focus(); e.scrollIntoView({behavior:'smooth',block:'center'});}catch(_){ e.focus(); } } }, 80); }
+function focusUsersAdd(){ showView('users'); setTimeout(function(){ var e=document.getElementById('uName'); if(e){ try{e.focus(); e.scrollIntoView({behavior:'smooth',block:'center'});}catch(_){ e.focus(); } } }, 80); }
 
 (function init(){
   showView((location.hash || '#overview').slice(1));

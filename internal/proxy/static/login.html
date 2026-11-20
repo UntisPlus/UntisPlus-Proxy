@@ -5,30 +5,38 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>UntisPlus Proxy · Admin Login</title>
 <style>
-  :root { color-scheme: dark; --bg:#0f1115; --panel:#171a21; --border:#2a2f3a; --text:#e8edf7; --muted:#9aa6b8; --accent:#4f8cff; --danger:#f87171; }
+  :root { color-scheme: light; --bg:#f3f5f7; --panel:#ffffff; --border:#d9e0e8; --text:#1f2937; --muted:#5b6778; --accent:#ff9800; --accent-dark:#ef6c00; --danger:#c62828; }
   * { box-sizing: border-box; }
-  body { margin:0; min-height:100vh; display:grid; place-items:center; background: radial-gradient(1200px 600px at 10% -10%, rgba(79,140,255,.18), transparent), var(--bg); color:var(--text); font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; padding: 1rem; }
-  .wrap { width: min(440px, 100%); }
-  .card { background: var(--panel); border:1px solid var(--border); border-radius:14px; padding:1.25rem 1.25rem 1.1rem; box-shadow: 0 20px 50px rgba(0,0,0,.35); }
-  h1 { margin:0 0 .25rem; font-size:1.2rem; }
-  .sub { margin:0 0 1rem; color:var(--muted); font-size:.9rem; line-height:1.45; }
+  body { margin:0; min-height:100vh; display:grid; place-items:center; background: linear-gradient(180deg, #fffaf3 0%, #f3f5f7 35%, #f3f5f7 100%); color:var(--text); font-family: "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif; padding: 1rem; }
+  .wrap { width: min(460px, 100%); }
+  .brand { display:flex; align-items:center; gap:.7rem; margin:0 auto .9rem; justify-content:center; }
+  .mark { width:40px; height:40px; border-radius:10px; background:linear-gradient(135deg,var(--accent),#ffb74d); color:#fff; display:inline-flex; align-items:center; justify-content:center; font-weight:800; box-shadow:0 6px 14px rgba(239,108,0,.22); }
+  .brand .txt b { display:block; font-size:1rem; color:#111827; }
+  .brand .txt span { font-size:.78rem; color:var(--muted); }
+  .card { background: var(--panel); border:1px solid var(--border); border-radius:14px; padding:1.25rem 1.25rem 1.1rem; box-shadow: 0 12px 30px rgba(31,41,55,.08); }
+  h1 { margin:0 0 .25rem; font-size:1.2rem; color:#111827; }
+  .sub { margin:0 0 1rem; color:var(--muted); font-size:.9rem; line-height:1.5; }
   form { display:flex; flex-direction:column; gap:.75rem; }
-  label { display:flex; flex-direction:column; gap:.3rem; font-size:.82rem; color:var(--muted); }
-  input { background:#10141b; border:1px solid #364050; color:var(--text); border-radius:10px; padding:.65rem .7rem; font-size:.95rem; }
-  input:focus { outline:2px solid rgba(79,140,255,.35); border-color: rgba(79,140,255,.55); }
-  button { margin-top:.1rem; background:var(--accent); color:white; border:0; border-radius:10px; padding:.7rem .8rem; font-weight:600; cursor:pointer; font-size:.95rem; }
+  label { display:flex; flex-direction:column; gap:.3rem; font-size:.82rem; color:var(--muted); font-weight:600; }
+  input { background:#fff; border:1px solid #c7d2de; color:var(--text); border-radius:10px; padding:.65rem .7rem; font-size:.95rem; }
+  input:focus { outline:3px solid rgba(255,152,0,.18); border-color:#ffb74d; }
+  button { margin-top:.1rem; background:var(--accent); color:white; border:1px solid var(--accent-dark); border-radius:10px; padding:.7rem .8rem; font-weight:700; cursor:pointer; font-size:.95rem; }
+  button:hover { background:#fb8c00; }
   button:disabled { opacity:.6; cursor:default; }
   .err { color:var(--danger); font-size:.84rem; min-height:1.2rem; }
-  .hint { margin-top:.8rem; color:var(--muted); font-size:.8rem; line-height:1.45; border-top:1px solid var(--border); padding-top:.75rem; }
-  .callout { background: rgba(79,140,255,.1); border:1px solid rgba(79,140,255,.25); border-radius:10px; padding:.6rem .7rem; color:#dce8ff; font-size:.82rem; line-height:1.45; margin-bottom:.2rem; }
-  code { background: rgba(255,255,255,.06); padding:.1rem .3rem; border-radius:5px; }
+  .hint { margin-top:.8rem; color:var(--muted); font-size:.8rem; line-height:1.5; border-top:1px solid var(--border); padding-top:.75rem; }
+  .callout { background:#fff7ed; border:1px solid #ffd8a8; border-radius:10px; padding:.65rem .75rem; color:#7c2d12; font-size:.84rem; line-height:1.45; margin-bottom:.2rem; }
+  .steps { margin:.75rem 0 0; padding-left:1.1rem; color:var(--muted); font-size:.8rem; line-height:1.45; }
+  .steps li { margin:.15rem 0; }
+  code { background:#f1f5f9; border:1px solid #e2e8f0; padding:.1rem .3rem; border-radius:5px; color:#334155; }
 </style>
 </head>
 <body>
   <div class="wrap">
+    <div class="brand"><div class="mark">U+</div><div class="txt"><b>UntisPlus Proxy</b><span>Admin Console</span></div></div>
     <div class="card">
-      <h1>UntisPlus Proxy Admin</h1>
-      <p class="sub">Sign in with your Untis account and 6-digit OTP code to access the admin dashboard.</p>
+      <h1>Sign in to Admin</h1>
+      <p class="sub">Use your Untis username and 6-digit OTP code. After sign-in you’ll enter the guided dashboard for proxy setup, schools, users, permissions, and notifications.</p>
       <div id="setupCallout" class="callout" style="display:none"></div>
       <form id="f" autocomplete="on">
         <label>Untis username
@@ -40,7 +48,13 @@
         <button id="btn" type="submit">Sign in</button>
         <div class="err" id="err"></div>
       </form>
-      <div class="hint" id="hint">Authentication uses the same <code>getUserData2017</code> flow as the app. Access requires an account with admin privileges. After a fresh install, the first successful non-anonymous login can claim admin access and open onboarding.</div>
+      <div class="hint" id="hint">
+        Authentication uses the same <code>getUserData2017</code> flow as the app. Admin access is required for the dashboard.
+        <ol class="steps">
+          <li>On a fresh install, the first successful non-anonymous login can claim admin access.</li>
+          <li>You’ll be guided through: proxy/real client IP → add school → first admin/user → permission groups/roles → more users → notifications.</li>
+        </ol>
+      </div>
     </div>
   </div>
 <script>
@@ -58,7 +72,7 @@ try { user.value = localStorage.getItem('admin_user') || ''; } catch (e) {}
     const j = await r.json().catch(() => ({}));
     if (j && (j.setupNeeded || j.canClaimAdmin || j.hasAdmin === false)) {
       setupCallout.style.display = 'block';
-      setupCallout.textContent = 'Initial setup detected. Sign in to claim/open admin onboarding (trusted reverse-proxy IPs, roles & access, ntfy/webhooks, users).';
+      setupCallout.textContent = 'Initial setup detected. Sign in to claim/open the guided onboarding (trusted proxy & real client IP, school, users/admins, permission groups/roles, notifications).';
     }
   } catch (e) {}
 })();

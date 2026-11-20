@@ -46,11 +46,12 @@ func TestHandleRootSetupAndReadyStates(t *testing.T) {
 		body := rec.Body.String()
 		for _, want := range []string{
 			"Initial setup required",
-			"Continue to setup & login",
+			"Continue to guided setup & login",
 			"Setup pending",
-			"configure trusted reverse-proxy client IPs",
+			"trusted proxy",
+			"real client IP",
 		} {
-			if !strings.Contains(body, want) {
+			if !strings.Contains(strings.ToLower(body), strings.ToLower(want)) {
 				t.Errorf("root setup page missing %q", want)
 			}
 		}
@@ -65,7 +66,7 @@ func TestHandleRootSetupAndReadyStates(t *testing.T) {
 			t.Fatalf("status=%d want 200", rec.Code)
 		}
 		body := rec.Body.String()
-		for _, want := range []string{"Open dashboard", "Ready", "Administration dashboard"} {
+		for _, want := range []string{"Open admin dashboard", "Ready", "Administration dashboard"} {
 			if !strings.Contains(body, want) {
 				t.Errorf("root ready page missing %q", want)
 			}
@@ -357,7 +358,8 @@ func TestAdminLoginAndDashboardServeUpdatedUI(t *testing.T) {
 	}
 	login := rec.Body.String()
 	for _, want := range []string{
-		"UntisPlus Proxy Admin",
+		"UntisPlus Proxy",
+		"Admin Console",
 		"fetch('/setup'",
 		"Initial setup detected",
 		"/admin#onboarding",
