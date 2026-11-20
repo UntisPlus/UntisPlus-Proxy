@@ -21,12 +21,16 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	log.Printf("[intern] %s?%s body=%s", r.URL.Path, r.URL.RawQuery, redactBody(body))
 	var req struct {
 		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
 	}
 	_ = json.Unmarshal(body, &req)
+	if req.Method == "getUserData2017" && (r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != "") && !sameOriginBrowserRequest(p, r) {
+		http.Error(w, "cross-origin login refused", http.StatusForbidden)
+		return
+	}
+	log.Printf("[intern] %s?%s body=%s", r.URL.Path, r.URL.RawQuery, redactBody(body))
 	school := r.URL.Query().Get("school")
 	if school == "" {
 		school = p.opts.School

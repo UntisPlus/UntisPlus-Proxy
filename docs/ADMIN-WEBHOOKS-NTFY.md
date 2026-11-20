@@ -13,11 +13,20 @@ A single-page UI, served **only to admin sessions** at:
 ```
 GET /admin            → the dashboard (embedded HTML, dependency-free)
 GET /admin/* …        → JSON API consumed by the dashboard
+POST /admin/logout    → revoke the current browser session
 ```
 
 `/admin` itself (no trailing slash) serves the HTML page; everything under
 `/admin/` is the JSON API. Both are gated by an admin **session** (JSESSIONID)
 plus the `users.admin` flag.
+
+The dashboard's **Permissions** page creates named groups from ready-made
+access sets, sets defaults for account types, and assigns groups to individual
+people. **People** is for account and dashboard-admin management. The browser
+login uses the WebUntis authenticator flow, does not persist the username or
+code in browser storage, and directs incomplete installs to onboarding. Admin
+mutations with browser origin metadata and sign-out are restricted to
+same-origin requests; login attempts are rate-limited by account and client IP.
 
 ### Bootstrapping the first admin
 
@@ -39,9 +48,12 @@ An admin can do everything `untisctl` can, from the dashboard:
 |---|---|---|
 | `/admin/status` | GET | counts: users, admins, pool, schools, tokens, webhooks, ntfy, recon, boosted, editors, global perms |
 | `/admin/users` | GET/POST | list users; add/promote (`{username, admin}`) |
-| `/admin/users/{name}` | POST/DELETE | set admin flag, set a feature (`feature`+`allowed`), revoke a permission, or delete |
-| `/admin/perms` | GET | all permission rows plus the new-user defaults |
-| `/admin/perms/default` | POST | set one default permission: `{feature, allowed}` |
+| `/admin/users/{name}` | POST/DELETE | set dashboard-admin status, legacy feature permission, or delete |
+| `/admin/perms` | GET | legacy permission rows and defaults for existing scripts |
+| `/admin/perms/default` | POST | update a legacy default permission; use access groups for new setup |
+| `/admin/access/groups` | GET/POST | list or create named capability groups |
+| `/admin/access/role-defaults` | GET/POST/DELETE | list and change default groups by account type |
+| `/admin/access/user-groups` | GET/POST | inspect or assign groups to a person |
 | `/admin/pool[/{school}]` | GET | pooled classes + owners |
 | `/admin/tokens[/{school}]` | GET | calendar tokens |
 | `/admin/tokens/{token}` | DELETE | revoke a token |

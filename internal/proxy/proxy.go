@@ -681,6 +681,7 @@ func (p *Proxy) Handler() http.Handler {
 	mux.HandleFunc("/api/admin/events/{id}", p.handleStudentEvents)
 	mux.HandleFunc("/admin", p.handleAdminDashboard)
 	mux.HandleFunc("/admin/login", p.handleAdminLogin)
+	mux.HandleFunc("POST /admin/logout", p.handleAdminLogout)
 	mux.HandleFunc("/admin/", p.handleAdmin)
 	gated := p.gateSchools(mux)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -56,7 +56,7 @@
   .nav { display: flex; flex-direction: column; gap: .2rem; }
   .nav a { color: #374151; text-decoration: none; padding: .5rem .55rem; border-radius: 10px; display: flex; align-items: center; gap: .55rem; font-size: .9rem; border: 1px solid transparent; }
   .nav a:hover { background: #f8fafc; border-color: #e5edf5; }
-  .nav a.active { background: var(--nav-active); border-color: #ffd8a8; color: #9a3412; font-weight: 600; }
+  .nav a.active { background: var(--nav-active); border-color: #ffd8a8; color: #8f4c00; font-weight: 650; box-shadow: inset 3px 0 0 var(--brand); }
   .dot { width: .45rem; height: .45rem; border-radius: 50%; background: #f59e0b; opacity: .75; }
   .content { padding: 1.1rem 1.2rem 2rem; max-width: 1500px; width: 100%; }
   .topbar { display: flex; gap: 1rem; align-items: center; justify-content: space-between; margin-bottom: 1rem; flex-wrap: wrap; background: linear-gradient(90deg, #fff, #fffaf3); border: 1px solid var(--border); border-radius: 14px; padding: .8rem 1rem; box-shadow: var(--shadow); }
@@ -80,7 +80,7 @@
   .section-sub { margin: 0 0 1rem; color: var(--muted); font-size: .88rem; line-height: 1.5; }
   .grid { display: grid; gap: .9rem; }
   .grid.cards { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); }
-  .grid.two { grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+  .grid.two { grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); }
   .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: .85rem .9rem; box-shadow: 0 2px 8px rgba(31,41,55,.04); }
   .card h3 { margin: 0 0 .25rem; font-size: .78rem; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
   .card .val { font-size: 1.35rem; font-weight: 700; color: #111827; }
@@ -203,7 +203,7 @@
         <span class="small muted" id="refreshHint"></span>
         <button class="secondary mini" onclick="showView('onboarding')">Guided setup</button>
         <button class="secondary mini" onclick="refreshAll()">Refresh all</button>
-        <a href="/admin/logout"><button class="secondary mini">Logout</button></a>
+        <button class="secondary mini" onclick="logoutAdmin()">Sign out</button>
       </div>
     </div>
 
@@ -319,7 +319,7 @@
               <div class="row">
                 <button onclick="focusUsersAdd()">Add/promote user or admin</button>
                 <button class="secondary" onclick="showView('users')">Open Users &amp; Permissions</button>
-                <a href="/admin/logout"><button class="ghost">Switch/login as another account</button></a>
+                <button class="ghost" onclick="logoutAdmin()">Switch/login as another account</button>
               </div>
               <ul class="list-plain">
                 <li>If setup shows “can claim admin”, sign out and sign in with the intended first admin Untis account.</li>
@@ -390,26 +390,26 @@
         <h2 class="section-title">Permissions</h2>
         <p class="section-sub">Give people access by assigning clear, reusable groups. Set a default group for each account type, then add extra access only where someone needs it.</p>
 
-        <div class="panel mb">
-            <div class="panel-header"><div><h3>People and access groups</h3><p class="desc">Groups collect related access into one assignment. Account-type defaults apply when someone first signs in; direct group assignments are listed for each person.</p></div><button class="secondary mini" onclick="loadSimpleAccess()">Refresh</button></div>
+        <div class="grid two">
+          <div class="panel">
+            <div class="panel-header"><div><h3>Create permission groups</h3><p class="desc">Start from a ready-made access set, give the group a clear name, then assign it to an account type or individual.</p></div></div>
+            <div class="row mb"><input id="simpleGroupName" placeholder="Group name" aria-label="Group name" style="flex:1;min-width:12rem"><select id="simpleGroupTemplate" aria-label="Starting access"><option value="">Choose starting access…</option><option value="blank">Start with no extra access</option></select><button onclick="createSimpleGroup()">Create group</button></div>
+            <div id="simpleGroupList" class="stack"><div class="empty">Loading access groups…</div></div>
+          </div>
+          <div class="panel">
+            <div class="panel-header"><div><h3>Default access by account type</h3><p class="desc">Choose which groups students, teachers, staff, and other accounts receive.</p></div></div>
+            <div id="simpleRoleDefaults" class="stack"><div class="empty">Loading access groups…</div></div>
+          </div>
+        </div>
+
+        <div class="panel mt">
+          <div class="panel-header"><div><h3>Assign groups to people</h3><p class="desc">Defaults apply to the whole account type. Add extra groups to individual people when they need more access.</p></div><button class="secondary mini" onclick="loadSimpleAccess()">Refresh</button></div>
           <div class="row stretch">
             <label class="field">School<select id="simpleAccessSchool" onchange="loadSimpleAccess()"></select></label>
             <label class="field">Person<select id="simpleAccessUser" onchange="loadSimpleUserAccess()"><option value="">Choose a person</option></select></label>
           </div>
-          <div id="simpleAccessPeople" class="table-wrap mt"><table><thead><tr><th>Person</th><th>Account type</th><th>Default access</th><th>Extra groups</th><th></th></tr></thead><tbody></tbody></table></div>
+          <div id="simpleAccessPeople" class="table-wrap mt"><table><thead><tr><th>Person</th><th>Account type</th><th>Dashboard role</th><th></th></tr></thead><tbody></tbody></table></div>
           <div id="simpleAccessDetail" class="mt hidden"></div>
-        </div>
-
-        <div class="grid two">
-          <div class="panel">
-            <div class="panel-header"><div><h3>Default access by account type</h3><p class="desc">These groups are added for people of this account type. Changes apply to current and future accounts.</p></div></div>
-            <div id="simpleRoleDefaults" class="stack"><div class="empty">Loading access groups…</div></div>
-          </div>
-          <div class="panel">
-            <div class="panel-header"><div><h3>Access groups</h3><p class="desc">Use a built-in group or make your own. Assign groups to people or choose them as account-type defaults.</p></div></div>
-            <div class="row mb"><input id="simpleGroupName" placeholder="New group name" style="flex:1;min-width:12rem"><button onclick="createSimpleGroup()">Create group</button></div>
-            <div id="simpleGroupList" class="stack"><div class="empty">Loading access groups…</div></div>
-          </div>
         </div>
 
         <details class="panel mt">
@@ -561,7 +561,7 @@
               <input id="uName" placeholder="username to promote as admin" style="min-width:14rem; flex:1">
               <button onclick="addUser()">Promote/add admin</button>
             </div>
-            <div class="table-wrap"><table id="users"><thead><tr><th>User</th><th>Class</th><th>School</th><th>Account type</th><th>Dashboard admin</th><th></th></tr></thead><tbody></tbody></table></div>
+            <div class="table-wrap"><table id="users"><thead><tr><th>User</th><th>Class</th><th>School</th><th>Account type</th><th>Dashboard admin</th><th>Actions</th></tr></thead><tbody></tbody></table></div>
           </div>
         </div>
       </section>
@@ -959,7 +959,7 @@ function groupID(g){ return Number(g && (g.ID || g.id) || 0); }
 function groupName(g){ const n=String(g && (g.Name || g.name) || 'Access group'); return simpleGroupNames[n] || n; }
 function groupDescription(g){ const n=String(g && (g.Name || g.name) || ''); return simpleGroupDescriptions[n] || String(g && (g.Description || g.description) || ''); }
 function simpleAccessSchool(){ return ($('simpleAccessSchool')?.value || defaultSchool() || '').trim(); }
-function roleLabel(role){ return ({student:'Students',teacher:'Teachers',staff:'Staff',unknown:'Other accounts',other:'Other accounts',parent:'Parents'})[role] || role; }
+function roleLabel(role){ return ({student:'Students',teacher:'Teachers',staff:'Staff',unknown:'Unclassified accounts',other:'Other accounts',parent:'Parents'})[role] || role; }
 async function loadSimpleAccess(){
   const schoolSel=$('simpleAccessSchool');
   if(schoolSel){
@@ -981,6 +981,7 @@ async function loadSimpleAccess(){
   try{ groups=(await api('GET','access/groups?school='+encodeURIComponent(school))).groups||[]; }
   catch(e){ $('simpleGroupList').innerHTML='<div class="callout warn">Could not load access groups: '+esc(e.message)+'</div>'; }
   window.simpleAccessGroups=groups;
+  renderSimpleGroupTemplates(groups);
   renderSimpleGroupList(groups);
   renderSimplePeople(users);
   await renderSimpleRoleDefaults(school,groups);
@@ -993,35 +994,64 @@ function renderSimpleGroupList(groups){
     (groupDescription(g)?'<div class="small muted mt">'+esc(groupDescription(g))+'</div>':'')+
     '<div class="small muted mt">'+(g.School||g.school?'School-specific':'Available to all schools')+'</div></div>').join('');
 }
+function renderSimpleGroupTemplates(groups){
+  const sel=$('simpleGroupTemplate');if(!sel)return;
+  const previous=sel.value, useful=new Set(['v2.recon','v2.boosted','v2.editor','v2.techniker']);
+  sel.innerHTML='<option value="">Choose starting access…</option><option value="blank">Start with no extra access</option>';
+  groups.filter(g=>useful.has(String(g.Name||g.name||''))).forEach(g=>{
+    const opt=document.createElement('option');opt.value=String(groupID(g));opt.textContent=groupName(g);sel.appendChild(opt);
+  });
+  if(Array.from(sel.options).some(o=>o.value===previous))sel.value=previous;
+}
 async function createSimpleGroup(){
-  const input=$('simpleGroupName'), name=(input?.value||'').trim(), school=simpleAccessSchool();
+  const input=$('simpleGroupName'), name=(input?.value||'').trim(), school=simpleAccessSchool(), template=$('simpleGroupTemplate')?.value||'';
   if(!name){log('Enter a name for the access group.');input?.focus();return;}
+  if(!template){log('Choose a starting access set before creating the group.');$('simpleGroupTemplate')?.focus();return;}
+  let createdID=0;
   try{
-    const result=await api('POST','access/groups',{school,name,description:''});
-    if(result && result.ok){if(input)input.value='';log('Created access group “'+name+'”.');await loadSimpleAccess();}
+    const source=template==='blank'?null:await api('GET','access/groups/'+encodeURIComponent(template));
+    const sourceName=source&&source.group?String(source.group.Name||source.group.name||''):'';
+    const result=await api('POST','access/groups',{school,name,description:sourceName?('Based on '+groupName({name:sourceName})+'.'):''});
+    if(result && result.ok){
+      createdID=Number(result.id)||0;
+      const grants=source&&Array.isArray(source.grants)?source.grants:[];
+      for(const grant of grants){
+        const capability=grant.Capability||grant.capability, effect=Number(grant.Effect||grant.effect||0);
+        if(capability&&effect)await api('POST','access/groups/'+result.id+'/grants',{capability,effect});
+      }
+      if(input)input.value='';$('simpleGroupTemplate').value='';
+      log('Created access group “'+name+'”'+(sourceName?' based on '+groupName({name:sourceName}):'')+'.');await loadSimpleAccess();
+    }
     else log('Could not create access group.');
-  }catch(e){log('Could not create access group: '+e.message);}
+  }catch(e){if(createdID){try{await api('DELETE','access/groups/'+createdID);}catch(_){}}log('Could not create access group: '+e.message);}
 }
 function renderSimplePeople(users){
   const body=$('simpleAccessPeople')?.querySelector('tbody'); if(!body)return;
   body.innerHTML='';
   users.forEach(u=>{
-    const type=Number(u.personType)===5?'Student':([1,2].includes(Number(u.personType))?'Teacher / staff':'Account');
+    const type=Number(u.personType)===5?'Student':([1,2].includes(Number(u.personType))?'Teacher':'Other account');
     const tr=document.createElement('tr');
     tr.innerHTML='<td><strong>'+esc(u.displayName||u.username)+'</strong><div class="small muted">'+esc(u.username)+'</div></td>'+
-      '<td>'+type+'</td><td class="small muted">'+(u.admin?'Dashboard admin':'Standard account')+'</td><td class="small muted">Select to review assigned groups</td>'+
-      '<td><button class="mini secondary" onclick="selectSimpleAccessUser('+jsq(u.username)+')">Manage access</button></td>';
+      '<td>'+type+'</td><td>'+(u.admin?'<span class="badge info">Administrator</span>':'<span class="badge">User</span>')+'</td>'+
+      '<td><button class="mini secondary" onclick="selectSimpleAccessUser('+jsq(u.username)+')">Choose groups</button></td>';
     body.appendChild(tr);
   });
-  if(!users.length)body.innerHTML='<tr><td colspan="5" class="empty">No signed-in users for this school yet.</td></tr>';
+  if(!users.length)body.innerHTML='<tr><td colspan="4" class="empty">No signed-in users for this school yet.</td></tr>';
 }
 function selectSimpleAccessUser(username){ $('simpleAccessUser').value=username; loadSimpleUserAccess(); }
+async function openUserAccess(username){
+  showView('access');
+  const sel=$('simpleAccessUser');
+  if(!sel||!Array.from(sel.options).some(o=>o.value===username))await loadSimpleAccess();
+  if(sel){sel.value=username;await loadSimpleUserAccess();}
+  const detail=$('simpleAccessDetail');if(detail)try{detail.scrollIntoView({behavior:'smooth',block:'center'});}catch(_){}
+}
 async function renderSimpleRoleDefaults(school,groups){
   const box=$('simpleRoleDefaults');if(!box)return;
   try{
     const data=await api('GET','access/role-defaults?school='+encodeURIComponent(school));
     const defaults=data.roleDefaults||{};
-    const roles=['student','teacher','staff','other'];
+    const roles=['student','teacher','staff','parent','other','unknown'];
     box.innerHTML=roles.map(role=>{
       const active=(defaults[role]||[]).map(Number);
       const relevant=groups;
@@ -1066,6 +1096,11 @@ async function toggleSimpleUserGroup(user,groupId,enabled){
     log((enabled?'Added ':'Removed ')+groupName((window.simpleAccessGroups||[]).find(g=>groupID(g)===groupId)||{name:'access group'})+' for '+user);
     await loadSimpleUserAccess();
   }catch(e){log('Could not update access for '+user+': '+e.message);await loadSimpleUserAccess();}
+}
+async function logoutAdmin(){
+  try{
+    await fetch('/admin/logout',{method:'POST',credentials:'same-origin',cache:'no-store',headers:{'Content-Type':'application/json'},body:'{}'});
+  }finally{location.replace('/admin/login');}
 }
 function simpleCapabilityLabel(key){
   const labels={
@@ -1239,16 +1274,16 @@ async function loadUsers(){
   for(const u of (d.users||[])){
     const tr = document.createElement('tr');
     const un = jsq(u.username);
-    const accountType=Number(u.personType)===5?'Student':([1,2].includes(Number(u.personType))?'Teacher / staff':'Account');
+    const accountType=Number(u.personType)===5?'Student':([1,2].includes(Number(u.personType))?'Teacher':'Other account');
     tr.innerHTML =
       '<td>'+esc(u.username)+(u.displayName?'<div class="small muted">'+esc(u.displayName)+'</div>':'')+'</td>'+
       '<td>'+esc(u.className||'')+(u.classId?' <span class="small muted">('+esc(u.classId)+')</span>':'')+'</td>'+
       '<td>'+esc(u.school||'')+'</td><td>'+accountType+'</td>'+
       '<td><button class="mini '+(u.admin?'danger':'secondary')+'" onclick="setAdmin('+un+','+(!u.admin)+')">'+(u.admin?'Administrator':'Standard')+'</button></td>'+
-      '<td><button class="mini secondary" onclick="showView(\'access\');setTimeout(()=>selectSimpleAccessUser('+un+'),0)">Manage access</button> <button class="mini danger" onclick="delUser('+un+')">Delete</button></td>';
+      '<td><button class="mini secondary" onclick="openUserAccess('+un+')">Manage access</button> <button class="mini danger" onclick="delUser('+un+')">Delete</button></td>';
     tb.appendChild(tr);
   }
-  if(!(d.users||[]).length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="6" class="empty">No users yet.</td>'; tb.appendChild(tr); }
+  if(!(d.users||[]).length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="6" class="empty">No users yet. Accounts appear after they sign in for the first time.</td>'; tb.appendChild(tr); }
   if($('simpleAccessSchool')) await loadSimpleAccess();
   try { renderOnboardingFlow(); } catch(e){}
 }

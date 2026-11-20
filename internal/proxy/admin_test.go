@@ -78,6 +78,40 @@ func TestAdminStatus(t *testing.T) {
 	}
 }
 
+func TestAdminMutationRejectsCrossOrigin(t *testing.T) {
+	p, _ := newTestProxy(t)
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/admin/users", strings.NewReader(`{"username":"alice","admin":true}`))
+	req.Header.Set("Origin", "https://attacker.example")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: p.sessions.New("bob", 0).ID})
+	rec := httptest.NewRecorder()
+	p.handleAdmin(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin mutation status=%d body=%s; want 403", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminLogoutRevokesSessionAndExpiresCookies(t *testing.T) {
+	p, _ := newTestProxy(t)
+	s := p.sessions.New("bob", 0)
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/admin/logout", strings.NewReader(`{}`))
+	req.Header.Set("Origin", "http://example.test")
+	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: s.ID})
+	rec := httptest.NewRecorder()
+	p.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("logout status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if p.sessions.Get(s.ID) != nil {
+		t.Fatal("logout left the session active")
+	}
+	for _, cookie := range rec.Result().Cookies() {
+		if (cookie.Name == "JSESSIONID" || cookie.Name == "schoolname") && cookie.MaxAge >= 0 {
+			t.Errorf("%s cookie was not expired: %+v", cookie.Name, cookie)
+		}
+	}
+}
+
 // TestAdminOutboxListsExhaustedDeliveries: an unreachable destination has to be
 // diagnosable from the admin UI, which means the failure has to be described
 // without opening the database.

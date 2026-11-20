@@ -183,10 +183,18 @@ once at startup.
 ## Admin dashboard
 
 Embedded single-page UI at **`/admin`**, gated by an admin session
-(`users.admin`). It grants full DB/`untisctl` capability: users (including the
-`techniker` toggle), perms, pool, tokens, schools, search, webhooks, ntfy topics,
-**outage alerts**, recon, **student events**, the **event-absence register** with
-its changelog, the **room map**, and the delivery **outbox**.
+(`users.admin`). New administrators land in the setup guide until onboarding is
+complete. **Permissions** creates access groups from ready-made access sets,
+sets defaults by account type, and assigns groups to individual people;
+**People** manages dashboard administrator access and links each account to its
+group assignments. Operational areas cover pool, tokens, schools, search,
+webhooks, ntfy topics, outage alerts, recon, student events, event absences,
+room maps, and the delivery outbox.
+
+The login page uses the WebUntis authenticator flow, does not store the
+username/code in browser storage, and routes incomplete setups to onboarding.
+Admin changes and sign-out use same-origin checks; sign-out revokes the active
+proxy session.
 
 `GET /admin/outbox` reports the notification-delivery backlog — counts by state
 plus the most recent destinations that gave up, with their error. `/admin/status`

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -66,6 +67,45 @@ func (p *Proxy) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(adminLoginHTML))
 }
 
+// handleAdminLogout revokes the current browser session and expires its cookies.
+// A POST plus same-origin checks prevents a third-party page from logging out a
+// signed-in administrator as a side effect.
+func (p *Proxy) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if !sameOriginBrowserRequest(p, r) {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	if ck, err := r.Cookie("JSESSIONID"); err == nil && ck.Value != "" {
+		p.sessions.Delete(ck.Value)
+	}
+	secure := p.requestIsHTTPS(r)
+	http.SetCookie(w, &http.Cookie{Name: "JSESSIONID", Value: "", Path: "/", HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	http.SetCookie(w, &http.Cookie{Name: "schoolname", Value: "", Path: "/", Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+	p.writeJSON(w, map[string]any{"ok": true})
+}
+
+func sameOriginBrowserRequest(p *Proxy, r *http.Request) bool {
+	if strings.EqualFold(strings.TrimSpace(r.Header.Get("Sec-Fetch-Site")), "cross-site") {
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" { // Native API clients do not send Origin.
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" || !strings.EqualFold(u.Host, r.Host) {
+		return false
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return false
+	}
+	return (u.Scheme == "https") == p.requestIsHTTPS(r)
+}
+
 // handleAdmin is the HTTP root for the admin API. Every route requires an
 // admin session (users.admin flag). It exposes everything untisctl can do —
 // users, pool, permissions, tokens, schools, webhooks and ntfy topics — as
@@ -80,6 +120,12 @@ func (p *Proxy) handleAdmin(w http.ResponseWriter, r *http.Request) {
 	if !p.isAdmin(u.Username) {
 		p.forbidden(w)
 		return
+	}
+	if r.Method == http.MethodPost || r.Method == http.MethodPut || r.Method == http.MethodPatch || r.Method == http.MethodDelete {
+		if !sameOriginBrowserRequest(p, r) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
 	}
 
 	path := strings.TrimPrefix(r.URL.Path, "/admin")

@@ -346,7 +346,8 @@ func TestAdminSetupEndpoints(t *testing.T) {
 func TestAdminLoginAndDashboardServeUpdatedUI(t *testing.T) {
 	p, st := newFreshSetupProxy(t)
 
-	// Login page served anonymously on fresh setup includes onboarding hinting.
+	// Login page is anonymous, avoids storing the username/code, and directs an
+	// authenticated admin to first-run onboarding when setup is incomplete.
 	req := httptest.NewRequest(http.MethodGet, "/admin/login", nil)
 	rec := httptest.NewRecorder()
 	p.handleAdminLogin(rec, req)
@@ -358,16 +359,20 @@ func TestAdminLoginAndDashboardServeUpdatedUI(t *testing.T) {
 	}
 	login := rec.Body.String()
 	for _, want := range []string{
-		"UntisPlus Proxy",
-		"Admin Console",
-		"fetch('/setup'",
-		"Initial setup detected",
-		"/admin#onboarding",
-		"6-digit code",
+		"UntisPlus",
+		"Welcome back",
+		"autocomplete=\"one-time-code\"",
+		"type=\"password\"",
+		"/admin/setup",
+		"/admin/logout",
+		"Continue securely",
 	} {
 		if !strings.Contains(login, want) {
 			t.Errorf("login page missing %q", want)
 		}
+	}
+	if strings.Contains(login, "localStorage") {
+		t.Error("login page must not persist the username or authenticator code")
 	}
 
 	// Dashboard HTML contains key new workflow sections and token fix.

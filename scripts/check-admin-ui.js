@@ -24,6 +24,7 @@ const vm = require('vm');
 const root = path.resolve(__dirname, '..');
 const page = path.join(root, 'internal/proxy/static/admin.html');
 const html = fs.readFileSync(page, 'utf8');
+const login = fs.readFileSync(path.join(root, 'internal/proxy/static/login.html'), 'utf8');
 
 const open = html.indexOf('<script>');
 const close = html.lastIndexOf('</script>');
@@ -39,11 +40,21 @@ for (const legacy of ['<th>Boosted</th>', 'boosted — raw teacher-account forwa
     process.exit(1);
   }
 }
-for (const expected of ['People and access groups', 'Default access by account type', 'Advanced permission settings', 'Manage access']) {
+for (const expected of ['Create permission groups', 'Default access by account type', 'Assign groups to people', 'simpleGroupTemplate', 'Advanced permission settings', 'Manage access']) {
   if (html.indexOf(expected) < 0) {
     console.error('check-admin-ui: new permissions workflow is missing: ' + expected);
     process.exit(1);
   }
+}
+for (const expected of ['autocomplete="one-time-code"', 'type="password"', 'Continue securely', '/admin/setup', '/admin/logout']) {
+  if (login.indexOf(expected) < 0) {
+    console.error('check-admin-ui: safer first-run login is missing: ' + expected);
+    process.exit(1);
+  }
+}
+if (login.indexOf('localStorage') >= 0 || !html.includes('function logoutAdmin()')) {
+  console.error('check-admin-ui: login must not persist credentials and dashboard sign-out must be wired');
+  process.exit(1);
 }
 
 // Drop the page's own init IIFE: it wires listeners onto the real DOM and fires
@@ -212,6 +223,24 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
   must(simpleGroupNames['v2.boosted']==='Extended timetable access', 'extended timetable group has a legacy-facing label');
   must(simpleCapabilityLabel('timetable.teacher.boosted_raw.view')==='View teacher timetables through a staff account',
     'raw staff timetable access has no plain-language label');
+
+  // A friendly group template copies the vetted capability set into a new
+  // named group, so a group created from the simple screen is immediately useful.
+  let createdGroup=null, copied=[];
+  fetch=async function(url,opts={}){
+    if(url.indexOf('/access/groups/12')>=0) return jsonResponse({group:{Name:'v2.recon'},grants:[{Capability:'timetable.teacher.reconstructed.view',Effect:1}]});
+    if(url.endsWith('/access/groups')&&opts.method==='POST'){createdGroup=JSON.parse(opts.body);return jsonResponse({ok:true,id:77});}
+    if(url.indexOf('/access/groups/77/grants')>=0&&opts.method==='POST'){copied.push(JSON.parse(opts.body));return jsonResponse({ok:true});}
+    if(url.indexOf('/access/role-defaults')>=0) return jsonResponse({roleDefaults:{}});
+    if(url.indexOf('/access/groups?')>=0) return jsonResponse({groups:[{ID:12,Name:'v2.recon'}]});
+    if(url.indexOf('/admin/users')>=0) return jsonResponse({users:[]});
+    return jsonResponse({});
+  };
+  allUsers=[];
+  $('simpleAccessSchool').value='schuldorf'; $('simpleGroupName').value='Math support'; $('simpleGroupTemplate').value='12';
+  await createSimpleGroup();
+  must(createdGroup&&createdGroup.name==='Math support', 'group wizard did not create the named group');
+  must(copied.length===1&&copied[0].capability==='timetable.teacher.reconstructed.view', 'group wizard did not copy its selected access set');
 
   console.log('check-admin-ui: all admin UI checks passed');
 })().catch(function(e){ console.error('FAIL: ' + (e && e.stack || e)); process.exit(1); });

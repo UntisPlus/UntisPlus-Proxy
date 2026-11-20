@@ -156,6 +156,24 @@ func TestKeyLoginPastedSecret(t *testing.T) {
 	}
 }
 
+func TestBrowserLoginRejectsCrossOriginRequest(t *testing.T) {
+	f := &fakeUntis{}
+	p, _, _ := newFakeProxy(t, f)
+	req := httptest.NewRequest(http.MethodPost, "/WebUntis/jsonrpc_intern.do?m=getUserData2017", strings.NewReader(loginBody(t, "someone", "123456")))
+	req.Header.Set("Origin", "https://attacker.example")
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+	p.handleJSONRPCIntern(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin login status=%d body=%s; want 403", rec.Code, rec.Body.String())
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if len(f.loginAuth) != 0 {
+		t.Fatalf("cross-origin login reached upstream: %v", f.loginAuth)
+	}
+}
+
 // TestKeyLoginPastedSecretRejectedDoesNotClobber proves a stale/foreign pasted
 // secret that the real server rejects leaves a previously stored key intact.
 func TestKeyLoginPastedSecretRejectedDoesNotClobber(t *testing.T) {
