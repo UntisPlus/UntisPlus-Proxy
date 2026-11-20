@@ -148,6 +148,17 @@
     .app { grid-template-columns: 1fr; }
     .sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--border); }
   }
+
+/* WebUntis reference: quiet workspace, fixed navigation, coral selection. */
+:root{--bg:#f4f5f8;--text:#505b63;--muted:#849098;--brand:#f47754;--brand-dark:#db6142;--border:#e1e4e7;--border-strong:#cdd3d7;--nav-active:#fff;--shadow:0 7px 12px #28333f15}
+.app{grid-template-columns:280px minmax(0,1fr)}
+.sidebar{padding:0 0 24px;background:#fff;display:flex;flex-direction:column;border-right:1px solid #dce0e4}
+.brand{padding:20px 20px 15px;border:0;margin:0;gap:14px}.brand h1{font-size:23px;color:#4c565b;font-weight:650}.brand .sub{font-size:13px;color:#8b949a}.brand-mark{background:none;color:#657178;border:2px dotted #a9b1b7;border-radius:50%;box-shadow:none;width:42px;height:42px}
+.side-status{margin:0 24px 12px 76px;gap:5px}.pill{font-size:11px;background:#f5f6f7;border-color:#e2e4e7}.nav-group{font-size:10px;margin:17px 0 4px;padding:0 26px;color:#a4acb2}.nav{gap:0}.nav a{position:relative;padding:14px 25px;border:0;border-radius:0;gap:24px;color:#737e85;font-size:15px;font-weight:600;min-height:49px}.nav a:hover{background:#f8f9fa;border:0}.nav a.active{border:0;background:#fff;color:var(--brand);box-shadow:none}.nav a.active:before{content:'';position:absolute;left:0;top:3px;bottom:3px;width:4px;border-radius:0 3px 3px 0;background:var(--brand)}.dot{width:23px;height:23px;border-radius:0;background:none;opacity:1;display:inline-flex;align-items:center;justify-content:center}.dot svg{width:23px;height:23px;stroke:currentColor;fill:none;stroke-width:1.35;stroke-linecap:round;stroke-linejoin:round}
+.content{max-width:none;padding:28px 32px 60px;background:linear-gradient(160deg,#f7f8fa,#eceef2);min-width:0}.topbar{background:none;border:0;border-radius:0;box-shadow:none;padding:0 0 20px;margin:0}.title h2{font-size:17px;font-weight:500;color:var(--brand)}.title p{font-size:12px;margin-top:7px}.section-title{display:none}.section-sub{font-size:13px;max-width:850px;line-height:1.6;margin-bottom:22px}.panel,.card,.flow-step{border:0;border-radius:1px;box-shadow:var(--shadow);padding:18px 20px}.panel-header{border-bottom:1px solid #ddd;margin:-4px -20px 16px;padding:0 17px 12px}.panel-header h3{font-size:15px;font-weight:500;color:var(--brand)}.panel-header .desc{font-size:12px;line-height:1.65}.grid{gap:20px}.callout{border-radius:2px;background:#fafbfc;border-color:#e4e7ea}.table-wrap{border-radius:1px;border-color:#e4e7ea}th{background:#fafbfc;font-size:11px;text-transform:none;letter-spacing:0;color:#77828b}td{padding:13px 12px;font-size:13px}button,input,select,textarea{border-radius:3px}button{font-size:12px;font-weight:500;padding:9px 15px}.mini{font-size:11px;padding:6px 10px}.card .num{font-size:28px;color:#56626b}.card .lbl{font-size:12px;color:#89949b;margin-top:8px}.flow-num{background:#fff;color:var(--brand);border:1px solid var(--brand);font-weight:500}.flow-head h4{font-weight:500}.help-icon{position:relative;display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;margin-left:7px;padding:0;border:1px solid #a5afb7;border-radius:50%;background:transparent;color:#7a8791;font-size:11px;vertical-align:middle;cursor:help;box-shadow:none}.help-icon:hover,.help-icon:focus{background:#f0f3f5;color:#495965}.help-icon .help-tip{display:none;position:absolute;left:0;top:23px;width:260px;max-width:70vw;padding:11px 13px;background:#34434e;color:#fff;border-radius:3px;font:normal 12px/1.6 'Segoe UI',Arial,sans-serif;box-shadow:0 4px 14px #0002;z-index:100;text-align:left;white-space:normal}.help-icon:hover .help-tip,.help-icon:focus .help-tip{display:block}.help-icon:focus-visible{outline:2px solid var(--brand);outline-offset:3px}
+@media(max-width:980px){.app{grid-template-columns:220px minmax(0,1fr)}.nav a{padding:12px 16px;gap:14px;font-size:13px}.brand h1{font-size:18px}.content{padding:22px 18px}.side-status{margin-left:20px}.brand{padding:20px 15px}}
+@media(max-width:680px){.app{display:block}.sidebar{height:auto;position:static;padding-bottom:10px}.brand{padding:14px 18px}.side-status,.nav-group{display:none}.nav{flex-direction:row;flex-wrap:wrap}.nav a{font-size:12px;padding:9px 12px;min-height:36px;gap:8px}.dot{width:17px;height:17px}.dot svg{width:17px;height:17px}.content{padding:20px 14px}.topbar .actions{gap:5px}.panel{padding:16px}.panel-header{margin:0 0 12px;padding:0 0 12px}.help-icon .help-tip{left:auto;right:0}}
+
 </style>
 </head>
 <body>
@@ -169,26 +180,26 @@
     <div class="nav-group">Getting started</div>
     <nav class="nav" id="nav">
       <a href="#overview" data-view="overview"><span class="dot"></span>Overview</a>
-      <a href="#onboarding" data-view="onboarding"><span class="dot"></span>Setup &amp; Onboarding</a>
+      <a href="#onboarding" data-view="onboarding"><span class="dot"></span>Getting started</a>
     </nav>
 
     <div class="nav-group">Access &amp; identity</div>
     <nav class="nav">
       <a href="#access" data-view="access"><span class="dot"></span>Permissions</a>
       <a href="#users" data-view="users"><span class="dot"></span>People</a>
-      <a href="#schools" data-view="schools"><span class="dot"></span>Schools &amp; Anonymous</a>
+      <a href="#schools" data-view="schools"><span class="dot"></span>Schools</a>
     </nav>
 
     <div class="nav-group">Integrations</div>
     <nav class="nav">
       <a href="#notifications" data-view="notifications"><span class="dot"></span>Notifications</a>
-      <a href="#tokens" data-view="tokens"><span class="dot"></span>Calendar Tokens</a>
+      <a href="#tokens" data-view="tokens"><span class="dot"></span>Calendar links</a>
     </nav>
 
     <div class="nav-group">Operations</div>
     <nav class="nav">
       <a href="#events" data-view="events"><span class="dot"></span>Events &amp; Absences</a>
-      <a href="#operations" data-view="operations"><span class="dot"></span>Pool, Audit &amp; Tools</a>
+      <a href="#operations" data-view="operations"><span class="dot"></span>System settings</a>
       <a href="#activity" data-view="activity"><span class="dot"></span>Activity Log</a>
     </nav>
   </aside>
@@ -197,7 +208,7 @@
     <div class="topbar">
       <div class="title">
         <h2 id="viewTitle">Overview</h2>
-        <p>WebUntis-style guided admin for proxy setup, schools, access, users, and notifications.</p>
+        <p>Manage your school, people and access.</p>
       </div>
       <div class="actions">
         <span class="small muted" id="refreshHint"></span>
@@ -260,7 +271,7 @@
 
       <!-- ONBOARDING -->
       <section id="view-onboarding" class="view">
-        <h2 class="section-title">Setup &amp; Onboarding</h2>
+        <h2 class="section-title">Getting started</h2>
         <p class="section-sub">A guided, step-by-step flow to get UntisPlus Proxy ready: configure trusted proxy handling for real client IPs, add a school, claim/add the first admin, create permission groups/roles, then onboard additional users and notifications.</p>
 
         <div id="setupStateCallout" class="callout mb"></div>
@@ -302,7 +313,7 @@
               <p>Register the Untis school(s) this proxy should serve. Users authenticate against a school; adding it here makes it available for login, access control, and operations.</p>
               <div class="row">
                 <button onclick="focusSchoolsAdd()">Add/manage schools</button>
-                <button class="secondary" onclick="showView('schools')">Open Schools &amp; Anonymous</button>
+                <button class="secondary" onclick="showView('schools')">Open Schools</button>
               </div>
               <ul class="list-plain">
                 <li>Use the school identifier as expected by your Untis/WebUntis setup.</li>
@@ -568,7 +579,7 @@
 
       <!-- SCHOOLS & ANONYMOUS -->
       <section id="view-schools" class="view">
-        <h2 class="section-title">Schools &amp; Anonymous Access</h2>
+        <h2 class="section-title">Schools Access</h2>
         <p class="section-sub">Register and manage schools, control anonymous login per school, and configure deployment-wide anonymous capabilities. Anonymous sessions are shared read-only, never persisted as DB users, and cannot create calendar tokens.</p>
 
         <div class="panel">
@@ -655,7 +666,7 @@
 
       <!-- TOKENS -->
       <section id="view-tokens" class="view">
-        <h2 class="section-title">Calendar Tokens</h2>
+        <h2 class="section-title">Calendar links</h2>
         <p class="section-sub">Create and manage ICS/calendar tokens for classes, teachers, rooms, subjects, or personal timetables (as supported). Tokens grant read access via URL; revoke when no longer needed.</p>
         <div class="panel" id="tokensSection">
           <div class="panel-header"><div><h3>Tokens</h3><p class="desc">Search/pick an element, choose lookahead days, and create a token. Copy the ICS URL or adjust/revoke existing tokens.</p></div><button class="secondary mini" onclick="loadTokens()">Refresh</button></div>
@@ -775,7 +786,7 @@
       </section>
       <!-- OPERATIONS -->
       <section id="view-operations" class="view">
-        <h2 class="section-title">Pool, Audit &amp; Tools</h2>
+        <h2 class="section-title">System settings</h2>
         <p class="section-sub">Inspect pooled class coverage, review admin audit history, and debug live timetable streams and delivery state.</p>
 
         <div class="grid two">
@@ -837,10 +848,6 @@
     </div>
   </main>
 </div>
-
-    </div>
-  </main>
-</div>
 <script>
 // ---------- helpers / state ----------
 let allUsers = null;
@@ -887,7 +894,7 @@ const viewTitles = {
   users: 'People',
   schools: 'Schools & Anonymous Access',
   notifications: 'Notifications',
-  tokens: 'Calendar Tokens',
+  tokens: 'Calendar links',
   events: 'Events & Absences',
   operations: 'Pool, Audit & Tools',
   activity: 'Activity Log'
@@ -2174,7 +2181,20 @@ function renderOnboardingFlow(){
 function focusSchoolsAdd(){ showView('schools'); setTimeout(function(){ var e=document.getElementById('sName'); if(e){ try{e.focus(); e.scrollIntoView({behavior:'smooth',block:'center'});}catch(_){ e.focus(); } } }, 80); }
 function focusUsersAdd(){ showView('users'); setTimeout(function(){ var e=document.getElementById('uName'); if(e){ try{e.focus(); e.scrollIntoView({behavior:'smooth',block:'center'});}catch(_){ e.focus(); } } }, 80); }
 
+
+function installContextHelp(){
+  document.querySelectorAll('.panel-header').forEach(header=>{
+    const heading=header.querySelector('h3'),description=header.querySelector('.desc');
+    if(!heading||!description||heading.querySelector('.help-icon'))return;
+    const button=document.createElement('button');button.type='button';button.className='help-icon';button.setAttribute('aria-label','About '+heading.textContent);button.textContent='i';
+    const tip=document.createElement('span');tip.className='help-tip';tip.setAttribute('role','tooltip');tip.textContent=description.textContent;button.appendChild(tip);heading.appendChild(button);
+  });
+}
+const navigationPaths={overview:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',onboarding:'M5 3h14v18H5z M8 8h8 M8 12h8 M8 16h5',access:'M12 3l8 4v5c0 5-8 9-8 9S4 17 4 12V7z M9 12l2 2 4-5',users:'M16 21v-3a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v3 M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M17 3a4 4 0 0 1 0 8 M22 21v-3a4 4 0 0 0-3-4',schools:'M3 21h18 M5 21V7l7-4 7 4v14 M9 21v-6h6v6 M8 9h1 M15 9h1 M8 12h1 M15 12h1',notifications:'M5 17h14l-2-3V9a5 5 0 0 0-10 0v5z M10 21h4',tokens:'M3 5h18v16H3z M7 2v6 M17 2v6 M3 10h18 M7 14h3 M14 14h3',events:'M3 5h18v16H3z M7 2v6 M17 2v6 M3 10h18 M8 16l3 3 5-6',operations:'M4 6h16 M4 12h16 M4 18h16 M8 3v6 M16 9v6 M8 15v6',activity:'M4 3h16v18H4z M8 7h8 M8 12h8 M8 17h5'};
+function installNavigationIcons(){document.querySelectorAll('.nav a[data-view]').forEach(a=>{const dot=a.querySelector('.dot');if(dot)dot.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="'+(navigationPaths[a.dataset.view]||navigationPaths.overview)+'"/></svg>';});}
+
 (function init(){
+  installNavigationIcons();installContextHelp();
   showView((location.hash || '#overview').slice(1));
 
   function elPicker(o){
