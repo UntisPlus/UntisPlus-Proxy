@@ -218,6 +218,13 @@ username/code in browser storage, and routes incomplete setups to onboarding.
 Admin changes and sign-out use same-origin checks; sign-out revokes the active
 proxy session.
 
+The **Account warnings** page lists incomplete saved registration details and
+explains the next steps. Its authentication overview includes every account,
+showing token/shared-secret only, password only, both, or neither. It exposes
+only presence flags, never credential values, and distinguishes enrolled
+background credentials from a live upstream verification. Missing student
+classes and unclear identities are review items, not automatic deletion rules.
+
 The People list marks accounts that still need app enrolment before background
 fetching works. Signing in with an OTP creates a session but does not supply the
 shared secret needed to fetch later. Use the normal app setup flow to enrol a

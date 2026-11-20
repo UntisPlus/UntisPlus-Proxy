@@ -189,6 +189,7 @@
     <nav class="nav">
       <a href="#access" data-view="access"><span class="dot"></span>Permissions</a>
       <a href="#users" data-view="users"><span class="dot"></span>People</a>
+      <a href="#account-warnings" data-view="account-warnings"><span class="dot"></span>Account warnings <span id="accountWarningCount" class="badge">…</span></a>
       <a href="#schools" data-view="schools"><span class="dot"></span>Schools</a>
     </nav>
 
@@ -588,6 +589,19 @@
         </div>
       </section>
 
+      <section id="view-account-warnings" class="view">
+        <h2 class="section-title">Account warnings</h2>
+        <p class="section-sub">Review accounts whose saved registration details need attention. A successful login alone does not always give the proxy enough information to fetch timetables later.</p>
+        <div class="panel">
+          <div class="panel-header"><div><h3>Accounts to review</h3><p class="desc">Checks saved credentials, school, person identity and student class details. These checks do not contact upstream or confirm that a saved credential is still valid. Refresh after the person completes app setup.</p></div><button class="secondary mini" onclick="refreshAccountWarnings()">Refresh saved details</button></div>
+          <label class="field mb">Find an account<input id="accountWarningSearch" type="search" placeholder="Username, name or school" oninput="renderAccountWarnings()"></label>
+          <p id="accountWarningSummary" role="status" aria-live="polite" class="small muted">Loading accounts…</p>
+          <div class="table-wrap"><table><thead><tr><th>Account</th><th>What needs attention</th><th>What to do next</th></tr></thead><tbody id="accountWarningRows"></tbody></table></div>
+        </div>
+        <div class="panel mt"><div class="panel-header"><div><h3>Authentication methods — all accounts</h3><p class="desc">Shows whether this proxy has a saved token/shared secret, a saved upstream password, both, or neither. Token here means the reusable app shared secret, not a one-time authenticator code. Stored does not mean recently tested.</p></div></div><div class="table-wrap"><table><thead><tr><th>Account</th><th>School</th><th>Saved authentication</th><th>Background fetching</th></tr></thead><tbody id="accountAuthenticationRows"></tbody></table></div></div>
+        <div class="panel mt"><div class="panel-header"><div><h3>Why can login work but timetable fetching fail?</h3><p class="desc">A one-time code proves the person can sign in now. Background fetching needs a reusable password or shared secret, which some app login flows do not send.</p></div></div><p class="small">Ask the person to complete the app’s normal account setup through this proxy, including the QR/shared-secret enrolment step. Then refresh this page. Do not paste passwords, authenticator codes or shared secrets into support messages.</p><p class="small">A missing class or unclear person type may be normal for a parent or an account without a linked school person. Review upstream identity before changing its permissions; do not assume it is a student or teacher.</p></div>
+      </section>
+
       <!-- SCHOOLS & ANONYMOUS -->
       <section id="view-schools" class="view">
         <h2 class="section-title">Schools Access</h2>
@@ -904,6 +918,7 @@ const viewTitles = {
   onboarding: 'Setup & Onboarding',
   access: 'Permissions',
   users: 'People',
+  'account-warnings': 'Account warnings',
   schools: 'Schools & Anonymous Access',
   notifications: 'Notifications',
   tokens: 'Calendar links',
@@ -1304,10 +1319,43 @@ async function reopenSetup(){
   } catch(e){ log('reopen setup failed: ' + e.message); if($('setupMsg')) $('setupMsg').textContent = 'Reopen failed: ' + e.message; }
 }
 
+function accountAuthenticationLabel(u){
+ if(u.credentialStatusKnown!==true)return 'Not checked';
+ if(u.hasSharedSecret&&u.hasPassword)return 'Both — token/shared secret and password';
+ if(u.hasSharedSecret)return 'Token/shared secret only';
+ if(u.hasPassword)return 'Password only';
+ return 'None saved';
+}
+function accountRegistrationWarnings(u){
+ const issues=[];
+ if(u.replayable===false)issues.push({code:'credential',title:(u.hasSharedSecret||u.hasPassword?'Background-fetch credential not ready':'No reusable credential saved'),next:'Complete app account setup through this proxy with its QR/shared-secret enrolment flow. An OTP-only login is not enough for background fetching.'});
+ if(!u.school)issues.push({code:'school',title:'No school saved on this account',next:'Sign in through this proxy with the correct school selected so the account is linked to it.'});
+ if(Number(u.personId||0)<=0)issues.push({code:'person',title:'No linked person identity saved',next:'Check the linked person in upstream and sign in again. Some administrator or generic accounts may not have a school person.'});
+ if(![1,2,5].includes(Number(u.personType||0)))issues.push({code:'type',title:'Account type needs review',next:'Verify the account type reported by upstream before choosing its default groups. Parent accounts cannot always be classified from the linked person.'});
+ if(Number(u.personType)===5&&Number(u.classId||0)<=0)issues.push({code:'class',title:'No active student class saved',next:'Check whether this is a parent account, an unassigned student or an incomplete enrolment. Confirm the linked person and class in upstream; do not delete the account automatically.'});
+ return issues;
+}
+function renderAccountWarnings(){
+ const users=allUsers||[], flagged=users.map(u=>({user:u,issues:accountRegistrationWarnings(u)})).filter(row=>row.issues.length);
+ const count=$('accountWarningCount');if(count)count.textContent=String(flagged.length);
+ const search=($('accountWarningSearch')?.value||'').trim().toLowerCase();
+ const rows=flagged.filter(({user:u})=>[u.username,u.displayName,u.school].join(' ').toLowerCase().includes(search));
+ const summary=$('accountWarningSummary');if(summary)summary.textContent=flagged.length?(flagged.length+' of '+users.length+' accounts need review. Showing '+rows.length+'. Based on saved details; upstream credentials have not been tested here.'):'No registration warnings in saved details. Saved credentials have not been tested against upstream here.';
+ const methods=$('accountAuthenticationRows');
+ if(methods)methods.innerHTML=users.filter(u=>[u.username,u.displayName,u.school].join(' ').toLowerCase().includes(search)).map(u=>'<tr><td><strong>'+esc(u.username)+'</strong><div class="small muted">'+esc(u.displayName||'')+'</div></td><td>'+esc(u.school||'Not recorded')+'</td><td>'+esc(accountAuthenticationLabel(u))+'</td><td>'+esc(u.replayable===true?'Credential enrolled — not live tested':u.replayable===false?'App enrolment needed':'Not checked')+'</td></tr>').join('')||'<tr><td colspan="4" class="empty">No accounts match.</td></tr>';
+ const body=$('accountWarningRows');if(!body)return;
+ body.innerHTML=rows.map(({user:u,issues})=>'<tr><td><strong>'+esc(u.username)+'</strong><div class="small muted">'+esc(u.displayName||'')+'</div><div class="small muted">'+esc(u.school||'School not recorded')+'</div><div class="small muted">Last seen: '+esc(fmtTime(u.lastSeen)||'Not recorded')+'</div></td><td>'+issues.map(i=>'<p class="small warn">'+esc(i.title)+'</p>').join('')+'</td><td>'+issues.map(i=>'<p class="small"><strong>'+esc(i.title)+':</strong> '+esc(i.next)+'</p>').join('')+'</td></tr>').join('')||'<tr><td colspan="3" class="empty">'+(flagged.length?'No warnings match your search.':'No accounts currently need registration review.')+'</td></tr>';
+}
+async function refreshAccountWarnings(){
+ try{const d=await api('GET','users');if(d.error||!Array.isArray(d.users))throw new Error(d.error||'Account list unavailable');allUsers=d.users;renderAccountWarnings();}
+ catch(e){$('accountWarningSummary').textContent='Could not refresh account warnings: '+e.message;}
+}
+
 // ---------- users / permissions ----------
 async function loadUsers(){
-  const d = await api('GET','users');
+  let d;try{d=await api('GET','users');}catch(e){if($('accountWarningSummary'))$('accountWarningSummary').textContent='Could not load accounts: '+e.message;throw e;}
   allUsers = d.users || [];
+  renderAccountWarnings();
   const tb = $('users').querySelector('tbody'); tb.innerHTML = '';
   for(const u of (d.users||[])){
     const tr = document.createElement('tr');
@@ -2233,7 +2281,7 @@ function installContextHelp(){
     const tip=document.createElement('span');tip.className='help-tip';tip.setAttribute('role','tooltip');tip.textContent=description.textContent;button.appendChild(tip);heading.appendChild(button);
   });
 }
-const navigationPaths={overview:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',onboarding:'M5 3h14v18H5z M8 8h8 M8 12h8 M8 16h5',access:'M12 3l8 4v5c0 5-8 9-8 9S4 17 4 12V7z M9 12l2 2 4-5',users:'M16 21v-3a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v3 M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M17 3a4 4 0 0 1 0 8 M22 21v-3a4 4 0 0 0-3-4',schools:'M3 21h18 M5 21V7l7-4 7 4v14 M9 21v-6h6v6 M8 9h1 M15 9h1 M8 12h1 M15 12h1',notifications:'M5 17h14l-2-3V9a5 5 0 0 0-10 0v5z M10 21h4',tokens:'M3 5h18v16H3z M7 2v6 M17 2v6 M3 10h18 M7 14h3 M14 14h3',events:'M3 5h18v16H3z M7 2v6 M17 2v6 M3 10h18 M8 16l3 3 5-6',operations:'M4 6h16 M4 12h16 M4 18h16 M8 3v6 M16 9v6 M8 15v6',activity:'M4 3h16v18H4z M8 7h8 M8 12h8 M8 17h5'};
+const navigationPaths={'account-warnings':'M12 3 2 21h20z M12 9v5 M12 17v1',overview:'M3 3h7v7H3z M14 3h7v7h-7z M3 14h7v7H3z M14 14h7v7h-7z',onboarding:'M5 3h14v18H5z M8 8h8 M8 12h8 M8 16h5',access:'M12 3l8 4v5c0 5-8 9-8 9S4 17 4 12V7z M9 12l2 2 4-5',users:'M16 21v-3a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v3 M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8 M17 3a4 4 0 0 1 0 8 M22 21v-3a4 4 0 0 0-3-4',schools:'M3 21h18 M5 21V7l7-4 7 4v14 M9 21v-6h6v6 M8 9h1 M15 9h1 M8 12h1 M15 12h1',notifications:'M5 17h14l-2-3V9a5 5 0 0 0-10 0v5z M10 21h4',tokens:'M3 5h18v16H3z M7 2v6 M17 2v6 M3 10h18 M7 14h3 M14 14h3',events:'M3 5h18v16H3z M7 2v6 M17 2v6 M3 10h18 M8 16l3 3 5-6',operations:'M4 6h16 M4 12h16 M4 18h16 M8 3v6 M16 9v6 M8 15v6',activity:'M4 3h16v18H4z M8 7h8 M8 12h8 M8 17h5'};
 function installNavigationIcons(){document.querySelectorAll('.nav a[data-view]').forEach(a=>{const dot=a.querySelector('.dot');if(dot)dot.innerHTML='<svg viewBox="0 0 24 24" aria-hidden="true"><path d="'+(navigationPaths[a.dataset.view]||navigationPaths.overview)+'"/></svg>';});}
 
 (function init(){

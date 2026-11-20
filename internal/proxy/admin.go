@@ -1957,24 +1957,30 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 		}
 		out := make([]map[string]any, 0, len(users))
 		for _, u := range users {
+			secret, password, credentialErr := p.store.GetCredential(u.Username)
+			hasSharedSecret := secret != "" || (u.Method == "key" && u.Password != "")
+			hasPassword := password != "" || (u.Method == "password" && u.Password != "")
 			out = append(out, map[string]any{
-				"username":     u.Username,
-				"method":       u.Method,
-				"personId":     u.PersonID,
-				"personType":   u.PersonType,
-				"classId":      u.ClassID,
-				"className":    u.ClassName,
-				"school":       u.School,
-				"admin":        u.Admin,
-				"displayName":  u.DisplayName,
-				"email":        u.Email,
-				"lastSeen":     u.LastSeen.Unix(),
-				"replayable":   u.Password != "",
-				"permissions":  perms[u.Username],
-				"boosted":      p.isBoosted(u.Username),
-				"editor":       p.isEditor(u.Username),
-				"reconAllowed": p.hasPerm(u.Username, store.FeatureRecon),
-				"techniker":    p.hasPerm(u.Username, store.FeatureTechniker),
+				"username":              u.Username,
+				"method":                u.Method,
+				"personId":              u.PersonID,
+				"personType":            u.PersonType,
+				"classId":               u.ClassID,
+				"className":             u.ClassName,
+				"school":                u.School,
+				"admin":                 u.Admin,
+				"displayName":           u.DisplayName,
+				"email":                 u.Email,
+				"lastSeen":              u.LastSeen.Unix(),
+				"replayable":            u.Password != "",
+				"credentialStatusKnown": credentialErr == nil,
+				"hasSharedSecret":       hasSharedSecret,
+				"hasPassword":           hasPassword,
+				"permissions":           perms[u.Username],
+				"boosted":               p.isBoosted(u.Username),
+				"editor":                p.isEditor(u.Username),
+				"reconAllowed":          p.hasPerm(u.Username, store.FeatureRecon),
+				"techniker":             p.hasPerm(u.Username, store.FeatureTechniker),
 			})
 		}
 		p.writeJSON(w, map[string]any{"users": out})

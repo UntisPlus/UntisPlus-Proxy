@@ -224,6 +224,28 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
   must(simpleCapabilityLabel('timetable.teacher.boosted_raw.view')==='View teacher timetables through a teacher account',
     'raw staff timetable access has no plain-language label');
 
+  // Registration warnings describe saved evidence, not guessed authentication
+  // failures. Parent-like accounts without a class need review, not deletion.
+  must(accountAuthenticationLabel({credentialStatusKnown:true,hasSharedSecret:true,hasPassword:true}).startsWith('Both'),'dual credential label missing');
+  must(accountAuthenticationLabel({credentialStatusKnown:true,hasSharedSecret:true})==='Token/shared secret only','token-only label incorrect');
+  must(accountAuthenticationLabel({credentialStatusKnown:true,hasPassword:true})==='Password only','password-only label incorrect');
+  must(accountAuthenticationLabel({credentialStatusKnown:true})==='None saved','missing credentials incorrectly labelled');
+  must(accountAuthenticationLabel({})==='Not checked','unknown credential state incorrectly labelled');
+  const ready={username:'ready',school:'schuldorf',personId:5,personType:5,classId:10,replayable:true};
+  must(accountRegistrationWarnings(ready).length===0,'complete student incorrectly flagged');
+  must(accountRegistrationWarnings({...ready,replayable:false}).some(i=>i.code==='credential'),'missing reusable credential not flagged');
+  const parentIssues=accountRegistrationWarnings({...ready,classId:-1});
+  must(parentIssues.length===1&&parentIssues[0].code==='class','parent-like class warning incorrect');
+  must(accountRegistrationWarnings({...ready,personType:0}).some(i=>i.code==='type'),'unknown account type not flagged');
+  allUsers=[ready,{...ready,username:'<img src=x>',replayable:false,password:'never-render-this-secret'}];
+  renderAccountWarnings();
+  must($('accountWarningCount').textContent==='1','warning count incorrect');
+  must($('accountWarningRows').innerHTML.includes('&lt;img'),'warning account name not escaped');
+  must(!$('accountWarningRows').innerHTML.includes('never-render-this-secret'),'credential leaked into warning page');
+  $('accountWarningSearch').value='notfound';renderAccountWarnings();
+  must($('accountWarningRows').innerHTML.includes('No warnings match'),'warning search did not filter accounts');
+  $('accountWarningSearch').value='';
+
   // Every supported capability appears exactly once in the individual editor.
   const keys=permissionSections.flatMap(([,items])=>items.map(([key])=>key));
   must(new Set(keys).size===keys.length,'permission editor contains duplicate rules');
