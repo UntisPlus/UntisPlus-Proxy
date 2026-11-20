@@ -129,7 +129,13 @@ func (p *Proxy) handleAdminSetup(w http.ResponseWriter, r *http.Request, parts [
 		p.writeJSON(w, map[string]any{"ok": true, "setupCompleted": true})
 	case len(parts) == 2 && parts[1] == "reset" && r.Method == http.MethodPost:
 		// Allow re-opening onboarding for admins (does not remove admins).
+		// Mark fresh-claim so normalizeSetupState does not auto-complete an
+		// existing-admin instance when setup_completed is explicitly reopened.
 		if err := p.store.SetSetupCompleted(false); err != nil {
+			http.Error(w, "failed to reset setup", http.StatusInternalServerError)
+			return
+		}
+		if err := p.store.SetSetupFreshClaim(true); err != nil {
 			http.Error(w, "failed to reset setup", http.StatusInternalServerError)
 			return
 		}

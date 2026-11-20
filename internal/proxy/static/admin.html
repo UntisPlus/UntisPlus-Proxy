@@ -567,14 +567,13 @@
               <option value="TEACHER">teacher</option>
               <option value="ROOM">room</option>
               <option value="SUBJECT">subject</option>
-              <option value="PERSONAL">personal</option>
-              <option value="SCHOOL">school-wide</option>
+              <option value="STUDENT">student</option>
             </select>
             <span class="pickwrap"><input id="tokElIn" placeholder="search element…" style="width:16rem"><input type="hidden" id="tokElVal" value="0"><input type="hidden" id="tokElName"><div class="pickmenu" id="tokElMenu"></div></span>
             <label class="field" style="min-width:8rem">Days<input id="tokDays" type="number" min="1" max="365" value="30"></label>
             <button onclick="addToken()">Create token</button>
           </div>
-          <div class="help mb">For <code>PERSONAL</code> and <code>SCHOOL</code>, no element selection is required. Calendar tokens cannot be created for anonymous sessions.</div>
+          <div class="help mb">Admin-created calendar tokens are available for class, teacher, room, subject, and student elements. Search and pick the target element, then create or manage its ICS token.</div>
           <div class="table-wrap"><table id="tokens"><thead><tr><th>Token</th><th>Name</th><th>Type</th><th>Element ID</th><th>Created</th><th>Created by</th><th>Days</th><th>Actions</th></tr></thead><tbody></tbody></table></div>
         </div>
       </section>
@@ -1222,7 +1221,7 @@ async function loadTokens(){
 }
 async function addToken(){
   const id = parseInt($('tokElVal').value)||0, type=$('tokType').value, days=parseInt($('tokDays').value)||30;
-  if(type !== 'PERSONAL' && type !== 'SCHOOL' && !id){ log('search and pick an element first'); return; }
+  if(!id){ log('Search and pick an element first.'); return; }
   const d = await api('POST','tokens',{school:$('tokSchool').value, elementType:type, elementId:id, days:days});
   if(d.error){ log('create token failed: '+d.error); return; }
   const url = d.url || (location.origin + '/api/calendar/' + d.token + '.ics');
@@ -1901,6 +1900,10 @@ async function refreshAll(){
   elPicker({input:'sseElIn', hidden:'sseElVal', name:'sseElName', menu:'sseElMenu', school:'sseSchool', typeSel:'sseType'});
 
   function tokPicker(type){
+    const inp = $('tokElIn'), menu = $('tokElMenu');
+    inp.disabled = false;
+    inp.placeholder = 'search element…';
+    if(menu) menu.style.display = 'none';
     makePicker({input:'tokElIn', hidden:'tokElVal', menu:'tokElMenu', schoolSel:'tokSchool', type:type,
       onpick:function(id,name){ $('tokElName').value = name || ''; }});
   }
