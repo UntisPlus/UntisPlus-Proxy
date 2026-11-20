@@ -647,6 +647,7 @@
               <input id="ntfyTopic" placeholder="topic name" style="min-width:12rem; flex:1">
               <input id="ntfyBase" placeholder="base URL (optional, default server ntfy)" style="min-width:14rem; flex:1">
               <button onclick="addNtfy()">Add ntfy topic</button>
+              <span id="ntfySaveMessage" role="status" aria-live="polite" class="small"></span>
             </div>
             <div class="table-wrap"><table id="ntfy"><thead><tr><th>School</th><th>Element</th><th>Topic</th><th>Base URL</th><th>Created by</th><th>Actions</th></tr></thead><tbody></tbody></table></div>
           </div>
@@ -1405,10 +1406,22 @@ async function loadNtfy(){
   if(!(d.topics||[]).length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="6" class="empty">No ntfy topics configured.</td>'; tb.appendChild(tr); }
 }
 async function addNtfy(){
-  const type = $('ntfyType').value;
-  await api('POST','ntfy',{school:$('ntfySchool').value, elementType:type, elementId:parseInt($('ntfyElVal').value)||0, topic:($('ntfyTopic').value||'').trim(), baseUrl:($('ntfyBase').value||'').trim()});
-  $('ntfyTopic').value=''; $('ntfyBase').value=''; log('added ntfy topic'); await loadNtfy(); await renderCards();
+  const message=$('ntfySaveMessage'), topic=($('ntfyTopic').value||'').trim();
+  if(message)message.textContent='Saving…';
+  try{
+    if(!topic)throw new Error('Enter a topic name.');
+    const type=$('ntfyType').value;
+    const result=await api('POST','ntfy',{school:$('ntfySchool').value,elementType:type,elementId:parseInt($('ntfyElVal').value)||0,topic,baseUrl:($('ntfyBase').value||'').trim()});
+    if(result.error)throw new Error(typeof result.error==='string'?result.error:'Could not save topic.');
+    $('ntfyTopic').value='';$('ntfyBase').value='';
+    if(message){message.className='small ok';message.textContent='Topic saved. Use Test to check delivery.';}
+    log('added ntfy topic');await loadNtfy();await renderCards();
+  }catch(e){
+    const detail=e.message==='target host is not allowed'?'This server uses a private network address. Leave Server empty to use the configured ntfy server, or ask the operator to configure internal notification access.':e.message;
+    if(message){message.className='small danger-text';message.textContent=detail;}log('Could not add ntfy topic: '+detail);
+  }
 }
+
 async function delNtfy(id){ await api('DELETE','ntfy/'+id); log('deleted ntfy topic '+id); await loadNtfy(); await renderCards(); }
 async function testNtfy(id,btn){
   btn.disabled=true; const old=btn.textContent; btn.textContent='…';
