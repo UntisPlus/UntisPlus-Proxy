@@ -131,6 +131,11 @@ accounts, or create a custom group. People receive the groups configured for
 their role plus any groups assigned directly to them. **People** is for account
 and dashboard-admin management.
 
+Account-type defaults inherited from the global configuration are labelled
+**Shared default** in the school view. They are displayed for reference there;
+changing them globally is an advanced action. Removing a school-specific
+default never removes a global default from other schools.
+
 The group editor exposes every supported permission separately. Each row has
 **Leave unchanged**, **Allow**, and **Block**, plus an explanation under the info
 icon. Ntfy creation and management are independent permissions; calendar link

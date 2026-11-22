@@ -417,10 +417,12 @@
               <div id="permissionGroupMessage" role="status" aria-live="polite" class="small mt"></div>
             </div>
             <h4>Your available groups</h4>
-            <div id="simpleGroupList" class="stack"><div class="empty">Loading access groups…</div></div>
+            <label class="field mt">Find a group<input id="groupSearch" type="search" placeholder="Search group names" oninput="renderSimpleGroupList(window.simpleAccessGroups||[])"></label>
+            <div id="simpleGroupList" class="stack mt"><div class="empty">Loading access groups…</div></div>
           </div>
           <div class="panel">
             <div class="panel-header"><div><h3>Default access by account type</h3><p class="desc">Choose which groups everyone or each account type receives. Guardian accounts are detected from upstream linked-child metadata; staff types may require a school-specific mapping.</p></div></div>
+            <p id="roleDefaultMessage" class="small" role="status" aria-live="polite"></p>
             <div id="simpleRoleDefaults" class="stack"><div class="empty">Loading access groups…</div></div>
           </div>
         </div>
@@ -1034,10 +1036,11 @@ function newPermissionGroup(){
 }
 function renderSimpleGroupList(groups){
  const box=$('simpleGroupList');if(!box)return;
+ const query=($('groupSearch')?.value||'').trim().toLowerCase();groups=groups.filter(g=>(groupName(g)+' '+groupDescription(g)).toLowerCase().includes(query));
  box.innerHTML=groups.length?groups.map(g=>{
   const builtin=String(g.Name||g.name||'').startsWith('v2.');
   return '<div class="callout"><div class="row" style="justify-content:space-between"><strong>'+esc(groupName(g))+'</strong><button class="secondary mini" onclick="editPermissionGroup('+groupID(g)+','+builtin+')">'+(builtin?'Use as starting point':'Edit permissions')+'</button></div><p class="small muted">'+esc(groupDescription(g))+'</p><span class="small muted">'+(g.School||g.school?'This school':'All schools')+(builtin?' · Built-in template':'')+'</span></div>';
- }).join(''):'<div class="empty">Create your first group above.</div>';
+ }).join(''):'<div class="empty">No matching groups. Create a group above or clear your search.</div>';
 }
 function renderSimpleGroupTemplates(groups){
  const sel=$('simpleGroupTemplate');if(!sel)return;
@@ -1102,28 +1105,29 @@ async function openUserAccess(username){
 async function renderSimpleRoleDefaults(school,groups){
   const box=$('simpleRoleDefaults');if(!box)return;
   try{
-    const data=await api('GET','access/role-defaults?school='+encodeURIComponent(school));
-    const defaults=data.roleDefaults||{};
+    const [data,global]=await Promise.all([api('GET','access/role-defaults?school='+encodeURIComponent(school)),api('GET','access/role-defaults?school=')]);
+    if(data.error||global.error)throw new Error(data.error||global.error);
+    const defaults=data.roleDefaults||{}, inheritedDefaults=global.roleDefaults||{};
     const roles=['*','student','teacher','staff','parent','other','unknown'];
     box.innerHTML=roles.map(role=>{
-      const active=(defaults[role]||[]).map(Number);
+      const active=(defaults[role]||[]).map(Number), inherited=new Set(school?(inheritedDefaults[role]||[]).map(Number):[]);
       const relevant=groups;
-      return '<div class="callout"><strong>'+esc(roleLabel(role))+'</strong><div class="small muted mt">Choose the groups this account type receives.</div><div class="stack mt">'+
-        relevant.map(g=>'<label class="row small"><input type="checkbox" '+(active.includes(groupID(g))?'checked':'')+' onchange="toggleSimpleRoleGroup('+jsq(role)+','+groupID(g)+',this.checked)"><span>'+esc(groupName(g))+'</span></label>').join('')+
+      return '<div class="callout"><strong>'+esc(roleLabel(role))+'</strong><div class="small muted mt">Choose the groups this account type receives. Shared defaults apply across schools and are shown for reference.</div><div class="stack mt">'+
+        relevant.map(g=>'<label class="row small"><input type="checkbox" '+(active.includes(groupID(g))?'checked':'')+' '+(inherited.has(groupID(g))?'disabled':'')+' onchange="toggleSimpleRoleGroup('+jsq(role)+','+groupID(g)+',this.checked)"><span>'+esc(groupName(g))+(inherited.has(groupID(g))?' <span class="badge" title="Inherited across schools. Global defaults can be changed under Advanced permission settings.">Shared default</span>':'')+'</span></label>').join('')+
         '</div></div>';
     }).join('');
   }catch(e){box.innerHTML='<div class="callout warn">Could not load role defaults: '+esc(e.message)+'</div>';}
 }
 async function toggleSimpleRoleGroup(role,groupId,enabled){
-  const school=simpleAccessSchool();
-  try{
-    if(enabled) await api('POST','access/role-defaults/set',{school,role,groupId,priority:0});
-    else {
-      await api('DELETE','access/role-defaults?school='+encodeURIComponent(school)+'&role='+encodeURIComponent(role)+'&groupId='+groupId);
-      if(school) await api('DELETE','access/role-defaults?school=&role='+encodeURIComponent(role)+'&groupId='+groupId);
-    }
-    log((enabled?'Added ':'Removed ')+groupName((window.simpleAccessGroups||[]).find(g=>groupID(g)===groupId)||{name:'access group'})+' default for '+roleLabel(role).toLowerCase());
-  }catch(e){log('Could not update account-type access: '+e.message);await renderSimpleRoleDefaults(school,window.simpleAccessGroups||[]);}
+ const school=simpleAccessSchool(),message=$('roleDefaultMessage');
+ try{
+  if(!school)throw new Error('Choose a school first.');
+  const result=enabled?await api('POST','access/role-defaults/set',{school,role,groupId,priority:0}):await api('DELETE','access/role-defaults?school='+encodeURIComponent(school)+'&role='+encodeURIComponent(role)+'&groupId='+groupId);
+  if(result.error)throw new Error(result.error);
+  const text=(enabled?'Added ':'Removed ')+groupName((window.simpleAccessGroups||[]).find(g=>groupID(g)===groupId)||{name:'access group'})+' for '+roleLabel(role).toLowerCase()+' in '+school+'.';
+  if(message)message.textContent=text;log(text);
+ }catch(e){if(message)message.textContent='Could not update defaults: '+e.message;log('Could not update account-type access: '+e.message);}
+ await renderSimpleRoleDefaults(school,window.simpleAccessGroups||[]);
 }
 async function loadSimpleUserAccess(){
   const school=simpleAccessSchool(), user=$('simpleAccessUser')?.value||'', box=$('simpleAccessDetail');
@@ -1361,7 +1365,7 @@ async function refreshAccountWarnings(){
 }
 
 // ---------- users / permissions ----------
-async function loadUsers(){
+async function loadUsers(refreshAccess=true){
   let d;try{d=await api('GET','users');}catch(e){if($('accountWarningSummary'))$('accountWarningSummary').textContent='Could not load accounts: '+e.message;throw e;}
   allUsers = d.users || [];
   renderAccountWarnings();
@@ -1379,7 +1383,7 @@ async function loadUsers(){
     tb.appendChild(tr);
   }
   if(!(d.users||[]).length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="6" class="empty">No users yet. Accounts appear after they sign in for the first time.</td>'; tb.appendChild(tr); }
-  if($('simpleAccessSchool')) await loadSimpleAccess();
+  if(refreshAccess&&$('simpleAccessSchool')) await loadSimpleAccess();
   try { renderOnboardingFlow(); } catch(e){}
 }
 async function addUser(){
@@ -2210,8 +2214,8 @@ async function refreshAll(){
   try { await loadSetupStatus(); } catch(e){ log('setup: '+e.message); }
   try { await loadSchools(); } catch(e){ log('schools: '+e.message); }
   try { await renderCards(); } catch(e){ log('cards: '+e.message); }
+  try { await loadUsers(false); } catch(e){ log('users: '+e.message); }
   const jobs = {
-    users: loadUsers,
     webhooks: loadWebhooks,
     ntfy: loadNtfy,
     outage: loadOutageNtfy,

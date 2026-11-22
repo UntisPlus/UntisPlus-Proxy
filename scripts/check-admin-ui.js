@@ -272,6 +272,27 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
   must(savedGroup.grants['notify.ntfy.create']===-1&&savedGroup.grants['calendar.student.personal.mint']===1,'individual permission choices were not preserved');
   must($('permissionGroupMessage').textContent.includes('Saved'),'save feedback missing');
 
+  // Removing a school's group must never delete the inherited global row.
+  const defaultRequests=[];
+  fetch=async function(url,opts={}){
+    defaultRequests.push({url,method:opts.method||'GET'});
+    if((opts.method||'GET')==='DELETE')return jsonResponse({ok:true});
+    return jsonResponse({roleDefaults:{student:[1]}});
+  };
+  $('simpleAccessSchool').value='schuldorf';
+  window.simpleAccessGroups=[{ID:1,Name:'v2.student_base'}];
+  await toggleSimpleRoleGroup('student',77,false);
+  const deletes=defaultRequests.filter(r=>r.method==='DELETE');
+  must(deletes.length===1&&deletes[0].url.includes('school=schuldorf&'),'school default removal touched global scope');
+  must($('simpleRoleDefaults').innerHTML.includes('disabled'),'inherited global default was rendered editable');
+  must($('simpleRoleDefaults').innerHTML.includes('Shared default'),'inherited default has no explanation');
+  must($('roleDefaultMessage').textContent.includes('schuldorf'),'default save feedback missing school context');
+
+  let userLoads=0,accessLoads=0;
+  fetch=async function(url){if(url.includes('/admin/users'))userLoads++;if(url.includes('/access/'))accessLoads++;return jsonResponse({users:[]});};
+  await loadUsers(false);
+  must(userLoads===1&&accessLoads===0,'user refresh performed a redundant access reload');
+
   console.log('check-admin-ui: all admin UI checks passed');
 })().catch(function(e){ console.error('FAIL: ' + (e && e.stack || e)); process.exit(1); });
 `;
