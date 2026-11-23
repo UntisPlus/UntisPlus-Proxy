@@ -4,8 +4,10 @@ Status: implemented. This is the contract for the Android app
 (BetterPlus-Android) and any other client that wants live timetable changes.
 
 Admin and webhook/ntfy surfaces are in
-[`ADMIN-WEBHOOKS-NTFY.md`](ADMIN-WEBHOOKS-NTFY.md); the permission tiers are in
-[`GOD-API-PLAN.md`](GOD-API-PLAN.md). The endpoints that need no auth are
+[`ADMIN-WEBHOOKS-NTFY.md`](ADMIN-WEBHOOKS-NTFY.md); current permission groups are described in
+[the README](../README.md#permissions). The tier model in
+[`GOD-API-PLAN.md`](GOD-API-PLAN.md) is retained for compatibility history.
+See [production readiness](PRODUCTION-READINESS.md) for release blockers. The endpoints that need no auth are
 `/status`, `/healthz` and — only with `-metrics-addr` set — `/metrics`; see
 [`../DEPLOYMENT.md`](../DEPLOYMENT.md#health-and-monitoring).
 

@@ -2,35 +2,9 @@ package proxy
 
 import (
 	"encoding/json"
-	"log"
 	"net"
 	"net/http"
-	"strings"
 )
-
-// maybeClaimSetupAdmin grants admin to the first successfully authenticated
-// user when initial setup is pending and no admin exists yet. This enables the
-// "log in, then onboarding" first-run flow without requiring -admin bootstrap.
-func (p *Proxy) maybeClaimSetupAdmin(username string) {
-	username = strings.ToLower(strings.TrimSpace(username))
-	if username == "" || username == "#anonymous#" {
-		return
-	}
-	needed, err := p.store.SetupNeeded()
-	if err != nil || !needed {
-		return
-	}
-	hasAdmin, err := p.store.HasAnyAdmin()
-	if err != nil || hasAdmin {
-		return
-	}
-	if err := p.store.SetAdmin(username, true); err != nil {
-		log.Printf("[setup] claim admin for %q: %v", username, err)
-		return
-	}
-	_ = p.store.SetSetupFreshClaim(true)
-	log.Printf("[setup] claimed initial admin: %s", username)
-}
 
 // setupStatus describes first-run/setup state and client-IP diagnostics useful
 // for configuring trusted reverse proxies during onboarding.
@@ -56,10 +30,10 @@ func (p *Proxy) buildSetupStatus(r *http.Request) setupStatus {
 	var st setupStatus
 	st.SetupCompleted, _ = p.store.SetupCompleted()
 	st.HasAdmin, _ = p.store.HasAnyAdmin()
-	claimNeeded, _ := p.store.SetupNeeded()
 	onboarding, _ := p.store.SetupOnboarding()
 	st.SetupNeeded = onboarding
-	st.CanClaimAdmin = claimNeeded
+	// Administrator access is provisioned locally, never claimed by logging in.
+	st.CanClaimAdmin = false
 	st.TrustedProxies = p.TrustedProxies()
 	if r != nil {
 		st.ClientIP.RemoteAddr = r.RemoteAddr
@@ -76,8 +50,8 @@ func (p *Proxy) buildSetupStatus(r *http.Request) setupStatus {
 }
 
 // handleSetupPublic exposes minimal setup/client-IP diagnostics without auth.
-// It is available while initial onboarding/claim is pending so operators can
-// verify reverse-proxy real IP configuration before/during first admin claim.
+// It is available while initial onboarding is pending so operators can
+// verify reverse-proxy real IP configuration before completing setup.
 func (p *Proxy) handleSetupPublic(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -168,7 +142,7 @@ var (
 )
 
 // handleRoot serves a minimal landing page. During initial setup it points
-// operators to the dashboard/login to claim admin and complete onboarding.
+// operators to provision their administrator and complete onboarding.
 func (p *Proxy) handleRoot(w http.ResponseWriter, r *http.Request) {
 	needed, _ := p.store.SetupNeeded()
 	title := "UntisPlus Proxy"
@@ -181,7 +155,7 @@ func (p *Proxy) handleRoot(w http.ResponseWriter, r *http.Request) {
 	if needed {
 		title = "UntisPlus Proxy — Setup"
 		heading = "Initial setup required"
-		msg = "Sign in to claim admin access and complete guided onboarding in a clear step-by-step flow."
+		msg = "An operator must choose the first administrator using the server -admin option or untisctl. Then sign in to complete setup."
 		linkText = "Continue to guided setup & login"
 		badge = "Setup pending"
 		badgeStyle = "background:#fff4e5;border:1px solid #f3d19c;color:#92400e;"
@@ -206,7 +180,7 @@ a.btn:hover{background:#fb8c00}
 .steps li{margin:.2rem 0}
 .small{font-size:.82rem;color:var(--muted);margin-top:1rem;line-height:1.5;border-top:1px solid var(--border);padding-top:.8rem}
 </style></head><body><div class="card"><div class="badge" style="` + badgeStyle + `">` + badge + `</div><h1>` + heading + `</h1><p>` + msg + `</p><div class="actions"><a class="btn" href="/admin">` + linkText + `</a></div>
-<div class="grid"><div class="item"><b>1. Proxy &amp; real client IP</b><span>Configure trusted reverse proxies so the server sees real client IPs for rate limiting and logs.</span></div><div class="item"><b>2. School &amp; first admin</b><span>Add a school, then sign in to claim/create the first admin user on a fresh setup.</span></div><div class="item"><b>3. Groups &amp; roles</b><span>Create capability groups, role defaults, and mappings for clear permissions.</span></div><div class="item"><b>4. Users &amp; notifications</b><span>Add more users/admins and configure ntfy/webhook/outage alerts.</span></div></div>
-<ol class="steps"><li>Configure trusted proxy/real client IP (if behind reverse proxy)</li><li>Add a school</li><li>Add first user/admin (claim on first login for fresh setup)</li><li>Create permission groups and roles</li><li>Add other users and fine-tune access</li><li>Set up notifications and finish onboarding</li></ol>
+<div class="grid"><div class="item"><b>1. Proxy &amp; real client IP</b><span>Configure trusted reverse proxies so the server sees real client IPs for rate limiting and logs.</span></div><div class="item"><b>2. School &amp; first admin</b><span>Provision the intended administrator locally, then sign in and add a school.</span></div><div class="item"><b>3. Groups &amp; roles</b><span>Create capability groups, role defaults, and mappings for clear permissions.</span></div><div class="item"><b>4. Users &amp; notifications</b><span>Add more users/admins and configure ntfy/webhook/outage alerts.</span></div></div>
+<ol class="steps"><li>Configure trusted proxy/real client IP (if behind reverse proxy)</li><li>Add a school</li><li>Provision first administrator locally (-admin or untisctl)</li><li>Create permission groups and roles</li><li>Add other users and fine-tune access</li><li>Set up notifications and finish onboarding</li></ol>
 <div class="small">` + sub + `</div></div></body></html>`))
 }

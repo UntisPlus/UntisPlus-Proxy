@@ -80,3 +80,33 @@ func TestDeletingGuardianRemovesLinkedIdentities(t *testing.T) {
 		t.Fatal("deleted account retained linked child identities")
 	}
 }
+
+func TestPoolDeduplicationPreservesSharingAndNames(t *testing.T) {
+	st := openTestStore(t)
+	for _, u := range []User{
+		{Username: "allowed", School: "school", PersonType: 5, ClassID: 5000, ClassName: "A"},
+		{Username: "hidden", School: "school", PersonType: 5, ClassID: 5000, ClassName: "Z"},
+		{Username: "other", School: "school", PersonType: 5, ClassID: 5000, ClassName: "B"},
+	} {
+		if err := st.UpsertUser(&u); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := st.SetUserCapGrant("school", "hidden", string(access.CapPoolTimetableShare), -1); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := st.Pool("school")
+	if err != nil || len(pool) != 1 || pool[0].Name != "B" {
+		t.Fatalf("pool=%v err=%v", pool, err)
+	}
+	// Revocations take effect on the next call; optimisation must not cache access.
+	for _, user := range []string{"allowed", "other"} {
+		if err := st.SetUserCapGrant("school", user, string(access.CapPoolTimetableShare), -1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pool, err = st.Pool("school")
+	if err != nil || len(pool) != 0 {
+		t.Fatalf("revoked class remained: %v %v", pool, err)
+	}
+}

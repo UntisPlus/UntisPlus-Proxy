@@ -3,6 +3,7 @@ package proxy
 import (
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -104,7 +105,7 @@ func TestHandleSetupPublic(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
 			t.Fatalf("decode: %v body=%s", err, rec.Body.String())
 		}
-		if !st.SetupNeeded || st.SetupCompleted || st.HasAdmin || !st.CanClaimAdmin {
+		if !st.SetupNeeded || st.SetupCompleted || st.HasAdmin || st.CanClaimAdmin {
 			t.Fatalf("unexpected setup flags: %+v", st)
 		}
 		if st.ClientIP.PeerIP != "198.51.100.20" {
@@ -144,58 +145,45 @@ func TestHandleSetupPublic(t *testing.T) {
 	})
 }
 
-func TestMaybeClaimSetupAdmin(t *testing.T) {
-	t.Run("claims first non-anonymous user on fresh setup", func(t *testing.T) {
-		p, st := newFreshSetupProxy(t)
-		p.maybeClaimSetupAdmin("Alice")
-		admin, _ := st.IsAdmin("alice")
-		if !admin {
-			t.Fatal("expected alice to be claimed as admin")
-		}
-		fresh, _ := st.SetupFreshClaim()
-		if !fresh {
-			t.Fatal("expected fresh claim flag to be set")
-		}
-		needed, _ := st.SetupNeeded()
-		if needed {
-			t.Fatal("claim should clear setup-needed state")
-		}
-		onboarding, _ := st.SetupOnboarding()
-		if !onboarding {
-			t.Fatal("fresh claim should keep onboarding open until completed")
-		}
-	})
-
-	t.Run("does not claim anonymous or when admin exists", func(t *testing.T) {
-		p, st := newFreshSetupProxy(t)
-		p.maybeClaimSetupAdmin("#anonymous#")
-		has, _ := st.HasAnyAdmin()
-		if has {
-			t.Fatal("anonymous must not claim admin")
-		}
-		if err := st.SetAdmin("bob", true); err != nil {
-			t.Fatalf("seed admin: %v", err)
-		}
-		_ = st.SetSetupCompleted(false)
-		_ = st.SetSetupFreshClaim(false)
-		p.maybeClaimSetupAdmin("alice")
-		admin, _ := st.IsAdmin("alice")
-		if admin {
-			t.Fatal("must not claim when an admin already exists")
-		}
-	})
-
-	t.Run("does not claim when setup not needed", func(t *testing.T) {
-		p, st := newFreshSetupProxy(t)
-		if err := st.SetSetupCompleted(true); err != nil {
-			t.Fatalf("complete: %v", err)
-		}
-		p.maybeClaimSetupAdmin("alice")
-		has, _ := st.HasAnyAdmin()
-		if has {
-			t.Fatal("must not claim when setup already completed")
-		}
-	})
+func TestFirstLoginCannotClaimAdministrator(t *testing.T) {
+	for _, provisioned := range []bool{false, true} {
+		t.Run(fmt.Sprint("provisioned=", provisioned), func(t *testing.T) {
+			f := &fakeUpstream{}
+			p, st := newFakeProxyUpstream(t, f)
+			// The helper normally seeds bob as admin. Remove it to model fresh setup.
+			if err := st.SetAdmin("bob", false); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.SetSetupCompleted(false); err != nil {
+				t.Fatal(err)
+			}
+			if provisioned {
+				if err := st.SetAdmin("intended-admin", true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			rec := publicJSONRPCReq(t, p, `{"jsonrpc":"2.0","id":"a","method":"authenticate","params":{"user":"owen","password":"pw"}}`)
+			if errCode(t, rec) != 0 {
+				t.Fatalf("login failed: %s", rec.Body.String())
+			}
+			u, err := st.GetUser("owen")
+			if err != nil || u == nil || u.Admin {
+				t.Fatalf("login must create ordinary user: %v %v", u, err)
+			}
+			has, err := st.HasAnyAdmin()
+			if err != nil || has != provisioned {
+				t.Fatalf("admin state changed: %v %v", has, err)
+			}
+			if p.buildSetupStatus(nil).CanClaimAdmin {
+				t.Fatal("public setup offers administrator claim")
+			}
+			// An ordinary session must not enter the management API either.
+			denied := adminRequest(t, p, "owen", http.MethodGet, "/admin/users", "")
+			if denied.Code != http.StatusForbidden {
+				t.Fatalf("management status=%d", denied.Code)
+			}
+		})
+	}
 }
 
 func TestTrustedProxyConfigAndRealClientIP(t *testing.T) {

@@ -28,6 +28,13 @@ func TestValidateTargetURLRejectsUnsafe(t *testing.T) {
 		"http://10.0.0.5/h",
 		"http://192.168.1.10/h",
 		"http://172.16.5.5/h",
+		"http://100.64.0.1/h",
+		"http://0.1.2.3/h",
+		"http://240.0.0.1/h",
+		"http://[::ffff:127.0.0.1]/h",
+		"http://[64:ff9b::7f00:1]/h",
+		"http://[2002:7f00:1::]/h",
+		"https://user:password@example.com/h",
 	}
 	for _, u := range cases {
 		if err := validateTargetURL(u, false); err == nil {

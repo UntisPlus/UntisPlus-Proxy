@@ -112,8 +112,8 @@ func TestTechnikAggregateIgnoresBodyAuthImpersonation(t *testing.T) {
 	// sam has a session but no techniker permission, and claims to be dee.
 	rec := internReq(t, p, "getTimetable2017", "sam",
 		internBody("getTimetable2017", ttParam(technikClassID, "CLASS", "2026-10-01", "2026-10-07", "dee")))
-	if code := errCode(t, rec); code != -8509 {
-		t.Errorf("impersonated aggregate request: code = %d, want -8509 (no right)", code)
+	if code := errCode(t, rec); code != -8520 {
+		t.Errorf("impersonated aggregate request: code = %d, want -8520 (identity mismatch)", code)
 	}
 }
 

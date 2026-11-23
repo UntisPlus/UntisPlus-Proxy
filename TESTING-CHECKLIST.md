@@ -1,10 +1,14 @@
 # TESTING-CHECKLIST — full API surface walk-through (v1.6.0)
 
+> Historical checklist/design reference. Checked boxes and implementation claims
+> below are not evidence that the current beta passed those checks. For the
+> 2026-11-23 assessment, see [Production readiness](docs/PRODUCTION-READINESS.md).
+
 Interactive runbook. Every box gets pushed through live; tick it once the
 expected result holds off this machine. Report anything that deviates.
 
 Target: `http://127.0.0.1:8787` (the tunnel hostname, set `UNTIS_PUBLIC_BASE`). DB has
-WAL+sessions in-memory — a server restart drops sessions, re-login is fine.
+WAL and persisted sessions; unexpired sessions survive a restart.
 
 ## Reference data (this DB)
 

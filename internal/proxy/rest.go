@@ -65,6 +65,10 @@ func (p *Proxy) handleREST(w http.ResponseWriter, r *http.Request) {
 			p.forbidden(w)
 			return
 		}
+		if p.userSchool(user, p.opts.School) != school {
+			p.forbidden(w)
+			return
+		}
 		// Session path: write verbs are gated by the editor flag. Reading
 		// your own absences (GET) is always allowed.
 		if r.Method == "POST" || r.Method == "PUT" || r.Method == "DELETE" {
@@ -86,7 +90,7 @@ func (p *Proxy) handleREST(w http.ResponseWriter, r *http.Request) {
 
 func (p *Proxy) restWeeklyTimetable(w http.ResponseWriter, r *http.Request, school string) {
 	user := p.sessionUser(r)
-	if user == nil {
+	if user == nil || p.userSchool(user, p.opts.School) != school {
 		p.forbidden(w)
 		return
 	}
@@ -164,6 +168,13 @@ func (p *Proxy) restWeeklyTimetable(w http.ResponseWriter, r *http.Request, scho
 // serveRESTRawFromBoostedSource serves the weekly timetable REST endpoint raw
 // from the saved teacher accounts when the requester is boosted.
 func (p *Proxy) serveRESTRawFromBoostedSource(w http.ResponseWriter, r *http.Request, school string) bool {
+	u := p.sessionUser(r)
+	id, _ := strconv.ParseInt(r.URL.Query().Get("elementId"), 10, 64)
+	kind := map[string]string{"1": "CLASS", "2": "TEACHER", "3": "SUBJECT", "4": "ROOM", "5": "STUDENT"}[r.URL.Query().Get("elementType")]
+	own := u != nil && kind == "STUDENT" && u.PersonID == id
+	if id <= 0 || !p.canBoostedRawForTimetable(u, school, kind, own) {
+		return false
+	}
 	sources, err := p.store.BoostedSourceAccounts(school)
 	if err != nil || len(sources) == 0 {
 		return false

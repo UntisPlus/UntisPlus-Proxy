@@ -25,7 +25,14 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 		ID     json.RawMessage `json:"id"`
 		Method string          `json:"method"`
 	}
-	_ = json.Unmarshal(body, &req)
+	if err := json.Unmarshal(body, &req); err != nil {
+		p.writeJSONRPCError(w, nil, "invalid request", -32600)
+		return
+	}
+	if queryMethod := r.URL.Query().Get("m"); queryMethod != "" && queryMethod != req.Method {
+		p.writeJSONRPCError(w, req.ID, "method mismatch", -32600)
+		return
+	}
 	if req.Method == "getUserData2017" && (r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != "") && !sameOriginBrowserRequest(p, r) {
 		http.Error(w, "cross-origin login refused", http.StatusForbidden)
 		return
@@ -42,44 +49,47 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 	case "getTimetable2017":
 		p.getTimetable2017(w, r, school, req.ID, body)
 	case "getAppSharedSecret":
-		b, status, _, err := p.untis.RawIntern(school, "", "getAppSharedSecret", body)
-		if err != nil {
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
-		}
-		var req struct {
+		var enrollment struct {
 			Params []struct {
 				UserName string `json:"userName"`
 				Password string `json:"password"`
 			} `json:"params"`
 		}
-		_ = json.Unmarshal(body, &req)
-		var resp struct {
-			Result string `json:"result"`
+		if json.Unmarshal(body, &enrollment) != nil || len(enrollment.Params) != 1 || strings.TrimSpace(enrollment.Params[0].UserName) == "" {
+			p.writeJSONRPCError(w, req.ID, "invalid enrollment request", -32600)
+			return
 		}
-		_ = json.Unmarshal(b, &resp)
-		secret := resp.Result
-		password := ""
-		if len(req.Params) > 0 {
-			// Some apps send the shared secret itself as the "password" (the
-			// real server rejects that with -8998). If the value is a valid
-			// base32 secret, capture it so we can replay the account. Otherwise
-			// it is the account's real password, which upstream needs to mint
-			// the secret: keep it too, so a TOTP account still has its password
-			// on record for later use.
-			if pw := req.Params[0].Password; isBase32Secret(pw) {
-				if secret == "" {
-					secret = pw
-				}
-			} else if strings.TrimSpace(pw) != "" {
-				password = pw
-			}
+		username := enrollment.Params[0].UserName
+		if p.loginRateLimited(w, r, school, username) {
+			p.writeJSONRPCError(w, req.ID, "too many login attempts, try again later", -8504)
+			return
 		}
-		if len(req.Params) > 0 && req.Params[0].UserName != "" {
-			if secret != "" {
-				p.setReplayKey(req.Params[0].UserName, secret)
+		b, status, _, err := p.untis.RawIntern(school, "", "getAppSharedSecret", body)
+		if err != nil {
+			http.Error(w, "upstream error", http.StatusBadGateway)
+			return
+		}
+		var response struct {
+			Result string          `json:"result"`
+			Error  json.RawMessage `json:"error"`
+		}
+		valid := json.Unmarshal(b, &response) == nil && status >= 200 && status < 300 &&
+			(len(response.Error) == 0 || string(response.Error) == "null") && isBase32Secret(response.Result)
+		// Persist only credentials actually accepted by upstream. In particular,
+		// a pasted base32 value from a failed enrollment is not identity proof.
+		if valid {
+			password := enrollment.Params[0].Password
+			if isBase32Secret(password) {
+				password = ""
 			}
-			_ = p.store.UpsertCredential(req.Params[0].UserName, secret, password)
+			if err := p.store.UpsertCredential(username, response.Result, password); err != nil {
+				http.Error(w, "failed to save credentials", http.StatusInternalServerError)
+				return
+			}
+			p.setReplayKey(username, response.Result)
+			p.recordLoginSuccess(school, username)
+		} else if status >= 200 && status < 500 {
+			p.recordLoginFailure(r, school, username)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
@@ -98,6 +108,17 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 			// Write methods are gated by fine-grained v2 capabilities; reading your
 			// own absences is always allowed.
 			username := extractAuthUser(body)
+			// Local event data and edits never rely on a caller-supplied name.
+			if p.hasTechniker(username) {
+				var call struct {
+					Params []timetableParams `json:"params"`
+				}
+				_ = json.Unmarshal(body, &call)
+				if len(call.Params) == 0 || p.authenticatedUpstreamRequester(r, school, username, normalizedOTP(call.Params[0].Auth.OTP), call.Params[0].Auth.ClientTime) == nil {
+					p.writeJSONRPCError(w, req.ID, "not logged in", -8520)
+					return
+				}
+			}
 			// A techniker's absence register on a proxy event is answered here,
 			// before the write gate, because it writes a local note rather than an
 			// Untis record. A call for a real period falls through unchanged.
@@ -118,6 +139,19 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 			// exactly that kind of field.
 			rewritten := false
 			if owner := p.classScopedOwner(school, username, m); owner != nil {
+				var authRequest struct {
+					Params []timetableParams `json:"params"`
+				}
+				_ = json.Unmarshal(body, &authRequest)
+				if len(authRequest.Params) == 0 {
+					p.writeJSONRPCError(w, req.ID, "not logged in", -8520)
+					return
+				}
+				auth := authRequest.Params[0].Auth
+				if p.authenticatedUpstreamRequester(r, school, auth.User, normalizedOTP(auth.OTP), auth.ClientTime) == nil {
+					p.writeJSONRPCError(w, req.ID, "not logged in", -8520)
+					return
+				}
 				if p.sourceAccountWriteDenied(school, owner, m) {
 					p.writeJSONRPCError(w, req.ID, "source account is read-only", -32601)
 					return
@@ -148,7 +182,7 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		user := p.sessionUser(r)
-		if user == nil {
+		if user == nil || p.userSchool(user, p.opts.School) != school {
 			p.writeJSONRPCError(w, req.ID, "not logged in", -8520)
 			return
 		}
@@ -352,7 +386,7 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	if replayKey != "" {
 		extra["key"] = replayKey
 	}
-	cookie, realBody, err := p.untis.KeyLogin(school, auth.User, loginOTP, auth.ClientTime, extra)
+	cookie, realBody, err := p.untis.KeyLogin(school, auth.User, loginOTP, time.Now().UnixMilli(), extra)
 	if err != nil {
 		if ue, ok := err.(*untis.UpstreamError); ok {
 			// Only an upstream rejection is a credential failure worth counting.
@@ -431,8 +465,7 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 				_ = p.store.SaveAccountLinks(school, user.Username, info.PersonID, links)
 			}
 		}
-		p.maybeClaimSetupAdmin(user.Username)
-		// Refresh admin flag in case setup claim promoted this user.
+		// Restore the administrator flag explicitly provisioned by an operator.
 		if isAdmin, _ := p.store.IsAdmin(user.Username); isAdmin {
 			user.Admin = true
 		}
@@ -761,11 +794,27 @@ func (p *Proxy) userFromRequestOTP(username, otp string, clientTime int64) *stor
 	return u
 }
 
-// verifyUserOTP checks the code against the user's stored replay key (TOTP
-// secret) over a one-step window around both the client's clock and the server's,
-// so ordinary clock skew does not lock a legitimate app out while a wrong code
-// still fails.
-func (p *Proxy) verifyUserOTP(username, otp string, clientTime int64) bool {
+// authenticatedUpstreamRequester binds local capabilities and saved-credential
+// use to a matching session or a current OTP, never a caller-supplied name.
+func (p *Proxy) authenticatedUpstreamRequester(r *http.Request, school, username, otp string, clientTime int64) *store.User {
+	if u := p.sessionUser(r); u != nil && (username == "" || strings.EqualFold(username, u.Username)) && p.userSchool(u, p.opts.School) == school {
+		return u
+	}
+	if p.loginRateLimited(nil, r, school, username) {
+		return nil
+	}
+	u := p.userFromRequestOTP(username, otp, clientTime)
+	if u == nil || p.userSchool(u, p.opts.School) != school {
+		p.recordLoginFailure(r, school, username)
+		return nil
+	}
+	p.recordLoginSuccess(school, username)
+	return u
+}
+
+// Only server-clock windows can establish a current OTP. The client timestamp
+// is untrusted and must not turn historical captured codes into live credentials.
+func (p *Proxy) verifyUserOTP(username, otp string, _ int64) bool {
 	secret, _ := p.store.GetSecret(username)
 	if secret == "" {
 		secret = p.replayKey(username)
@@ -773,15 +822,10 @@ func (p *Proxy) verifyUserOTP(username, otp string, clientTime int64) bool {
 	if secret == "" {
 		return false
 	}
-	centers := []time.Time{time.Now()}
-	if clientTime > 0 {
-		centers = append(centers, time.Unix(clientTime/1000, 0))
-	}
-	for _, c := range centers {
-		for _, d := range []time.Duration{-30 * time.Second, 0, 30 * time.Second} {
-			if otpEquals(otp, untis.TOTPAt(secret, c.Add(d))) {
-				return true
-			}
+	now := time.Now()
+	for _, delta := range []time.Duration{-30 * time.Second, 0, 30 * time.Second} {
+		if otpEquals(otp, untis.TOTPAt(secret, now.Add(delta))) {
+			return true
 		}
 	}
 	return false
@@ -809,10 +853,7 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 	// teacher account that has never heard of it. Access is its own permission,
 	// enforced by serveTechnikClass.
 	if pr.Type == "CLASS" && pr.ID == technikClassID {
-		u := p.sessionUser(r)
-		if u == nil {
-			u = p.userFromRequestOTP(pr.Auth.User, normalizedOTP(pr.Auth.OTP), pr.Auth.ClientTime)
-		}
+		u := p.authenticatedUpstreamRequester(r, school, pr.Auth.User, normalizedOTP(pr.Auth.OTP), pr.Auth.ClientTime)
 		if u == nil {
 			p.writeJSONRPCError(w, id, "not logged in", -8520)
 			return
@@ -864,8 +905,8 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 		_, _ = w.Write(b)
 		return
 	}
-	requester, err := p.store.GetUser(requesterName)
-	if err != nil || requester == nil {
+	requester = p.authenticatedUpstreamRequester(r, school, requesterName, normalizedOTP(pr.Auth.OTP), pr.Auth.ClientTime)
+	if requester == nil {
 		p.writeJSONRPCError(w, id, "not logged in", -8520)
 		return
 	}
@@ -1295,8 +1336,8 @@ func (p *Proxy) serveElementTimetable(w http.ResponseWriter, r *http.Request, sc
 		p.writeJSONRPCError(w, id, "not logged in", -8520)
 		return
 	}
-	requester, err := p.store.GetUser(requesterName)
-	if err != nil || requester == nil {
+	requester := p.authenticatedUpstreamRequester(r, school, requesterName, normalizedOTP(pr.Auth.OTP), pr.Auth.ClientTime)
+	if requester == nil {
 		p.writeJSONRPCError(w, id, "not logged in", -8520)
 		return
 	}
@@ -1320,6 +1361,7 @@ func (p *Proxy) serveElementTimetable(w http.ResponseWriter, r *http.Request, sc
 	// grants. A non-techniker's response is byte-for-byte unchanged, and the
 	// subject surface carries no events.
 	techniker := p.hasTechniker(requester.Username)
+	var err error
 	var eventPeriods []map[string]any
 	var md jsonObject
 	if techniker && (pr.Type == "ROOM" || pr.Type == "TEACHER") &&

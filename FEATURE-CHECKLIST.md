@@ -1,5 +1,9 @@
 # untis-proxy feature checklist (fresh-DB test run)
 
+> Historical checklist/design reference. Checked boxes and implementation claims
+> below are not evidence that the current beta passed those checks. For the
+> 2026-11-23 assessment, see [Production readiness](docs/PRODUCTION-READINESS.md).
+
 Baseline: fresh empty DB, server on `:8787`. Backup: `data/backup-20260905-105720`.
 Credentials (for reference/re-seed): `data/backup-20260905-105720/credentials.txt`
 

@@ -6,6 +6,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -35,6 +36,9 @@ func TestBackupToWritesRestorableCopy(t *testing.T) {
 	info, err := os.Stat(dst)
 	if err != nil {
 		t.Fatalf("stat backup: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("backup mode=%o, want 600", info.Mode().Perm())
 	}
 	if info.Size() != size {
 		t.Errorf("reported size %d, file is %d bytes", size, info.Size())
@@ -109,4 +113,32 @@ func mustTime(t *testing.T, s string) time.Time {
 		t.Fatalf("parse time: %v", err)
 	}
 	return v
+}
+
+func TestDatabaseAndWALAreOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permissions")
+	}
+	path := filepath.Join(t.TempDir(), "private.db")
+	// Existing files are restricted too, before any credentials are loaded.
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.SetAdmin("test-admin", true); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{path, path + "-wal", path + "-shm"} {
+		info, err := os.Stat(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s mode=%o, want 600", filepath.Base(name), info.Mode().Perm())
+		}
+	}
 }

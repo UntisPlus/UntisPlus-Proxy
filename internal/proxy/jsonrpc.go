@@ -149,7 +149,6 @@ func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request, school stri
 			_ = p.store.SaveAccountLinks(school, user.Username, info.PersonID, links)
 		}
 	}
-	p.maybeClaimSetupAdmin(user.Username)
 	if isAdmin, _ := p.store.IsAdmin(user.Username); isAdmin {
 		user.Admin = true
 	}

@@ -1296,7 +1296,7 @@ func TestBoostedTechnikerSeesEventsOnARoomTimetable(t *testing.T) {
 	ev.Teacher = "Mr Smith"
 	seedEvent(t, st, "dee", ev)
 
-	rec := internReq(t, p, "getTimetable2017", "",
+	rec := internReq(t, p, "getTimetable2017", "dee",
 		internBody("getTimetable2017", ttParam(169, "ROOM", "2026-10-01", "2026-10-01", "dee")))
 	periods := periodsOfResponse(t, rec)
 	if len(periods) != 1 || !isCustomPeriod(periods[0]) {

@@ -158,7 +158,9 @@ func (p *Proxy) loginRateLimited(w http.ResponseWriter, r *http.Request, school,
 			if secs < 1 {
 				secs = 1
 			}
-			w.Header().Set("Retry-After", strconv.Itoa(secs))
+			if w != nil {
+				w.Header().Set("Retry-After", strconv.Itoa(secs))
+			}
 			return true
 		}
 	}

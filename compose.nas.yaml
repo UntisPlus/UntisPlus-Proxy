@@ -20,10 +20,17 @@ services:
     image: "${UNTIS_IMAGE_REPO:?set UNTIS_IMAGE_REPO in .env, e.g. <your-namespace>/untisplus-proxy}:latest"
     container_name: untis-proxy
     restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:size=64m,mode=1777
     ports:
       - "${UNTIS_PORT:-8509}:8509"
     environment:
       UNTIS_ADDR: ":8509"
+      UNTIS_ADMIN: "${UNTIS_ADMIN:-}"
+      UNTIS_ALLOW_PRIVATE_TARGETS: "${UNTIS_ALLOW_PRIVATE_TARGETS:-false}"
       UNTIS_SCHOOL: "${UNTIS_SCHOOL:?set UNTIS_SCHOOL in .env — it is the key all data is stored under}"
       UNTIS_ENV: "${UNTIS_ENV:-prod}"
       UNTIS_POLL_INTERVAL: "${UNTIS_POLL_INTERVAL:-60s}"

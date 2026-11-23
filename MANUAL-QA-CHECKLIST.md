@@ -1,5 +1,9 @@
 # Manual QA checklist — untis-proxy beta
 
+> Historical checklist/design reference. Checked boxes and implementation claims
+> below are not evidence that the current beta passed those checks. For the
+> 2026-11-23 assessment, see [Production readiness](docs/PRODUCTION-READINESS.md).
+
 Tick every box. Anything that fails is a bug; note it under the section and
 report it with the exact command + response.
 

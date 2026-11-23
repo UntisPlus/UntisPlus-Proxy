@@ -78,7 +78,7 @@ func TestBoostedWithoutEditorLosesWriteCaps(t *testing.T) {
 		t.Fatalf("boost dee: %v", err)
 	}
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5009, "TEACHER", "2026-09-21", "2026-09-27", "dee")))
 	caps := periodCaps(t, rec)
 	for _, c := range caps {
@@ -102,7 +102,7 @@ func TestEditorKeepsUpstreamWriteCaps(t *testing.T) {
 		t.Fatalf("grant editor: %v", err)
 	}
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5009, "TEACHER", "2026-09-21", "2026-09-27", "dee")))
 	caps := periodCaps(t, rec)
 	for _, want := range []string{"READ_LESSONTOPIC", "WRITE_LESSONTOPIC", "WRITE_HOMEWORK",
@@ -132,7 +132,7 @@ func TestPooledClassViewAddsLessonTopicCap(t *testing.T) {
 	}
 	mdLogin(t, p, "sam")
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "sam", internBody("getTimetable2017",
 		ttParam(5000, "CLASS", "2026-09-21", "2026-09-27", "sam")))
 	caps := periodCaps(t, rec)
 	if !hasCap(caps, "READ_LESSONTOPIC") {
@@ -153,7 +153,7 @@ func TestOwnClassViewAddsLessonTopicCap(t *testing.T) {
 	p, st := newFakeProxyUpstream(t, f)
 	seedSessionUser(t, st, "dee", 5, 7, 5000)
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5000, "CLASS", "2026-09-21", "2026-09-27", "dee")))
 	caps := periodCaps(t, rec)
 	if !hasCap(caps, "READ_LESSONTOPIC") {
@@ -179,7 +179,7 @@ func TestReconstructedViewAddsLessonTopicCap(t *testing.T) {
 	}
 	mdLogin(t, p, "sam")
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "sam", internBody("getTimetable2017",
 		ttParam(5009, "TEACHER", "2026-09-21", "2026-09-27", "sam")))
 	var resp struct {
 		Result struct {
@@ -221,7 +221,7 @@ func TestEditorImpliesBoosted(t *testing.T) {
 	if !p.isBoosted("dee") {
 		t.Error("isBoosted(editor) = false, want true: editor must imply boosted")
 	}
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5009, "TEACHER", "2026-09-21", "2026-09-27", "dee")))
 	if caps := periodCaps(t, rec); !hasCap(caps, "WRITE_LESSONTOPIC") {
 		t.Errorf("editor answer lost its write capabilities: %v", caps)
@@ -256,7 +256,7 @@ func TestAdminWithoutEditorLosesWriteCaps(t *testing.T) {
 		t.Fatal("isAdmin(root) = false, want true")
 	}
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "root", internBody("getTimetable2017",
 		ttParam(5009, "TEACHER", "2026-09-21", "2026-09-27", "root")))
 	caps := periodCaps(t, rec)
 	for _, c := range caps {

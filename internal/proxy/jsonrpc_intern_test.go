@@ -248,10 +248,8 @@ func TestGetAppSharedSecretStoresKeyAndPassword(t *testing.T) {
 	}
 }
 
-// TestGetAppSharedSecretPastedSecretStoresKeyOnly: when the client puts the
-// base32 shared secret in the password field, that value is the replay key, not
-// an account password — it must not be recorded as one.
-func TestGetAppSharedSecretPastedSecretStoresKeyOnly(t *testing.T) {
+// A pasted value with no successful upstream enrollment must never become a local credential.
+func TestGetAppSharedSecretRejectedPasteIsNotStored(t *testing.T) {
 	secret := "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
 	f := &fakeUntis{rejectKey: secret} // upstream returns no result for this pasted value
 	p, st, _ := newFakeProxy(t, f)
@@ -265,8 +263,8 @@ func TestGetAppSharedSecretPastedSecretStoresKeyOnly(t *testing.T) {
 	p.handleJSONRPCIntern(rec, req)
 
 	key, password, _ := st.GetCredential("newkid")
-	if key != secret {
-		t.Errorf("stored key = %q, want the pasted secret %q", key, secret)
+	if key != "" {
+		t.Errorf("rejected pasted secret was stored: %q", key)
 	}
 	if password != "" {
 		t.Errorf("stored password = %q, want empty (the secret is not a password)", password)

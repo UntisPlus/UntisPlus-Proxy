@@ -1,5 +1,9 @@
 # untis-proxy
 
+> Current status (2026-11-23): security hardening under validation; **production approval pending**.
+> See [Production readiness review](docs/PRODUCTION-READINESS.md) for confirmed
+> blockers, test evidence, and the distinction between committed and pending fixes.
+
 [![CI](https://github.com/UntisPlus/UntisPlus-Proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/UntisPlus/UntisPlus-Proxy/actions/workflows/ci.yml)
 
 A Go reverse-proxy in front of WebUntis. It lets the **BetterPlus-Android** app
@@ -47,12 +51,11 @@ the dashboard, so a school you do not serve cannot use the proxy.
 
 ## How it works
 
-WebUntis is a per-user system: a student can only see their own timetable, and a
-teacher only theirs. The proxy works around that by **pooling** instead of
+Upstream timetable visibility depends on the school account and its permissions. The proxy works around that by **pooling** instead of
 escalating:
 
 1. **Pooling.** Every user automatically donates their class to the pool on
-   login — student and non-student alike. The pool is the union of all donated
+   login when its effective **Share timetable with the pool** permission allows it. The pool is the union of all donated
    classes, and each pooled class is fetched with its owner's student key.
 2. **Reconstruction.** A teacher, room or subject timetable is not stored
    anywhere by WebUntis. It is *reconstructed* by scanning the pooled classes
@@ -295,13 +298,13 @@ The proxy's read-only `#anonymous#` account is controlled by two layers:
 
 | Capability | Effect when enabled |
 |---|---|
-| **pooled classes** | Fall back to the proxy's class index when upstream hides classes from `#anonymous#`. Only independent (pooled) classes whose recon scan covers the requested dates are served; everything else stays raw-forwarded. |
-| **ntfy** | Create / list / test / delete ntfy subscriptions for pooled classes. |
-| **webhooks** | Create / list / test / delete webhook subscriptions for pooled classes. |
-| **live changes** | Poll `/api/timetable/changes` and open `/api/timetable/stream` for pooled classes. |
+| **classes** | Permit class targets exposed by the school’s detected/overridden anonymous profile. This does not grant proxy-pooled or reconstructed supplements. |
+| **ntfy** | Create / list / test / delete ntfy subscriptions for allowed upstream class targets. |
+| **webhooks** | Create / list / test / delete webhook subscriptions for allowed upstream class targets. |
+| **live changes** | Poll `/api/timetable/changes` and open `/api/timetable/stream` for allowed upstream class targets. |
 
-All four are **off by default**, so anonymous access stays as close to stock
-WebUntis as possible until an operator opts in. Enabled capabilities are
+All four are **off by default**. Enabling a proxy feature does not expand the
+set of targets upstream exposes to anonymous accounts. Enabled capabilities are
 deployment-wide; only the login switch is per school. Anonymous sessions can
 **never mint calendar links**. A public ICS token is a credential that outlives
 the session and would bypass the anonymous login switch, so the calendar
@@ -309,8 +312,8 @@ endpoints require a stored account.
 
 ```sh
 untisctl anonymous list              # global capability matrix
-untisctl anonymous grant classes     # enable the pooled-class fallback
-untisctl anonymous revoke classes    # back to stock upstream visibility
+untisctl anonymous grant classes     # enable allowed anonymous class targets
+untisctl anonymous revoke classes    # disable anonymous class feature access
 untisctl anonymous grant ntfy        # also: webhooks, changes
 ```
 
@@ -735,7 +738,7 @@ login).
 **Retained password:** when an app enrolls an account it sends the account's
 real Untis password to `getAppSharedSecret` (upstream answers with the TOTP
 secret). The proxy keeps that password too, in the `secrets` table beside the
-key (`secrets.password`), so an API client can read it later. It is stored in
+key (`secrets.password`), for replay by the proxy and privileged local tooling; the dashboard API exposes only credential-presence flags. It is stored in
 plaintext — WebUntis needs the password itself to replay a login — and only when
 a client actually sends it; an account that only ever uses the TOTP flow has no
 password on record. `untisctl users add --method password` and the admin UI store
@@ -756,7 +759,7 @@ untisctl perms default clear                 # no defaults
 
 ```sh
 untisctl anonymous list                      # classes, ntfy, webhooks, changes
-untisctl anonymous grant classes             # enable the pooled-class fallback
+untisctl anonymous grant classes             # enable allowed anonymous class targets
 untisctl anonymous revoke webhooks           # disable one capability
 ```
 

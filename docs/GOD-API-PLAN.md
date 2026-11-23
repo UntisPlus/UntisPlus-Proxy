@@ -1,5 +1,9 @@
 # Tiered Permission Model — Basic / Reconstruction / Boosted / Editor / Techniker
 
+> Historical checklist/design reference. Checked boxes and implementation claims
+> below are not evidence that the current beta passed those checks. For the
+> 2026-11-23 assessment, see [Production readiness](PRODUCTION-READINESS.md).
+
 Status: implemented and committed. Decline/stale notes removed.
 
 Related: [`ADMIN-WEBHOOKS-NTFY.md`](ADMIN-WEBHOOKS-NTFY.md) for the admin

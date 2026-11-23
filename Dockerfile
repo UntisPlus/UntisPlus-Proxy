@@ -28,8 +28,10 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w" -o /out/untisctl ./cmd/untisctl
 
 # ---- runtime stage ----
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates tzdata
+FROM alpine:3.24
+RUN apk add --no-cache ca-certificates tzdata && \
+    addgroup -S -g 10001 untis && adduser -S -D -H -u 10001 -G untis untis && \
+    mkdir -p /data && chown 10001:10001 /data
 WORKDIR /app
 COPY --from=build /out/ /usr/local/bin/
 
@@ -46,5 +48,6 @@ ENV UNTIS_ADDR=:8509 \
     UNTIS_NTFY_BASE=https://ntfy.sh \
     UNTIS_RECON_REFRESH=21
 
+USER 10001:10001
 EXPOSE 8509
-CMD ["sh", "-c", "untis-server -addr \"$UNTIS_ADDR\" -db \"$UNTIS_DB\" -env \"$UNTIS_ENV\" -poll-interval \"$UNTIS_POLL_INTERVAL\" -recon-refresh \"$UNTIS_RECON_REFRESH\""]
+CMD ["sh", "-c", "exec untis-server -addr \"$UNTIS_ADDR\" -db \"$UNTIS_DB\" -env \"$UNTIS_ENV\" -poll-interval \"$UNTIS_POLL_INTERVAL\" -recon-refresh \"$UNTIS_RECON_REFRESH\""]

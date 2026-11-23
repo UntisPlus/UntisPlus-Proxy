@@ -1,5 +1,8 @@
 # Hosting and building untis-proxy
 
+> Before promoting the current dev beta, review [production readiness](docs/PRODUCTION-READINESS.md).
+> A healthy `/status` endpoint is not a security or release approval.
+
 Everything about **running**, **deploying** and **building** the proxy. For what
 the proxy does and how to use it, see [`README.md`](README.md).
 
@@ -198,8 +201,8 @@ Three workflows live in `.github/workflows/`:
 
 | Workflow | Trigger | What it does |
 |---|---|---|
-| `ci.yml` | pull requests, pushes to `main`, and called by the release | `gofmt`, `go vet`, `go build`, the full `go test ./...` suite, the admin UI runtime check, and `go test -race` for `internal/store` and `internal/proxy` |
-| `docker.yml` | pull requests and pushes to `main` | builds the image for `linux/amd64` **without pushing**, so a broken Dockerfile fails the PR instead of the release |
+| `ci.yml` | pull requests, pushes to `main`/`dev`, and called by the release | `gofmt`, `go vet`, `go build`, the full `go test ./...` suite, the admin UI runtime check, and `go test -race` for `internal/store` and `internal/proxy` |
+| `docker.yml` | pull requests and pushes to `main`/`dev` | builds and smoke-tests the hardened image for `linux/amd64` **without pushing**, so a broken Dockerfile fails the PR instead of the release |
 | `release.yml` | tags matching `v*` | runs `ci.yml`, builds and pushes the image, then creates a GitHub release with generated notes |
 
 Failures show on the pull request and in the repository's **Actions** tab. To
@@ -286,7 +289,9 @@ The script is additive on purpose: do not pre-patch the tag or README inside it,
 so it fails loudly and pinpoints exactly which step is broken. The format check
 is intentionally **not** a `gofmt` gate — some Go toolchain builds rewrite `''`
 in comments to typographic quotes, which would produce spurious diffs;
-vet/build/test are the real gates.
+vet/build/test are the local helper’s gates. GitHub CI additionally checks
+`gofmt` and runs the race detector. CI currently triggers on `main` and `dev`, pull
+requests and reusable workflow calls. A push still needs a successful run before release.
 
 ---
 
@@ -307,6 +312,38 @@ not block readers, and produces a single self-contained file with no `-wal`
 sidecar. It refuses to overwrite an existing file, and `--keep` only prunes
 files carrying the automatic `.untis-backup-<timestamp>.db` name of that same
 database.
+
+A backup command succeeding is not a completed restore drill. Before promotion,
+restore a backup into a separate data directory and isolated instance, verify
+accounts/settings and a read-only timetable flow, then document the rollback
+steps. Stop the target instance before replacing its database; never overwrite
+a live production database with a test copy.
+
+Replay passwords/shared secrets and calendar tokens are sensitive database
+contents. Restrict access to the data directory and backups; the application
+stores replay credentials in plaintext. Protect host storage appropriately.
+Provision the intended first administrator using `UNTIS_ADMIN`, `-admin` or
+`untisctl`; login never promotes an account. The image now uses UID/GID
+`10001:10001`, and the supplied compose files use a read-only root filesystem,
+no Linux capabilities, no-new-privileges and a temporary `/tmp`.
+
+**Upgrade existing bind mounts before restarting:** take a database backup, stop
+the target instance, and make its data directory and database/WAL files writable
+by UID/GID `10001:10001`. Restrict directory access to the operator and this user.
+Do not apply ownership changes to unrelated stack directories. A rollback image
+must also have access to the directory. The store creates/restricts database and
+backup files to owner-only mode (`0600`); replay credentials remain plaintext.
+
+Run `CONTAINER_RUNTIME=podman scripts/check-container.sh <image>` (or use Docker,
+the default) to test non-root/read-only startup and a disposable database restore.
+The smoke test has networking disabled and never contacts upstream. For an
+actual backup, restore into an isolated instance before approving production.
+
+Notification delivery validates every resolved address and dials a checked IP,
+including on redirects and later DNS resolutions. Environment HTTP proxies are
+not used for delivery. Internal Docker ntfy servers require the explicit
+`UNTIS_ALLOW_PRIVATE_TARGETS=true` opt-in; only enable it when notification
+creators are trusted to reach that network.
 
 ---
 

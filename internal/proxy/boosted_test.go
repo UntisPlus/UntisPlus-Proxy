@@ -34,7 +34,7 @@ func TestBoostedInternServedFromTeacherSource(t *testing.T) {
 		t.Fatalf("boost dee: %v", err)
 	}
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5009, "TEACHER", "2026-09-21", "2026-09-27", "dee")))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
@@ -77,7 +77,7 @@ func TestBoostedInternFallsBackToReconGateWithoutSource(t *testing.T) {
 		t.Fatalf("boost dee: %v", err)
 	}
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5009, "TEACHER", "2026-09-21", "2026-09-27", "dee")))
 	if code := errCode(t, rec); code != -8509 {
 		t.Errorf("error code = %d, want -8509 (recon not granted)", code)
@@ -94,7 +94,7 @@ func TestTeacherAccountPassthroughRawIntern(t *testing.T) {
 	p, st := newFakeProxyUpstream(t, f)
 	seedTeacherSource(t, st, "mrTeacher", 5009)
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "mrTeacher", internBody("getTimetable2017",
 		ttParam(5005, "STUDENT", "2026-09-21", "2026-09-27", "mrTeacher")))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())

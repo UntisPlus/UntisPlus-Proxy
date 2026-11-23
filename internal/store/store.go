@@ -122,6 +122,22 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("refusing to open %q under test: a test database must live in a temporary directory (t.TempDir()), not in %s", path, tmp)
 		}
 	}
+	// Create/restrict the file before SQLite opens WAL sidecars. SQLite inherits
+	// the database mode for them; credentials must never default to world-readable.
+	if path != ":memory:" {
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return nil, err
+		}
+		chmodErr := file.Chmod(0o600)
+		closeErr := file.Close()
+		if chmodErr != nil {
+			return nil, chmodErr
+		}
+		if closeErr != nil {
+			return nil, closeErr
+		}
+	}
 	// _txlock=immediate makes a write transaction take the write lock when it
 	// begins, so the busy timeout applies there. With the default deferred
 	// transaction, a writer that starts after another writer has committed is
@@ -2548,12 +2564,19 @@ func (s *Store) Pool(school string) ([]Class, error) {
 	}
 	classes := map[int64]string{}
 	for _, u := range users {
-		if u.ClassID <= 0 || (school != "" && u.School != "" && u.School != school) || !s.SharesTimetable(school, u) {
+		if u.ClassID <= 0 || (school != "" && u.School != "" && u.School != school) {
 			continue
 		}
-		if name, ok := classes[u.ClassID]; !ok || u.ClassName > name {
-			classes[u.ClassID] = u.ClassName
+		// An already admitted class needs no further permission lookup unless
+		// this donor could improve its display name. Never cache denials or
+		// reuse another account's permission decision for a new class.
+		if name, ok := classes[u.ClassID]; ok && u.ClassName <= name {
+			continue
 		}
+		if !s.SharesTimetable(school, u) {
+			continue
+		}
+		classes[u.ClassID] = u.ClassName
 	}
 	out := make([]Class, 0, len(classes))
 	for id, name := range classes {

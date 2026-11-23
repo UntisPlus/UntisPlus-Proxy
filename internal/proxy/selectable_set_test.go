@@ -208,7 +208,7 @@ func TestSelectableElementsAllLoadForTheRequestedWeek(t *testing.T) {
 		if !selectable {
 			continue
 		}
-		rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+		rec := internReq(t, p, "getTimetable2017", "owen", internBody("getTimetable2017",
 			ttParam(id, "TEACHER", "2026-09-21", "2026-09-27", "owen")))
 		if errCode(t, rec) != 0 {
 			t.Errorf("selectable teacher %d refused: %d", id, errCode(t, rec))

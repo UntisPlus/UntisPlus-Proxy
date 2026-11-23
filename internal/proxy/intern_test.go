@@ -111,7 +111,7 @@ func TestIntern_OwnClassForwardedToUpstream(t *testing.T) {
 		t.Fatalf("seed user: %v", err)
 	}
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5000, "CLASS", "2026-09-21", "2026-09-27", "dee")))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
@@ -147,7 +147,7 @@ func TestIntern_ForeignClassNotPooledIs8509(t *testing.T) {
 		t.Fatalf("seed user: %v", err)
 	}
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(9999, "CLASS", "2026-09-21", "2026-09-27", "dee")))
 	if code := errCode(t, rec); code != -8509 {
 		t.Errorf("error code = %d, want -8509", code)
@@ -175,7 +175,7 @@ func TestIntern_PooledClassRewrittenToOwner(t *testing.T) {
 		t.Fatalf("seed requester: %v", err)
 	}
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5000, "CLASS", "2026-09-21", "2026-09-27", "dee")))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
@@ -302,7 +302,7 @@ func TestIntern_ClassScopedReadRunsAsTeacher(t *testing.T) {
 		t.Fatalf("grant editor: %v", err)
 	}
 
-	rec := internReq(t, p, "getPeriodData2017", "", internBody("getPeriodData2017",
+	rec := internReq(t, p, "getPeriodData2017", "dee", internBody("getPeriodData2017",
 		map[string]any{"ttIds": []int{6883118}, "auth": authMap("dee")}))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
@@ -343,7 +343,7 @@ func TestIntern_ClassScopedReadStaysPersonalForBasic(t *testing.T) {
 		t.Fatalf("seed requester: %v", err)
 	}
 
-	rec := internReq(t, p, "getPeriodData2017", "", internBody("getPeriodData2017",
+	rec := internReq(t, p, "getPeriodData2017", "dee", internBody("getPeriodData2017",
 		map[string]any{"ttIds": []int{6883118}, "auth": authMap("dee")}))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())

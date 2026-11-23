@@ -1,7 +1,9 @@
 # Admin Dashboard · Webhooks · ntfy · Multi-School
 
 Status: implemented. This doc covers the admin, webhook, ntfy and multi-school
-surfaces; the tiered permission model is described in [`GOD-API-PLAN.md`](GOD-API-PLAN.md).
+surfaces. Current permissions are described in the [README](../README.md#permissions);
+[`GOD-API-PLAN.md`](GOD-API-PLAN.md) is historical compatibility documentation.
+See [production readiness](PRODUCTION-READINESS.md) before releasing this beta.
 
 For the app-side contract see [`APP-INTEGRATION.md`](APP-INTEGRATION.md); for
 running the thing, [`../DEPLOYMENT.md`](../DEPLOYMENT.md).
@@ -16,9 +18,9 @@ GET /admin/* …        → JSON API consumed by the dashboard
 POST /admin/logout    → revoke the current browser session
 ```
 
-`/admin` itself (no trailing slash) serves the HTML page; everything under
-`/admin/` is the JSON API. Both are gated by an admin **session** (JSESSIONID)
-plus the `users.admin` flag.
+`/admin` itself (no trailing slash) serves the HTML page; the remaining management routes under
+`/admin/` are JSON APIs. `/admin/login` is public; `/admin/logout` revokes a
+session. Dashboard and management APIs require a session plus `users.admin`.
 
 The dashboard's **Permissions** page creates named groups from ready-made
 access sets, sets defaults for account types, and assigns groups to individual
@@ -30,7 +32,9 @@ same-origin requests; login attempts are rate-limited by account and client IP.
 
 ### Bootstrapping the first admin
 
-The DB has no admin until one is granted:
+Signing in never grants administrator access, including on a fresh installation.
+The operator must provision the intended account with `UNTIS_ADMIN`, `-admin`,
+or the local CLI before dashboard sign-in. The CLI provides:
 
 ```sh
 untisctl -db data/untis.db users admin --user evan          # on, default
@@ -77,8 +81,8 @@ An admin can do everything `untisctl` can, from the dashboard:
 | `/admin/rooms[/{school}]` | GET/POST | event-room-text → Untis room-id map (overrides the school catalogue) |
 | `/admin/outbox` | GET | notification-delivery backlog (`?state=dead` for exhausted deliveries, `?state=sent` for delivered history) |
 | `/admin/audit` | GET | append-only admin audit trail (`?school=` to scope, `?limit=` to cap) |
-| `/admin/events/absences[/{school}]` | GET | event-absence register, one row per recorded absence |
-| `/admin/events/absences` | PATCH | correct an event absence (append-only changelog) |
+| `/api/admin/events/absences?school=...` | GET | event-absence register, one row per recorded absence |
+| `/api/admin/events/absences` | PATCH | correct an event absence (append-only changelog) |
 
 ### Audit trail
 
@@ -160,11 +164,11 @@ Self-service (any logged-in session) at `/api/webhooks`:
 | Method | Purpose | Access |
 |---|---|---|
 | `GET /api/notifications/options` | list the targets you may watch | same catalog as `GET /api/calendar/options`, minus Technik |
-| GET | list **your own** hooks | always (own rows only) |
-| POST `{classId, url, secret}` | create | your own class always; any pooled class + school-wide (`classId 0`) with `editor`/`boosted`/admin |
-| POST `{teacherId, url, secret}` / `{roomId,…}` / `{subjectId,…}` / `{personal:true,…}` | create | teacher/room/subject need recon or `boosted`/staff; `personal` is your own person only |
-| POST `/api/webhooks/{id}/test` | fire a test delivery | the hook's creator, or `editor`/`boosted`/admin |
-| DELETE `/api/webhooks/{id}` | remove | your own hooks; any with `editor`/`boosted`/admin |
+| GET | list **your own** hooks | `notify.webhook.manage_own` (or dashboard administrator) |
+| POST `{classId, url, secret}` | create | `notify.webhook.create` plus access to the selected class or school-wide target |
+| POST `{teacherId, url, secret}` / `{roomId,…}` / `{subjectId,…}` / `{personal:true,…}` | create | `notify.webhook.create` plus effective access to that target; personal targets remain self-scoped |
+| POST `/api/webhooks/{id}/test` | fire a test delivery | management permission plus ownership/administrative target rules |
+| DELETE `/api/webhooks/{id}` | remove | management permission plus ownership/administrative target rules |
 
 The target keys are the calendar mint's (`classId` / `personal` / `personId` /
 `teacherId` / `roomId` / `subjectId`); at most one may be set, and none means
@@ -377,7 +381,7 @@ also sees:
 - a proxy-local absence register on the event (nothing is written to Untis).
 
 The permission is independent of admin/`editor`/`boosted`/`recon` and is granted
-per user from the dashboard's *Users* section.
+through the group editor and per-person assignments under **Permissions**.
 
 ## Multi-school
 
@@ -421,12 +425,13 @@ the anonymous switch. The API is `GET /admin/anonymous` and
 `{"enabled": bool}`; the login stays per school at
 `POST /admin/schools/{school}/anonymous`.
 
-**Pooled classes** is a fallback, not a replacement: it promotes a class only
-when the class is in the pool and its recon scan covers the requested end date.
-Otherwise the request is raw-forwarded so upstream's anonymous visibility wins.
-The dashboard's **Default permissions for new users** panel edits the flags a
-first-time login inherits; existing users are never rewritten. The same set is
-available from `untisctl perms default …`.
+Anonymous class targets follow the upstream anonymous profile; v2 does not
+add proxy-pooled or reconstructed timetable visibility. Global feature switches
+control proxy features and do not turn private targets into anonymous ones.
+
+The dashboard uses custom groups, per-account assignments and account-type
+defaults. The older `untisctl perms default …` command is a compatibility path
+for flags copied on first registration; it is not the dashboard's group editor.
 
 `DELETE /admin/schools/{school}` removes the registration row only; the pool,
 users, tokens and other per-school data remain. If auto-registration is still

@@ -1,5 +1,9 @@
 # Planned work — personal homework, absence notes, Technik events, delivery outbox
 
+> Historical checklist/design reference. Checked boxes and implementation claims
+> below are not evidence that the current beta passed those checks. For the
+> 2026-11-23 assessment, see [Production readiness](PRODUCTION-READINESS.md).
+
 Status: **All phases released: `v1.4.6` (outbox), `v1.5.0` (homework),
 `v1.6.0` (absences), `v1.7.0` (Technik events).**
 Phase 0 (probe) through Phase 4 are done. Decisions were made in discussion, and

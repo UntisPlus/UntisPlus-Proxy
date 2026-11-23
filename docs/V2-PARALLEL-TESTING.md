@@ -1,5 +1,9 @@
 # UntisPlus-Proxy v2.0 Parallel Test Deployment
 
+> Historical checklist/design reference. Checked boxes and implementation claims
+> below are not evidence that the current beta passed those checks. For the
+> 2026-11-23 assessment, see [Production readiness](PRODUCTION-READINESS.md).
+
 This document describes how to run **v2.0 in parallel** with an existing v1
 deployment (e.g. current NAS/production instance) for testing. v2 is a breaking
 parallel deployment: it uses v2 access/permission semantics and should run as a

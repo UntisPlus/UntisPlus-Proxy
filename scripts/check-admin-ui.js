@@ -293,6 +293,20 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
   await loadUsers(false);
   must(userLoads===1&&accessLoads===0,'user refresh performed a redundant access reload');
 
+  // Repeated clicks share the same refresh; a failure must not lock later refreshes.
+  const originalRefresh = refreshDashboard;
+  let releaseRefresh, refreshCalls=0;
+  refreshDashboard = () => { refreshCalls++; return new Promise(resolve => { releaseRefresh=resolve; }); };
+  const firstRefresh=refreshAll(), secondRefresh=refreshAll();
+  must(firstRefresh===secondRefresh && refreshCalls===1, 'overlapping refresh duplicated requests');
+  releaseRefresh(); await firstRefresh;
+  refreshDashboard = async () => { refreshCalls++; throw new Error('offline'); };
+  try { await refreshAll(); } catch(e) {}
+  refreshDashboard = async () => { refreshCalls++; };
+  await refreshAll();
+  must(refreshCalls===3, 'failed refresh blocked retry');
+  refreshDashboard = originalRefresh;
+
   console.log('check-admin-ui: all admin UI checks passed');
 })().catch(function(e){ console.error('FAIL: ' + (e && e.stack || e)); process.exit(1); });
 `;

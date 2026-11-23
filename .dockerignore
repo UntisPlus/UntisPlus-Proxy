@@ -13,3 +13,12 @@ untis.db
 # which matters the moment the build runs on a remote or rootless builder.
 .env
 .env.*
+
+# Local agent state and exported sessions never belong in a build context.
+.agents/
+.codex/
+.aws/
+.freebuff/
+docs/
+*.md
+le/

@@ -62,7 +62,7 @@ func TestClassTimetableSecondRequestIsServedFromCache(t *testing.T) {
 	seedRawMasterData(t, p)
 	seedSessionUser(t, st, "dee", 5, 7, 5000)
 
-	first := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	first := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5000, "CLASS", "2026-11-09", "2026-11-15", "dee")))
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status = %d, body %s", first.Code, first.Body.String())
@@ -71,7 +71,7 @@ func TestClassTimetableSecondRequestIsServedFromCache(t *testing.T) {
 		t.Fatalf("first upstream calls = %d, want 1", got)
 	}
 
-	second := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	second := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5000, "CLASS", "2026-11-09", "2026-11-15", "dee")))
 	if second.Code != http.StatusOK {
 		t.Fatalf("second status = %d, body %s", second.Code, second.Body.String())
@@ -109,9 +109,9 @@ func TestClassTimetableCacheHitIsDecoratedPerViewer(t *testing.T) {
 		t.Fatalf("grant editor: %v", err)
 	}
 
-	dee := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	dee := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5000, "CLASS", "2026-11-09", "2026-11-15", "dee")))
-	ed := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	ed := internReq(t, p, "getTimetable2017", "ed", internBody("getTimetable2017",
 		ttParam(5000, "CLASS", "2026-11-09", "2026-11-15", "ed")))
 	if got := f.TimetableCalls(); got != 1 {
 		t.Fatalf("upstream calls = %d, want 1", got)
@@ -144,7 +144,7 @@ func TestClassDayCacheServesCoveredRange(t *testing.T) {
 			"text": map[string]any{"lesson": "Deutsch"}},
 	})
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5000, "CLASS", "2026-11-10", "2026-11-10", "dee")))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
@@ -188,7 +188,7 @@ func TestFetchClassBodyCollapsesConcurrentMisses(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+			rec := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 				ttParam(5000, "CLASS", "2026-11-09", "2026-11-15", "dee")))
 			if rec.Code != http.StatusOK {
 				t.Errorf("status = %d, body %s", rec.Code, rec.Body.String())
@@ -339,7 +339,7 @@ func TestBoostedClassTimetableServedFromWarmCache(t *testing.T) {
 			"can":  []any{"READ_LESSONTOPIC", "WRITE_LESSONTOPIC"}},
 	})
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5000, "CLASS", "2026-11-09", "2026-11-15", "dee")))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
@@ -374,7 +374,7 @@ func TestBoostedClassTimetableMissFillsSharedCache(t *testing.T) {
 		t.Fatalf("boost dee: %v", err)
 	}
 
-	first := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	first := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5000, "CLASS", "2026-11-09", "2026-11-15", "dee")))
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status = %d, body %s", first.Code, first.Body.String())
@@ -382,7 +382,7 @@ func TestBoostedClassTimetableMissFillsSharedCache(t *testing.T) {
 	if got := f.TimetableCalls(); got != 1 {
 		t.Fatalf("first upstream calls = %d, want 1", got)
 	}
-	second := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	second := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(5000, "CLASS", "2026-11-09", "2026-11-15", "dee")))
 	if second.Code != http.StatusOK {
 		t.Fatalf("second status = %d, body %s", second.Code, second.Body.String())
@@ -416,7 +416,7 @@ func TestBoostedStudentTimetableServedFromWarmCache(t *testing.T) {
 			"can":  []any{"READ_LESSONTOPIC", "WRITE_LESSONTOPIC"}},
 	})
 
-	rec := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	rec := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(7, "STUDENT", "2026-11-09", "2026-11-14", "dee")))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body.String())
@@ -451,7 +451,7 @@ func TestBoostedStudentTimetableMissFillsSharedCache(t *testing.T) {
 		t.Fatalf("boost dee: %v", err)
 	}
 
-	first := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	first := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(7, "STUDENT", "2026-11-09", "2026-11-15", "dee")))
 	if first.Code != http.StatusOK {
 		t.Fatalf("first status = %d, body %s", first.Code, first.Body.String())
@@ -463,7 +463,7 @@ func TestBoostedStudentTimetableMissFillsSharedCache(t *testing.T) {
 		t.Error("boosted student fetch did not fill the shared response cache")
 	}
 
-	second := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	second := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(7, "STUDENT", "2026-11-09", "2026-11-15", "dee")))
 	if second.Code != http.StatusOK {
 		t.Fatalf("second status = %d, body %s", second.Code, second.Body.String())
@@ -472,7 +472,7 @@ func TestBoostedStudentTimetableMissFillsSharedCache(t *testing.T) {
 		t.Errorf("upstream calls after exact repeat = %d, want 1", got)
 	}
 
-	covered := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	covered := internReq(t, p, "getTimetable2017", "dee", internBody("getTimetable2017",
 		ttParam(7, "STUDENT", "2026-11-10", "2026-11-12", "dee")))
 	if covered.Code != http.StatusOK {
 		t.Fatalf("covered status = %d, body %s", covered.Code, covered.Body.String())

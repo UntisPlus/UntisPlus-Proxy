@@ -32,9 +32,18 @@ func (s *Store) BackupTo(path string) (int64, error) {
 		return 0, fmt.Errorf("backup: %w", err)
 	}
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o750); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
 			return 0, fmt.Errorf("backup: create %s: %w", dir, err)
 		}
+	}
+	// Reserve an empty owner-only file exclusively. SQLite permits VACUUM INTO
+	// an empty file, so another backup cannot race this call and be overwritten.
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return 0, fmt.Errorf("backup: reserve destination: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return 0, fmt.Errorf("backup: %w", err)
 	}
 	// VACUUM INTO takes no bound parameters, so the path is quoted as an
 	// identifier; doubling embedded quotes is SQLite's escape for them.

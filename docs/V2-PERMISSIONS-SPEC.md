@@ -1,5 +1,9 @@
 # v2.0 Permissions, Groups, and Anonymous Detection Spec (Draft)
 
+> Historical checklist/design reference. Checked boxes and implementation claims
+> below are not evidence that the current beta passed those checks. For the
+> 2026-11-23 assessment, see [Production readiness](PRODUCTION-READINESS.md).
+
 Status: **draft / implementation in progress on branch `V2` (parallel to v1)**.
 This document defines the v2.0 direction described in the migration checkpoint:
 a parallel v2 deployment that replaces v1's coarse/global anonymous toggles and

@@ -26,6 +26,7 @@ type recordingNtfy struct {
 }
 
 func (r *recordingNtfy) server(t *testing.T) {
+	allowTestNotificationTargets(t)
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		b, _ := io.ReadAll(req.Body)
@@ -68,6 +69,7 @@ func TestNtfyPostGoesToServerRoot(t *testing.T) {
 // TestNtfyPostHonoursPerTopicServer: a topic's own base_url override wins over
 // the global default.
 func TestNtfyPostHonoursPerTopicServer(t *testing.T) {
+	allowTestNotificationTargets(t)
 	rec := &recordingNtfy{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		rec.path = req.URL.Path
@@ -252,5 +254,24 @@ func TestEnqueueChangeDeduplicatesNtfyDestination(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("queued %v, want two distinct ntfy destinations", got)
+	}
+}
+
+func TestNtfyReusesConnectionAcrossPublishes(t *testing.T) {
+	allowTestNotificationTargets(t)
+	var peers []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		peers = append(peers, r.RemoteAddr)
+		_, _ = w.Write([]byte("published"))
+	}))
+	defer srv.Close()
+	topic := &store.NtfyTopic{Topic: "test", BaseURL: srv.URL}
+	for i := 0; i < 2; i++ {
+		if _, err := ntfyPost(topic, map[string]any{"topic": "test", "message": "test"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(peers) != 2 || peers[0] != peers[1] {
+		t.Fatalf("expected one reused connection, peers=%v", peers)
 	}
 }

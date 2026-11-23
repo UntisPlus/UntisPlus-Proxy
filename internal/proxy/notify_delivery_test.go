@@ -29,6 +29,7 @@ type received struct {
 }
 
 func receiver(t *testing.T, ch chan received) *httptest.Server {
+	allowTestNotificationTargets(t)
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body := make([]byte, 0, 512)
@@ -359,6 +360,7 @@ func TestPollDiscoversClassChangeAndBumpsVersion(t *testing.T) {
 // ntfy posts that actually leave the process. Before the fix this grew by one
 // per poll for as long as the lesson was still in the future.
 func TestCancelledLessonNotifiesOnce(t *testing.T) {
+	allowTestNotificationTargets(t)
 	var mu sync.Mutex
 	var posts []string
 	ntfySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -441,6 +443,7 @@ func TestCancelledLessonNotifiesOnce(t *testing.T) {
 // no-op. The digest marks ADDED as "new" and CHANGED with nothing at all, so
 // this also pins which of the two a reinstatement reports as.
 func TestReinstatedLessonSendsNotification(t *testing.T) {
+	allowTestNotificationTargets(t)
 	var mu sync.Mutex
 	var posts []string
 	ntfySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -714,4 +717,12 @@ func TestHandleAdminLoginRedirectsAdmins(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("non-admin status = %d, want 200 (login page, not a redirect)", rec.Code)
 	}
+}
+
+// Local-only receiver permission is scoped to each test; production defaults stay strict.
+func allowTestNotificationTargets(t *testing.T) {
+	t.Helper()
+	previous := allowPrivateTargets
+	allowPrivateTargets = true
+	t.Cleanup(func() { notificationHTTPClient.CloseIdleConnections(); allowPrivateTargets = previous })
 }

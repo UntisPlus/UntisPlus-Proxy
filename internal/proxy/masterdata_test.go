@@ -103,7 +103,7 @@ func mdLogin(t *testing.T, p *Proxy, user ...string) *httptest.ResponseRecorder 
 	body := internBody("getUserData2017", map[string]any{
 		"auth": map[string]any{"user": name, "otp": "123456", "clientTime": 0},
 	})
-	return internReq(t, p, "m=getUserData2017", "", body)
+	return internReq(t, p, "getUserData2017", "", body)
 }
 
 func seedKeyUser(t *testing.T, st *store.Store) {
@@ -494,7 +494,7 @@ func TestPooledClassResponseCarriesRequesterMasterData(t *testing.T) {
 	}
 	mdLogin(t, p, "sam")
 
-	tt := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	tt := internReq(t, p, "getTimetable2017", "sam", internBody("getTimetable2017",
 		ttParam(5000, "CLASS", "2026-09-21", "2026-09-27", "sam")))
 	flags := decodeTimetableMDFlags(t, tt)
 	if !flags.Teachers[5009] || !flags.Rooms[169] || !flags.Subjects[7] {
@@ -585,7 +585,7 @@ func TestReconPermAppliesWithoutRelogin(t *testing.T) {
 	mdLogin(t, p)
 
 	// a reconstructed teacher/room timetable is what the app asks for next
-	tt := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	tt := internReq(t, p, "getTimetable2017", "owen", internBody("getTimetable2017",
 		ttParam(5009, "TEACHER", "2026-09-21", "2026-09-27", "owen")))
 
 	flags := decodeTimetableMDFlags(t, tt)
@@ -596,7 +596,7 @@ func TestReconPermAppliesWithoutRelogin(t *testing.T) {
 	if err := st.SetPerm("owen", store.FeatureRecon, true); err != nil {
 		t.Fatalf("grant recon: %v", err)
 	}
-	tt = internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	tt = internReq(t, p, "getTimetable2017", "owen", internBody("getTimetable2017",
 		ttParam(5009, "TEACHER", "2026-09-21", "2026-09-27", "owen")))
 	flags = decodeTimetableMDFlags(t, tt)
 	if !flags.Rooms[169] || !flags.Teachers[5009] {
@@ -609,7 +609,7 @@ func TestReconPermAppliesWithoutRelogin(t *testing.T) {
 	if err := st.SetPerm("owen", store.FeatureRecon, false); err != nil {
 		t.Fatalf("revoke recon: %v", err)
 	}
-	tt = internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	tt = internReq(t, p, "getTimetable2017", "owen", internBody("getTimetable2017",
 		ttParam(5009, "TEACHER", "2026-09-21", "2026-09-27", "owen")))
 	flags = decodeTimetableMDFlags(t, tt)
 	if flags.Rooms[169] || flags.Teachers[5009] {
@@ -647,7 +647,7 @@ func TestMasterDataCacheIsNotSharedBetweenUsers(t *testing.T) {
 	mdLogin(t, p, "boosty")
 
 	// owen must still only see what recon reconstructs
-	tt := internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	tt := internReq(t, p, "getTimetable2017", "owen", internBody("getTimetable2017",
 		ttParam(5009, "TEACHER", "2026-09-21", "2026-09-27", "owen")))
 	flags := decodeTimetableMDFlags(t, tt)
 	if !flags.Rooms[169] || !flags.Teachers[5009] {
@@ -658,7 +658,7 @@ func TestMasterDataCacheIsNotSharedBetweenUsers(t *testing.T) {
 	}
 
 	// and the boosted user still sees everything
-	tt = internReq(t, p, "getTimetable2017", "", internBody("getTimetable2017",
+	tt = internReq(t, p, "getTimetable2017", "boosty", internBody("getTimetable2017",
 		ttParam(5009, "TEACHER", "2026-09-21", "2026-09-27", "boosty")))
 	flags = decodeTimetableMDFlags(t, tt)
 	for id, v := range flags.Rooms {

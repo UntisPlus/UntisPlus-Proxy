@@ -161,9 +161,27 @@
 
 
 .permission-section{border:1px solid var(--border);margin:12px 0;background:#fff}.permission-section>summary{padding:12px;font-size:13px;font-weight:600;background:#f7f8fa;cursor:pointer}.permission-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 12px;border-top:1px solid #edf0f2;font-size:12px}.permission-row>div{flex:1}.permission-row select{width:225px;flex:0 0 225px}.permission-row .help-tip{left:auto;right:0}.permission-section .help-icon{cursor:pointer}@media(max-width:680px){.permission-row{align-items:flex-start}.permission-row select{width:170px;flex-basis:170px}}
+
+/* Flat school workspace: coral navigation, clear toolbar, readable controls. */
+:root{--muted:#65747e;--shadow:0 1px 3px #28333f12}
+html{font-size:16px}.content{background:#f4f5f7}
+.topbar{background:#fff;border-bottom:1px solid var(--border);margin:-28px -32px 24px;padding:20px 32px;min-height:84px}
+.title h2{font-size:20px;font-weight:600}.title p,.section-sub,.panel-header .desc{font-size:14px;color:var(--muted)}
+.panel,.card,.flow-step{border:1px solid var(--border);border-radius:3px}
+.nav-group{font-size:12px;color:#687881;letter-spacing:.05em}.nav a{font-size:15px;font-weight:500}.nav a.active{background:#fff4ef;font-weight:600}
+button,input,select,textarea,.permission-row,.permission-section>summary{font-size:14px}.mini{font-size:13px;min-height:32px}
+.field label,label.field,.small,.panel-header .desc,th{font-size:13px}.permission-row{line-height:1.5}td{font-size:14px}
+th{color:#536570}tbody tr:nth-child(even) td{background:#fafbfc}tr:hover td{background:#fff6f0}
+input:not([type=checkbox]):not([type=radio]),select{min-height:38px}.help-icon{width:20px;height:20px;font-size:12px}
+:focus-visible{outline:2px solid var(--brand-dark);outline-offset:3px}
+.skip-link{position:fixed;left:1rem;top:-100px;z-index:200;background:#fff;padding:12px;color:var(--text);border:2px solid var(--brand)}.skip-link:focus{top:1rem}
+@media(max-width:980px){.topbar{margin:-22px -18px 22px;padding:18px}.nav a{font-size:14px}}
+@media(max-width:680px){.topbar{margin:-20px -14px 20px;padding:16px 14px}.nav a{font-size:14px}.permission-row{flex-wrap:wrap}.permission-row select{width:100%;flex:1 0 100%}.help-tip{max-width:calc(100vw - 64px)}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
 </style>
 </head>
 <body>
+<a class="skip-link" href="#workspace">Skip to content</a>
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
@@ -207,16 +225,16 @@
     </nav>
   </aside>
 
-  <main class="content">
+  <main class="content" id="workspace" tabindex="-1">
     <div class="topbar">
       <div class="title">
         <h2 id="viewTitle">Overview</h2>
         <p>Manage your school, people and access.</p>
       </div>
       <div class="actions">
-        <span class="small muted" id="refreshHint"></span>
+        <span class="small muted" id="refreshHint" role="status" aria-live="polite"></span>
         <button class="secondary mini" onclick="showView('onboarding')">Guided setup</button>
-        <button class="secondary mini" onclick="refreshAll()">Refresh all</button>
+        <button id="refreshButton" class="secondary mini" onclick="refreshAll()">Refresh all</button>
         <button class="secondary mini" onclick="logoutAdmin()">Sign out</button>
       </div>
     </div>
@@ -243,7 +261,7 @@
             <ol class="checklist">
               <li><strong>Proxy &amp; real client IP:</strong> configure trusted proxies if behind reverse proxy/load balancer.</li>
               <li><strong>Add a school:</strong> register the Untis school this instance should serve.</li>
-              <li><strong>First user/admin:</strong> sign in to claim admin on fresh setup, then verify admin access.</li>
+              <li><strong>First user/admin:</strong> have the operator provision the intended administrator, then sign in.</li>
               <li><strong>Permission groups &amp; roles:</strong> define capability groups, role defaults, and mappings.</li>
               <li><strong>Add other users:</strong> promote/manage users and fine-tune permissions.</li>
               <li><strong>Notifications:</strong> add ntfy/webhooks/outage alerts, then mark onboarding complete.</li>
@@ -275,7 +293,7 @@
       <!-- ONBOARDING -->
       <section id="view-onboarding" class="view">
         <h2 class="section-title">Getting started</h2>
-        <p class="section-sub">A guided, step-by-step flow to get UntisPlus Proxy ready: configure trusted proxy handling for real client IPs, add a school, claim/add the first admin, create permission groups/roles, then onboard additional users and notifications.</p>
+        <p class="section-sub">A guided, step-by-step flow to get UntisPlus Proxy ready: configure trusted proxy handling for real client IPs, add a school, provision the first admin, create permission groups/roles, then onboard additional users and notifications.</p>
 
         <div id="setupStateCallout" class="callout mb"></div>
         <div id="onboardingFlowNote" class="callout info mb">Loading guided setup status…</div>
@@ -329,15 +347,15 @@
             <div class="flow-num">3</div>
             <div class="flow-body">
               <div class="flow-head"><h4>First user / admin</h4><span id="stepStatus3" class="step-badge todo">Required</span></div>
-              <p>On a fresh install, the first successful authenticated non-anonymous Untis login can claim admin access. After that, use Users &amp; Permissions to promote/manage admins and access for known users.</p>
+              <p>On a fresh install, the operator must choose the administrator using UNTIS_ADMIN, the server -admin option or untisctl. Signing in never grants administrator access. After that, use Users &amp; Permissions to promote/manage admins and access for known users.</p>
               <div class="row">
                 <button onclick="focusUsersAdd()">Add/promote user or admin</button>
                 <button class="secondary" onclick="showView('users')">Open Users &amp; Permissions</button>
                 <button class="ghost" onclick="logoutAdmin()">Switch/login as another account</button>
               </div>
               <ul class="list-plain">
-                <li>If setup shows “can claim admin”, sign out and sign in with the intended first admin Untis account.</li>
-                <li>Once claimed, return here to continue configuring access and users.</li>
+                <li>Ask the server operator to provision your administrator account, then sign in with that account.</li>
+                <li>Once provisioned, return here to continue configuring access and users.</li>
               </ul>
             </div>
           </div>
@@ -933,11 +951,18 @@ function showView(name){
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   const view = $('view-' + name);
   if(view) view.classList.add('active');
-  document.querySelectorAll('.nav a[data-view]').forEach(a => a.classList.toggle('active', a.dataset.view === name));
+  document.querySelectorAll('.nav a[data-view]').forEach(a => {
+    const active = a.dataset.view === name;
+    a.classList.toggle('active', active);
+    if(active) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+  });
   $('viewTitle').textContent = viewTitles[name] || 'Dashboard';
   if(location.hash !== '#' + name) history.replaceState(null, '', '#' + name);
 }
-window.addEventListener('hashchange', () => showView((location.hash || '#overview').slice(1)));
+window.addEventListener('hashchange', () => {
+  const name = (location.hash || '#overview').slice(1);
+  if(name !== 'workspace') showView(name);
+});
 
 function card(lbl, num, cls){
   return '<div class="card'+(cls?' '+cls:'')+'"><div class="num">'+esc(num)+'</div><div class="lbl">'+esc(lbl)+'</div></div>';
@@ -1268,8 +1293,8 @@ async function loadSetupStatus(){
       callout.className = 'callout mb ' + (needed ? 'warn' : 'ok');
       const parts = [];
       parts.push(needed ? '<strong>Setup is pending.</strong>' : '<strong>Setup is marked complete.</strong>');
-      if(d && d.hasAdmin === false) parts.push('No admin account exists yet; the first successful authenticated non-anonymous login can claim admin access.');
-      else if(d && d.canClaimAdmin) parts.push('Initial admin claim may still be possible if no admin exists.');
+      if(d && d.hasAdmin === false) parts.push('No administrator exists yet. Ask the server operator to provision the intended account locally.');
+      else if(d && d.canClaimAdmin) parts.push('An administrator must be provisioned locally.');
       parts.push('Configure trusted proxies, access control, notifications, and users as needed.');
       callout.innerHTML = parts.join(' ');
     }
@@ -1436,10 +1461,10 @@ let anonFeatures = {};
 function renderAnonymous(){
   const tb = $('anon').querySelector('tbody'); if(!tb) return;
   const labels = {
-    classes:['Pooled classes','Fall back to the proxy class index for anonymous access when allowed; requires coverage/recon where applicable.'],
-    ntfy:['ntfy push','Create/list ntfy subscriptions for pooled classes as anonymous.'],
-    webhooks:['Webhooks','Create/list webhook subscriptions for pooled classes as anonymous.'],
-    changes:['Live changes','Poll change diffs and open SSE streams for pooled classes as anonymous.'],
+    classes:['Upstream classes','Allow class targets exposed by the school’s anonymous upstream profile. Does not add pooled or reconstructed access.'],
+    ntfy:['ntfy push','Create/list ntfy subscriptions for upstream-allowed anonymous class targets.'],
+    webhooks:['Webhooks','Create/list webhook subscriptions for upstream-allowed anonymous class targets.'],
+    changes:['Live changes','Poll change diffs and open SSE streams for upstream-allowed anonymous class targets.'],
   };
   tb.innerHTML = '';
   for(const feature of ['classes','ntfy','webhooks','changes']){
@@ -2208,9 +2233,16 @@ async function loadAccessAll(){
 }
 
 // ---------- init / refresh ----------
-async function refreshAll(){
-  const mark = new Date().toTimeString().slice(0,8);
-  const hint = $('refreshHint'); if(hint) hint.textContent = 'Last refresh ' + mark;
+let refreshInFlight = null;
+function refreshAll(){
+  if(refreshInFlight) return refreshInFlight;
+  refreshInFlight = refreshDashboard().finally(() => { refreshInFlight = null; });
+  return refreshInFlight;
+}
+async function refreshDashboard(){
+  const hint = $('refreshHint'); if(hint) hint.textContent = 'Refreshing…';
+  const button = $('refreshButton'); if(button) button.disabled = true;
+  try {
   try { await loadSetupStatus(); } catch(e){ log('setup: '+e.message); }
   try { await loadSchools(); } catch(e){ log('schools: '+e.message); }
   try { await renderCards(); } catch(e){ log('cards: '+e.message); }
@@ -2232,6 +2264,8 @@ async function refreshAll(){
   await Promise.allSettled(Object.keys(jobs).map(async k => {
     try { await jobs[k](); } catch(e){ log(k+' load: '+e.message); }
   }));
+  if(hint) hint.textContent = 'Last refresh ' + new Date().toTimeString().slice(0,8);
+  } finally { if(button) button.disabled = false; }
 }
 
 
@@ -2264,7 +2298,7 @@ function renderOnboardingFlow(){
   if(hasAdmin){
     set('stepStatus3','Admin ready','done');
   } else if(setupState && setupState.canClaimAdmin){
-    set('stepStatus3','Claim on login','warn');
+    set('stepStatus3','Operator setup required','warn');
   } else {
     set('stepStatus3','Required','warn');
   }
@@ -2277,7 +2311,7 @@ function renderOnboardingFlow(){
   const flowNote = el('onboardingFlowNote');
   if(flowNote){
     if(!hasSchools) flowNote.textContent = 'Start by verifying real client IP (if behind a proxy), then add your first school.';
-    else if(!hasAdmin) flowNote.textContent = 'School added. Next: sign in with the first admin account to claim admin access, or promote a user.';
+    else if(!hasAdmin) flowNote.textContent = 'School added. Next: have the operator provision the intended administrator, then sign in.';
     else if(!setupDone) flowNote.textContent = 'Core setup looks good. Configure permission groups/roles and add more users, then mark onboarding complete.';
     else flowNote.textContent = 'Onboarding is complete. You can revisit any step to adjust configuration.';
   }

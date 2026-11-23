@@ -816,6 +816,8 @@ func ntfyPost(t *store.NtfyTopic, msg map[string]any) (int, error) {
 		return 0, err
 	}
 	defer resp.Body.Close()
+	// Drain small responses so the shared transport can reuse the connection.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	return resp.StatusCode, nil
 }
 
@@ -893,6 +895,8 @@ func (p *Proxy) testWebhook(h *store.Webhook) (int, error) {
 		return 0, err
 	}
 	defer resp.Body.Close()
+	// Drain small responses so the shared transport can reuse the connection.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	return resp.StatusCode, nil
 }
 
