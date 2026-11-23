@@ -182,6 +182,9 @@ func sortedObjectKeys(m jsonObject) []string {
 // metadata and the viewer's private note. Any problem returns the original bytes,
 // because a student's absence list is more useful undecorated than wrong.
 func (p *Proxy) enrichAbsenceResponse(raw []byte, school, viewer string) []byte {
+	if !p.store.FeatureEnabled(school, "absence_notes") {
+		return raw
+	}
 	if viewer == "" || school == "" {
 		return raw
 	}

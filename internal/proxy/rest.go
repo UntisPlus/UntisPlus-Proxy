@@ -43,6 +43,10 @@ func (p *Proxy) handleREST(w http.ResponseWriter, r *http.Request) {
 		user := p.sessionUser(r)
 		if user == nil {
 			if tok := r.Header.Get("Authorization"); strings.HasPrefix(tok, "Bearer ") {
+				if p.store.HasAdmissionRestrictions(school) {
+					p.forbidden(w)
+					return
+				}
 				// BetterUntis self-authenticates REST calls via a Bearer token
 				// (from getAuthToken); forward as-is so the real server serves
 				// only that user's own data. We have no session identity here,

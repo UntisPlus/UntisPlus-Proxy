@@ -2723,6 +2723,17 @@ func (s *Store) DeleteUser(username string) (int64, error) {
 		tx.Rollback()
 		return 0, err
 	}
+	suffix := controlKey("", username)
+	if err := del(`DELETE FROM settings WHERE (key LIKE 'analytics-access/%' OR key LIKE 'admission-identity/%') AND substr(key,-length(?))=?`, suffix, suffix); err != nil {
+		tx.Rollback()
+		return 0, err
+	}
+	for _, table := range []string{"user_cap_groups", "user_cap_grants", "user_cap_prefs"} {
+		if err := del("DELETE FROM "+table+" WHERE username=?", username); err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+	}
 	if err := del(`DELETE FROM secrets WHERE username=?`, username); err != nil {
 		tx.Rollback()
 		return 0, err

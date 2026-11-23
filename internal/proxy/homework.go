@@ -80,6 +80,9 @@ func (p *Proxy) markHomeWorkList(container jsonObject, done map[int64]time.Time)
 // unknown or the response cannot be read, so a missing enrichment degrades to
 // plain upstream data rather than to an error.
 func (p *Proxy) enrichHomeWorkResponse(raw []byte, school, viewer string) []byte {
+	if !p.store.FeatureEnabled(school, "homework") {
+		return raw
+	}
 	if viewer == "" || school == "" {
 		return raw
 	}

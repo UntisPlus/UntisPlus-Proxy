@@ -307,6 +307,16 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
   must(refreshCalls===3, 'failed refresh blocked retry');
   refreshDashboard = originalRefresh;
 
+
+  // Preview sends unsaved group rules to the read-only endpoint, never to save.
+  $('permissionGroupId').value='0';$('permissionGroupAudience').value='student';
+  const previewCalls=[];
+  api=async (method,path,body)=>{previewCalls.push({method,path,body});return {users:[]};};
+  await previewPermissionGroup();
+  must(previewCalls.length===1&&previewCalls[0].path==='access/preview','preview used a mutation endpoint');
+  must(previewCalls[0].body.assignTo==='student','preview lost audience');
+  const capKeys=permissionSections.flatMap(([,rows])=>rows.map(([key])=>key));
+  for(const key of ['analytics.personal.view','analytics.personal.history','analytics.teacher.view','analytics.class_history.view','analytics.export','events.technik.create','events.technik.attendance.write'])must(capKeys.includes(key),'new permission missing '+key);
   console.log('check-admin-ui: all admin UI checks passed');
 })().catch(function(e){ console.error('FAIL: ' + (e && e.stack || e)); process.exit(1); });
 `;

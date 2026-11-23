@@ -60,13 +60,15 @@ type Options struct {
 }
 
 type Proxy struct {
-	store       *store.Store
-	untis       *untis.Client
-	sessions    *session.Manager
-	opts        Options
-	tt          *ttCache
-	classDays   *classDayCache
-	studentDays *classDayCache
+	analyticsLimiter *attemptLimiter
+	analyticsSlots   chan struct{}
+	store            *store.Store
+	untis            *untis.Client
+	sessions         *session.Manager
+	opts             Options
+	tt               *ttCache
+	classDays        *classDayCache
+	studentDays      *classDayCache
 
 	// flights collapses concurrent cold class fetches. Only the leader talks to
 	// upstream; followers reuse its body (and thereby the cache entry it writes).
@@ -186,6 +188,7 @@ func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *
 		loginMax = 0
 	}
 	p := &Proxy{
+		analyticsLimiter: newAttemptLimiter(6, time.Minute), analyticsSlots: make(chan struct{}, 2),
 		store:       st,
 		untis:       uc,
 		sessions:    sm,
@@ -354,6 +357,9 @@ func schoolYearRange(now time.Time) (string, string) {
 // per school. login/augment paths call it so a school that logs in for the
 // first time gets its teacher/room/subject set populated automatically.
 func (p *Proxy) ensureReconScan(school string) {
+	if !p.store.FeatureEnabled(school, "reconstruction") {
+		return
+	}
 	classes, err := p.store.Pool(school)
 	if err != nil || len(classes) == 0 {
 		return
@@ -679,6 +685,13 @@ func (p *Proxy) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/admin/events/absences", p.handleEventAbsenceEdit)
 	mux.HandleFunc("GET /api/admin/events/absences/log", p.handleEventAbsenceLog)
 	mux.HandleFunc("/api/admin/events/{id}", p.handleStudentEvents)
+	mux.HandleFunc("/api/technik/events", p.handleStudentEvents)
+	mux.HandleFunc("/api/technik/events/{id}", p.handleStudentEvents)
+	mux.HandleFunc("POST /api/technik/import", p.handleStudentEventImport)
+	mux.HandleFunc("GET /api/technik/attendance", p.handleEventAbsences)
+	mux.HandleFunc("PATCH /api/technik/attendance", p.handleEventAbsenceEdit)
+	mux.HandleFunc("GET /api/technik/attendance/log", p.handleEventAbsenceLog)
+	mux.HandleFunc("POST /api/analytics/teacher-cancellations", p.handleCancellationAnalytics)
 	mux.HandleFunc("/admin", p.handleAdminDashboard)
 	mux.HandleFunc("/admin/login", p.handleAdminLogin)
 	mux.HandleFunc("POST /admin/logout", p.handleAdminLogout)
@@ -695,6 +708,18 @@ func (p *Proxy) Handler() http.Handler {
 		}
 		if r.Body != nil {
 			r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.Method != http.MethodGet && r.Method != http.MethodHead && !sameOriginBrowserRequest(p, r) {
+			writeJSONError(w, http.StatusForbidden, "cross-origin request refused")
+			return
+		}
+		if !p.featureRouteAllowed(r) {
+			if strings.HasPrefix(r.URL.Path, "/api/") && !strings.HasPrefix(r.URL.Path, "/api/calendar/") && p.sessionUser(r) == nil {
+				writeJSONError(w, http.StatusUnauthorized, "not logged in")
+				return
+			}
+			writeJSONError(w, http.StatusForbidden, "feature disabled by server or school")
+			return
 		}
 		gated.ServeHTTP(w, r)
 	})
@@ -754,7 +779,7 @@ func (p *Proxy) sessionUser(r *http.Request) *store.User {
 		return nil
 	}
 	u, err := p.store.GetUser(s.Username)
-	if err != nil || u == nil {
+	if err != nil || u == nil || !p.store.UserAdmissionAllowed(p.userSchool(u, p.opts.School), u) {
 		return nil
 	}
 	return u

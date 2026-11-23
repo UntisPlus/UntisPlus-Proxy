@@ -863,8 +863,10 @@ func (s *Store) SetServerCapGate(scope, cap string, enabled bool) error {
 	return err
 }
 
+// A global deny is a hard ceiling. Schools can disable a feature but cannot
+// re-enable a capability disabled by the server operator.
 func (s *Store) ServerCapGates(scope string) (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT capability,enabled FROM server_cap_gates WHERE scope=? OR scope=''`, scope)
+	rows, err := s.db.Query(`SELECT capability,enabled FROM server_cap_gates WHERE scope='' OR scope=?`, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -872,39 +874,12 @@ func (s *Store) ServerCapGates(scope string) (map[string]bool, error) {
 	out := map[string]bool{}
 	for rows.Next() {
 		var cap string
-		var v int
-		if err := rows.Scan(&cap, &v); err != nil {
+		var enabled int
+		if err := rows.Scan(&cap, &enabled); err != nil {
 			return nil, err
 		}
-		// scope-specific overrides global because of query order? ensure specific wins
-		out[cap] = v != 0
-	}
-	// apply global then scope override explicitly
-	if scope != "" {
-		rows2, err := s.db.Query(`SELECT capability,enabled FROM server_cap_gates WHERE scope=''`)
-		if err == nil {
-			for rows2.Next() {
-				var cap string
-				var v int
-				if err := rows2.Scan(&cap, &v); err == nil {
-					if _, ok := out[cap]; !ok {
-						out[cap] = v != 0
-					}
-				}
-			}
-			rows2.Close()
-		}
-		rows3, err := s.db.Query(`SELECT capability,enabled FROM server_cap_gates WHERE scope=?`, scope)
-		if err == nil {
-			for rows3.Next() {
-				var cap string
-				var v int
-				if err := rows3.Scan(&cap, &v); err == nil {
-					out[cap] = v != 0
-				}
-			}
-			rows3.Close()
-		}
+		previous, exists := out[cap]
+		out[cap] = enabled != 0 && (!exists || previous)
 	}
 	return out, rows.Err()
 }
@@ -1013,6 +988,9 @@ type EffectiveResult struct {
 }
 
 func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, error) {
+	return s.resolveEffective(school, u, nil)
+}
+func (s *Store) resolveEffective(school string, u *User, preview *GroupPreview) (*EffectiveResult, error) {
 	if u == nil {
 		return &EffectiveResult{Role: access.RoleUnknown, Decisions: access.Resolve(access.Inputs{})}, nil
 	}
@@ -1020,7 +998,10 @@ func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, erro
 	if links, err := s.AccountLinks(school, u.Username); err == nil && links.Guardian {
 		role = access.Role("parent")
 	}
-	gates, _ := s.ServerCapGates(school)
+	gates, gateErr := s.ServerCapGates(school)
+	if gateErr != nil {
+		return nil, gateErr
+	}
 	serverEnabled := map[access.Capability]bool{}
 	for _, c := range access.AllCapabilities {
 		// default enabled unless explicitly disabled
@@ -1031,8 +1012,18 @@ func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, erro
 		}
 	}
 
+	featureStates := s.FeatureStates(school)
+	for _, c := range access.AllCapabilities {
+		if feature := FeatureForCapability(string(c)); feature != "" && !featureStates[feature] {
+			serverEnabled[c] = false
+		}
+	}
+
 	direct := map[access.Capability]access.Effect{}
-	directRows, _ := s.ListUserCapGrants(school, u.Username)
+	directRows, directErr := s.ListUserCapGrants(school, u.Username)
+	if directErr != nil {
+		return nil, directErr
+	}
 	for _, g := range directRows {
 		if g.Effect > 0 {
 			direct[access.Capability(g.Capability)] = access.EffectAllow
@@ -1042,32 +1033,55 @@ func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, erro
 	}
 
 	// User groups (school-specific and global? assignments stored with school; also include global groups by group scope handling)
-	groups, _ := s.ListUserCapGroups(school, u.Username)
+	groups, groupErr := s.ListUserCapGroups(school, u.Username)
+	if groupErr != nil {
+		return nil, groupErr
+	}
 	var groupGrants []map[access.Capability]access.Effect
 	var groupIDs []int64
 	for _, g := range groups {
 		groupIDs = append(groupIDs, g.ID)
-		if m, err := s.groupGrantEffects(g.ID); err == nil {
+		if m, err := s.previewGroupEffects(g.ID, preview); err == nil {
 			groupGrants = append(groupGrants, m)
+		} else {
+			return nil, err
 		}
 	}
 
 	// Role defaults
-	defIDs, _ := s.ListRoleDefaultGroups(school, string(role))
+	defIDs, defaultsErr := s.ListRoleDefaultGroups(school, string(role))
+	if defaultsErr != nil {
+		return nil, defaultsErr
+	}
 	if len(defIDs) == 0 {
-		defIDs, _ = s.ListRoleDefaultGroups("", string(role))
+		defIDs, defaultsErr = s.ListRoleDefaultGroups("", string(role))
+		if defaultsErr != nil {
+			return nil, defaultsErr
+		}
 	}
 	// The everyone audience applies to current and future authenticated accounts.
-	everyoneIDs, _ := s.ListRoleDefaultGroups(school, "*")
+	everyoneIDs, everyoneErr := s.ListRoleDefaultGroups(school, "*")
+	if everyoneErr != nil {
+		return nil, everyoneErr
+	}
 	defIDs = append(defIDs, everyoneIDs...)
+	if preview != nil && preview.AssignTo != "" && (preview.AssignTo == "*" || preview.AssignTo == string(role)) {
+		defIDs = append(defIDs, preview.ID)
+	}
+
 	var roleGrants []map[access.Capability]access.Effect
 	for _, id := range defIDs {
-		if m, err := s.groupGrantEffects(id); err == nil {
+		if m, err := s.previewGroupEffects(id, preview); err == nil {
 			roleGrants = append(roleGrants, m)
+		} else {
+			return nil, err
 		}
 	}
 
-	prefsRaw, _ := s.UserCapPrefs(school, u.Username)
+	prefsRaw, prefsErr := s.UserCapPrefs(school, u.Username)
+	if prefsErr != nil {
+		return nil, prefsErr
+	}
 	prefs := map[access.Capability]bool{}
 	for k, v := range prefsRaw {
 		prefs[access.Capability(k)] = v
@@ -1082,6 +1096,19 @@ func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, erro
 		Toggleable:        defaultToggleableCaps(),
 	}
 	decisions := access.Resolve(in)
+	// Expand legacy manage only when no operation-specific rule exists. Preview
+	// and enforcement consume exactly these same resolved decisions.
+	legacy := decisions[access.CapEventsTechnikManage]
+	for _, cap := range []access.Capability{access.CapEventsTechnikCreate, access.CapEventsTechnikEdit, access.CapEventsTechnikDelete, access.CapEventsTechnikImport, access.CapEventsTechnikAttendanceRead, access.CapEventsTechnikAttendanceWrite} {
+		d := decisions[cap]
+		if d.Source == access.SourceImplicit && legacy.AdminAllowed {
+			d.AdminAllowed = true
+			d.Effective = d.ServerEnabled && d.UserOptedIn && legacy.Effective
+			d.Source = legacy.Source
+			decisions[cap] = d
+		}
+	}
+
 	return &EffectiveResult{
 		Role:         role,
 		Decisions:    decisions,

@@ -95,8 +95,19 @@ const (
 	CapLessonWrite    Capability = "lesson.write"
 
 	// Technik / proxy events (v1 "techniker").
-	CapEventsTechnikView   Capability = "events.technik.view"
-	CapEventsTechnikManage Capability = "events.technik.manage"
+	CapEventsTechnikView            Capability = "events.technik.view"
+	CapEventsTechnikManage          Capability = "events.technik.manage"
+	CapEventsTechnikCreate          Capability = "events.technik.create"
+	CapEventsTechnikEdit            Capability = "events.technik.edit"
+	CapEventsTechnikDelete          Capability = "events.technik.delete"
+	CapEventsTechnikImport          Capability = "events.technik.import"
+	CapEventsTechnikAttendanceRead  Capability = "events.technik.attendance.read"
+	CapEventsTechnikAttendanceWrite Capability = "events.technik.attendance.write"
+	CapAnalyticsPersonal            Capability = "analytics.personal.view"
+	CapAnalyticsHistory             Capability = "analytics.personal.history"
+	CapAnalyticsTeacher             Capability = "analytics.teacher.view"
+	CapAnalyticsClassHistory        Capability = "analytics.class_history.view"
+	CapAnalyticsExport              Capability = "analytics.export"
 )
 
 // AllCapabilities lists canonical capabilities in deterministic order.
@@ -136,6 +147,9 @@ var AllCapabilities = []Capability{
 	CapLessonWrite,
 	CapEventsTechnikView,
 	CapEventsTechnikManage,
+	CapEventsTechnikCreate, CapEventsTechnikEdit, CapEventsTechnikDelete,
+	CapEventsTechnikImport, CapEventsTechnikAttendanceRead, CapEventsTechnikAttendanceWrite,
+	CapAnalyticsPersonal, CapAnalyticsHistory, CapAnalyticsTeacher, CapAnalyticsClassHistory, CapAnalyticsExport,
 }
 
 // Role is an admin-defined/login-type label used for default group assignment.

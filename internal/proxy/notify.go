@@ -705,6 +705,9 @@ func (p *Proxy) enqueueChange(school, className string, classID, version int64, 
 }
 
 func (p *Proxy) webhookDeliveryAuthorized(school string, h *store.Webhook) bool {
+	if !p.store.FeatureEnabled(school, "webhooks") {
+		return false
+	}
 	creator := strings.TrimSpace(h.CreatedBy)
 	if creator == "" {
 		return true
@@ -724,6 +727,9 @@ func (p *Proxy) webhookDeliveryAuthorized(school string, h *store.Webhook) bool 
 }
 
 func (p *Proxy) ntfyDeliveryAuthorized(school string, t *store.NtfyTopic) bool {
+	if !p.store.FeatureEnabled(school, "ntfy") {
+		return false
+	}
 	creator := strings.TrimSpace(t.CreatedBy)
 	if creator == "" {
 		return true
@@ -857,6 +863,9 @@ func (p *Proxy) publishNtfyOnce(t *store.NtfyTopic, school string, classID int64
 // real delivery would (same headers, same HMAC signature) and returns the
 // receiver HTTP status (0 with the error if the request itself failed).
 func (p *Proxy) testWebhook(h *store.Webhook) (int, error) {
+	if !p.store.FeatureEnabled(h.School, "webhooks") {
+		return 0, fmt.Errorf("webhooks disabled")
+	}
 	digest := sampleTestDigest()
 	payload := map[string]any{
 		"event":    "test",
@@ -909,6 +918,9 @@ func (p *Proxy) testWebhook(h *store.Webhook) (int, error) {
 // the socket is open. A test that only sent a bare string would still look fine
 // on the server while the notification itself came out as raw JSON.
 func (p *Proxy) testNtfy(t *store.NtfyTopic) (int, error) {
+	if !p.store.FeatureEnabled(t.School, "ntfy") {
+		return 0, fmt.Errorf("ntfy disabled")
+	}
 	digest := sampleTestDigest()
 	title := "untis-proxy test — " + t.Topic
 	et, eid := t.Target()

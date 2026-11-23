@@ -19,6 +19,16 @@ They must not use real teacher accounts for write requests.
 | Dashboard | `scripts/check-admin-ui.js`: picker state, permission defaults, refresh coalescing, failed refresh retry and existing workflow regressions |
 | Hardened image | `scripts/check-container.sh`: non-root UID, read-only filesystem, dropped capabilities, network-disabled temporary backup/restore/startup |
 
+The JSON analytics/access extension adds tests in `internal/analytics/report_test.go`,
+`internal/proxy/analytics_test.go`, `internal/proxy/permission_controls_test.go`,
+`internal/store/feature_controls_test.go` and `internal/untis/admission_metadata_test.go`.
+They cover filter consistency, deduplication, ISO week 53, weighted versus teacher
+means, zero denominators, report-local pseudonyms, JSON/CSV export leakage,
+source-scope enforcement, history gaps, partial failures, mid-report revocation,
+master ceilings, preview/save parity, independent Technik actions, account-type
+admission, upstream admin metadata and deletion cleanup. The UI check also verifies
+preview uses its read-only endpoint and exposes the new capabilities.
+
 ## Running the checks
 
 Use the Go version declared in `go.mod`:

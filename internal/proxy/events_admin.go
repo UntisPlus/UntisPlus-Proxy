@@ -2,7 +2,7 @@ package proxy
 
 // Admin CRUD for per-student custom events.
 //
-// The API is admin-only. The *read* side is not here: events reach a student only
+// The API is gated by independent Technik action permissions. The *read* side is not here: events reach a student only
 // through the surfaces that already know who is asking (the ICS feed for a student
 // token, the /week page for one, and a student's own getTimetable2017), so there is
 // deliberately no "list events" endpoint a token alone could reach.
@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"untis-proxy/internal/access"
 	"untis-proxy/internal/store"
 )
 
@@ -48,22 +49,17 @@ func studentEventJSON(ev store.StudentEvent) studentEventPayload {
 	}
 }
 
-// handleStudentEvents serves the admin event API.
+// handleStudentEvents serves the operation-scoped event API.
 //
 //	GET    /api/admin/events?username=…    list (a username is required)
 //	POST   /api/admin/events               create
 //	PATCH  /api/admin/events/{id}          edit one field or more
 //	DELETE /api/admin/events/{id}          remove
 func (p *Proxy) handleStudentEvents(w http.ResponseWriter, r *http.Request) {
-	// The gate runs before the method is dispatched and before any body is read, so
-	// a non-admin's response is the same whatever they asked for.
+	// Authorize the method and school before reading any event body.
 	u := p.sessionUser(r)
 	if u == nil {
 		writeJSONError(w, http.StatusUnauthorized, "not logged in")
-		return
-	}
-	if !p.isAdmin(u.Username) {
-		p.forbidden(w)
 		return
 	}
 	actor := u.Username
@@ -71,6 +67,20 @@ func (p *Proxy) handleStudentEvents(w http.ResponseWriter, r *http.Request) {
 	if school == "" {
 		school = p.opts.School
 	}
+	capability := access.CapEventsTechnikView
+	switch r.Method {
+	case http.MethodPost:
+		capability = access.CapEventsTechnikCreate
+	case http.MethodPatch:
+		capability = access.CapEventsTechnikEdit
+	case http.MethodDelete:
+		capability = access.CapEventsTechnikDelete
+	}
+	if !p.technikAllowed(u, school, capability) {
+		p.forbidden(w)
+		return
+	}
+
 	var eventID int64
 	if id := r.PathValue("id"); id != "" {
 		parsed, err := strconv.ParseInt(id, 10, 64)
@@ -366,11 +376,12 @@ func (p *Proxy) handleEventAbsences(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnauthorized, "not logged in")
 		return
 	}
-	if !p.isAdmin(user.Username) {
+	school, from, to := p.absenceWindow(r)
+	if !p.technikAllowed(user, school, access.CapEventsTechnikAttendanceRead) {
 		p.forbidden(w)
 		return
 	}
-	school, from, to := p.absenceWindow(r)
+
 	events, err := p.store.AllStudentEventsForRange(school, from, to)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store error")
@@ -468,10 +479,7 @@ func (p *Proxy) handleEventAbsenceEdit(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnauthorized, "not logged in")
 		return
 	}
-	if !p.isAdmin(user.Username) {
-		p.forbidden(w)
-		return
-	}
+
 	var req struct {
 		School         string `json:"school"`
 		AppointmentKey string `json:"appointmentKey"`
@@ -487,6 +495,10 @@ func (p *Proxy) handleEventAbsenceEdit(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.School == "" {
 		req.School = p.opts.School
+	}
+	if !p.technikAllowed(user, req.School, access.CapEventsTechnikAttendanceWrite) {
+		p.forbidden(w)
+		return
 	}
 	if req.AppointmentKey == "" || req.Username == "" || !validDate(req.Date) {
 		writeJSONError(w, http.StatusBadRequest, "appointmentKey, date and username are required")
@@ -572,11 +584,12 @@ func (p *Proxy) handleEventAbsenceLog(w http.ResponseWriter, r *http.Request) {
 		writeJSONError(w, http.StatusUnauthorized, "not logged in")
 		return
 	}
-	if !p.isAdmin(user.Username) {
+	school, from, to := p.absenceWindow(r)
+	if !p.technikAllowed(user, school, access.CapEventsTechnikAttendanceRead) {
 		p.forbidden(w)
 		return
 	}
-	school, from, to := p.absenceWindow(r)
+
 	rows, err := p.store.EventAbsenceLog(school, from, to)
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "store error")

@@ -2,6 +2,15 @@
 
 Reviewed: **2026-11-23**. Decision: **security fixes deployed to beta; production acceptance still pending**.
 
+## Subsequent feature update
+
+The new [analytics and access contract](ANALYTICS-AND-ACCESS.md) covers on-demand
+scoped JSON/CSV analytics, server master switches, permission preview, separate
+Technik actions and account-type admission. Analytics starts disabled and login
+rules start unrestricted. Live upstream administrator metadata and historical
+retention are not universally certified. The original baseline assessment below
+is historical; it does not describe these new features.
+
 ## Remediation update
 
 The remediated implementation now binds saved-account access to a matching session or current

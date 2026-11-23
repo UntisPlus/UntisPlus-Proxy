@@ -127,6 +127,10 @@ school.
 
 ## Permissions
 
+For cancellation analytics JSON/exports, feature master switches, permission preview,
+Technik action permissions and account-type admission rules, see
+[Analytics and access controls](docs/ANALYTICS-AND-ACCESS.md).
+
 Access is resolved from capability groups, account roles, role defaults, and
 optional direct grants. In the dashboard, use **Permissions** to assign groups
 to people, choose default groups for students, teachers, staff, and other

@@ -129,6 +129,12 @@ func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request, school stri
 		}
 	}
 
+	if !p.admitLogin(school, params.User, info) {
+		go p.untis.Logout(school, cookie)
+		p.writeJSONRPCError(w, id, "account type is not admitted", -8504)
+		return
+	}
+
 	donateClassID := info.ClassID
 	user := &store.User{
 		Username:    params.User,

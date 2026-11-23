@@ -463,6 +463,7 @@ type LinkedPerson struct {
 }
 
 type PersonInfo struct {
+	UpstreamAdmin *bool
 	LinkedPersons []LinkedPerson
 	PersonID      int64
 	PersonType    int64
@@ -510,6 +511,7 @@ func (c *Client) PersonInfo(school, cookie string) (*PersonInfo, error) {
 				LoginServiceConfig struct {
 					User struct {
 						PersonID int64 `json:"personId"`
+						IsAdmin  *bool `json:"isAdmin"`
 						Persons  []struct {
 							ID          int64  `json:"id"`
 							Type        int64  `json:"type"`
@@ -523,6 +525,7 @@ func (c *Client) PersonInfo(school, cookie string) (*PersonInfo, error) {
 		if json.Unmarshal(b, &cfg) == nil {
 			info.PersonID = cfg.Data.LoginServiceConfig.User.PersonID
 			info.Email = cfg.Data.LoginServiceConfig.User.Email
+			info.UpstreamAdmin = cfg.Data.LoginServiceConfig.User.IsAdmin
 			persons := cfg.Data.LoginServiceConfig.User.Persons
 			if persons != nil {
 				info.LinkedPersons = make([]LinkedPerson, 0, len(persons))

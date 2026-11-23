@@ -51,7 +51,7 @@ func (p *Proxy) hasTechniker(username string) bool {
 	if err != nil || u == nil {
 		return p.hasPerm(username, store.FeatureTechniker)
 	}
-	return p.store.EffectiveHas(u.School, u, access.CapEventsTechnikView) || p.store.EffectiveHas(u.School, u, access.CapEventsTechnikManage)
+	return p.canViewTechnik(u, p.userSchool(u, p.opts.School)) || p.effective(u, u.School, access.CapEventsTechnikAttendanceRead) || p.effective(u, u.School, access.CapEventsTechnikAttendanceWrite)
 }
 
 // hasTechnikManage reports whether a user can mutate technik-managed surfaces
@@ -64,7 +64,7 @@ func (p *Proxy) hasTechnikManage(username string) bool {
 	if err != nil || u == nil {
 		return p.hasPerm(username, store.FeatureTechniker)
 	}
-	return p.store.EffectiveHas(u.School, u, access.CapEventsTechnikManage)
+	return p.technikAllowed(u, p.userSchool(u, p.opts.School), access.CapEventsTechnikAttendanceWrite)
 }
 
 // injectTechnikClass adds the synthetic class to a masterData body when the user

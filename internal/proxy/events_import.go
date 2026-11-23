@@ -23,6 +23,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"untis-proxy/internal/access"
 	"untis-proxy/internal/store"
 )
 
@@ -60,10 +61,7 @@ func (p *Proxy) handleStudentEventImport(w http.ResponseWriter, r *http.Request)
 		writeJSONError(w, http.StatusUnauthorized, "not logged in")
 		return
 	}
-	if !p.isAdmin(u.Username) {
-		p.forbidden(w)
-		return
-	}
+
 	if r.Method != http.MethodPost {
 		writeJSONError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
@@ -71,6 +69,10 @@ func (p *Proxy) handleStudentEventImport(w http.ResponseWriter, r *http.Request)
 	school := r.URL.Query().Get("school")
 	if school == "" {
 		school = p.opts.School
+	}
+	if !p.technikAllowed(u, school, access.CapEventsTechnikImport) {
+		p.forbidden(w)
+		return
 	}
 	body := readBody(r)
 	if len(bytes.TrimSpace(body)) == 0 {

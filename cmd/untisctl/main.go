@@ -47,6 +47,7 @@ Usage:
   untisctl [-db PATH] <command> [options]
 
 Commands:
+  admission-reset                    clear login restrictions for -school (empty = global)
   perms list [--user U]              show global switches and per-user overrides
   perms grant|revoke [--user U|--global] TYPE
                                      grant/revoke recon|boosted|editor|techniker (per-user only)
@@ -132,6 +133,11 @@ Run 'untisctl <command> -h' for per-command flags.
 	defer st.Close()
 
 	switch flag.Arg(0) {
+	case "admission-reset":
+		if err := st.SetAdmissionPolicy(*school, store.AdmissionPolicy{}); err != nil {
+			fatal("reset admission: %v", err)
+		}
+		fmt.Println("Login restrictions cleared for selected scope (empty school means server-wide).")
 	case "perms":
 		cmdPerms(st, flag.Args()[1:])
 	case "anonymous":

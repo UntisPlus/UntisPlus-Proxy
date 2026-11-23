@@ -13,6 +13,7 @@ if [ "$runtime" = podman ]; then mount="$mount:U"; fi
   -v "$mount" "$image" sh -ec '
     test "$(id -u)" = 10001
     untisctl -db /data/live.db users admin --user restore-test
+    untisctl -db /data/live.db -school isolated-test admission-reset
     untisctl -db /data/live.db backup --out /data/restored.db
     untisctl -db /data/restored.db users list | grep restore-test
     test "$(stat -c %a /data/restored.db)" = 600

@@ -178,6 +178,8 @@ func (p *Proxy) adminAccessAPI(w http.ResponseWriter, r *http.Request, parts []s
 		return
 	}
 	switch parts[0] {
+	case "preview", "features", "admission", "analytics-access", "analytics-years":
+		p.adminControls(w, r, parts[0])
 	case "group-editor":
 		if r.Method != http.MethodPost {
 			w.WriteHeader(http.StatusMethodNotAllowed)

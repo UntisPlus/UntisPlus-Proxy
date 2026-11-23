@@ -43,6 +43,18 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 		school = p.opts.School
 	}
 
+	if req.Method != "getUserData2017" && req.Method != "getAppSharedSecret" && p.store.HasAdmissionRestrictions(school) {
+		name := extractAuthUser(body)
+		u := p.sessionUser(r)
+		if name != "" {
+			u, _ = p.store.GetUser(name)
+		}
+		if u == nil || p.userSchool(u, p.opts.School) != school || !p.store.UserAdmissionAllowed(school, u) {
+			p.writeJSONRPCError(w, req.ID, "account type is not admitted", -8504)
+			return
+		}
+	}
+
 	switch req.Method {
 	case "getUserData2017":
 		p.keyLogin(w, r, school, body)
@@ -401,15 +413,6 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	}
 	p.recordLoginSuccess(school, auth.User)
 
-	// A login the upstream accepted is the strongest proof the presented replay
-	// key (stored secret or pasted base32 secret) is valid, so record it for
-	// future session escalation even if it wasn't captured before. Anonymous is
-	// not replayable, so it has no key to record.
-	if replayKey != "" && !isAnon {
-		p.setReplayKey(auth.User, replayKey)
-		_ = p.store.UpsertSecret(auth.User, replayKey)
-	}
-
 	// The identity configs are fetched in the background while this request
 	// rewrites and caches the login body. The two are independent, and
 	// PersonInfo itself fetches its two endpoints concurrently, so the only
@@ -431,6 +434,20 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	if info == nil {
 		info = &untis.PersonInfo{}
 	}
+	if !isAnon && !p.admitLogin(school, auth.User, info) {
+		go p.untis.Logout(school, cookie)
+		p.writeJSONRPCError(w, req.ID, "account type is not admitted", -8504)
+		return
+	}
+	// A login the upstream accepted is the strongest proof the presented replay
+	// key (stored secret or pasted base32 secret) is valid, so record it for
+	// future session escalation even if it wasn't captured before. Anonymous is
+	// not replayable, so it has no key to record.
+	if replayKey != "" && !isAnon {
+		p.setReplayKey(auth.User, replayKey)
+		_ = p.store.UpsertSecret(auth.User, replayKey)
+	}
+
 	if !isAnon && replayKey == "" {
 		if existing, err := p.store.GetUser(auth.User); err == nil && existing != nil && existing.Password != "" {
 			replayKey = existing.Password
@@ -785,7 +802,7 @@ func (p *Proxy) userFromRequestOTP(username, otp string, clientTime int64) *stor
 		return nil
 	}
 	u, err := p.store.GetUser(username)
-	if err != nil || u == nil {
+	if err != nil || u == nil || !p.store.UserAdmissionAllowed(p.userSchool(u, p.opts.School), u) {
 		return nil
 	}
 	if !p.verifyUserOTP(u.Username, otp, clientTime) {
