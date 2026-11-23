@@ -248,6 +248,7 @@ input:not([type=checkbox]):not([type=radio]),select{min-height:38px}.help-icon{w
         <div id="overviewSetupCallout" class="callout warn mb hidden"></div>
 
         <div class="grid cards mb" id="cards"></div>
+<div class="callout mb" id="releaseUpdateStatus" role="status">Release check loads with overview.</div>
 
         <div class="grid two">
           <div class="panel">
@@ -1090,7 +1091,7 @@ async function previewPermissionGroup(){
 }
 async function loadFeatureControls(){try{
  const scope=encodeURIComponent(controlsScope()),[d,a]=await Promise.all([api('GET','access/features?school='+scope),api('GET','access/admission?school='+scope)]);if(d.error||a.error)throw new Error(d.error||a.error);
- $('featureControls').innerHTML=(d.features||[]).map(f=>'<label class="row"><input type="checkbox" '+(f.effective?'checked':'')+' '+(!f.serverEnabled&&controlsScope()?'disabled':'')+' onchange="saveFeatureSwitch('+jsq(f.name)+',this.checked)">'+esc(f.name)+(f.serverEnabled?'':' · disabled at server level')+'</label>').join('');
+ $('featureControls').innerHTML=(d.features||[]).map(f=>'<label class="row"><input type="checkbox" '+(f.effective?'checked':'')+' '+((!f.serverEnabled||f.name==='update_check')&&controlsScope()?'disabled':'')+' onchange="saveFeatureSwitch('+jsq(f.name)+',this.checked)">'+esc(f.name)+(f.serverEnabled?'':' · disabled at server level')+'</label>').join('');
  const blocked=a.policy?.blockedRoles||[];$('admissionControls').innerHTML=['student','teacher','parent','staff','other','unknown','upstream_admin'].map(role=>'<label class="row"><input type="checkbox" data-admission-role="'+role+'" '+(blocked.includes(role)?'checked':'')+'>'+esc(role==='upstream_admin'?'Upstream administrators':roleLabel(role))+'</label>').join('');
  }catch(e){$('featureControlMessage').textContent=e.message;}}
 async function saveFeatureSwitch(feature,enabled){try{const d=await api('PUT','access/features?school='+encodeURIComponent(controlsScope()),{feature,enabled});if(d.error)throw new Error(d.error);$('featureControlMessage').textContent='Feature setting saved.';await loadFeatureControls();}catch(e){$('featureControlMessage').textContent=e.message;}}
@@ -1292,8 +1293,17 @@ function renderInstanceInfo(){
   tb.innerHTML = rows.map(r => '<tr><th style="width:38%">'+esc(r[0])+'</th><td>'+esc(String(r[1]))+'</td></tr>').join('');
 }
 
+async function loadReleaseUpdate(){
+ const out=$('releaseUpdateStatus');if(!out)return;
+ try{const d=await api('GET','updates');const labels={current:'Running the latest release',update_available:'A newer release is available',ahead:'Running a version newer than the latest release',development:'Running a development build — not comparable to a released build',unknown:'Release status could not be verified',disabled:'Release checks are disabled'};
+ out.textContent=(labels[d.status]||'Release status unavailable')+(d.currentVersion?' · Installed: '+d.currentVersion:'')+(d.latestRelease?' · Latest release: '+d.latestRelease:'')+(d.stale?' · Last-known release information is stale.':'');
+ if(d.releaseUrl&&/^https:\/\/github\.com\/UntisPlus\/UntisPlus-Proxy\/releases\/tag\//.test(d.releaseUrl)){const a=document.createElement('a');a.href=d.releaseUrl;a.textContent=' View release';a.rel='noopener noreferrer';a.target='_blank';out.appendChild(a);}
+ }catch(e){out.textContent='Release status could not be checked.';}
+}
+
 async function renderCards(){
   status = await api('GET','status');
+  loadReleaseUpdate();
   const c = $('cards'); c.innerHTML = '';
   c.insertAdjacentHTML('beforeend', card('Users', status.users));
   c.insertAdjacentHTML('beforeend', card('Admins', status.admins));

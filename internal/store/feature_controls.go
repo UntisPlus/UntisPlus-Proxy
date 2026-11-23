@@ -8,7 +8,7 @@ import (
 	"untis-proxy/internal/access"
 )
 
-var FeatureDefaults = map[string]bool{"analytics": false, "technik": true, "calendar": true, "ntfy": true, "webhooks": true, "changes": true, "reconstruction": true, "homework": true, "absence_notes": true}
+var FeatureDefaults = map[string]bool{"update_check": true, "analytics": false, "technik": true, "calendar": true, "ntfy": true, "webhooks": true, "changes": true, "reconstruction": true, "homework": true, "absence_notes": true}
 
 func FeatureForCapability(cap string) string {
 	for prefix, feature := range map[string]string{"analytics.": "analytics", "events.technik.": "technik", "calendar.": "calendar", "notify.ntfy.": "ntfy", "notify.webhook.": "webhooks", "changes.": "changes"} {
@@ -55,6 +55,9 @@ func (s *Store) FeatureEnabled(school, feature string) bool {
 	return enabled
 }
 func (s *Store) SetFeatureEnabled(school, feature string, enabled bool) error {
+	if feature == "update_check" && school != "" {
+		return fmt.Errorf("release checks are server-wide; select server controls")
+	}
 	if _, ok := FeatureDefaults[feature]; !ok {
 		return fmt.Errorf("unknown feature")
 	}

@@ -163,6 +163,8 @@ func (p *Proxy) handleAdmin(w http.ResponseWriter, r *http.Request) {
 		p.adminRecon(w, r, parts[1:])
 	case parts[0] == "rooms":
 		p.adminRooms(w, r, parts[1:])
+	case parts[0] == "updates":
+		p.handleUpdates(w, r)
 	case parts[0] == "setup":
 		p.handleAdminSetup(w, r, parts)
 	case parts[0] == "access" || parts[0] == "v2":

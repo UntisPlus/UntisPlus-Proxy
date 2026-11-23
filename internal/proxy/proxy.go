@@ -60,6 +60,7 @@ type Options struct {
 }
 
 type Proxy struct {
+	releaseChecker   *releaseChecker
 	analyticsLimiter *attemptLimiter
 	analyticsSlots   chan struct{}
 	store            *store.Store
@@ -188,6 +189,7 @@ func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *
 		loginMax = 0
 	}
 	p := &Proxy{
+		releaseChecker:   newReleaseChecker(),
 		analyticsLimiter: newAttemptLimiter(6, time.Minute), analyticsSlots: make(chan struct{}, 2),
 		store:       st,
 		untis:       uc,

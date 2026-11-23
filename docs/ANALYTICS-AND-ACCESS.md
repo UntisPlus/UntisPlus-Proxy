@@ -247,3 +247,29 @@ Coverage is in `internal/analytics/report_test.go`,
 `internal/untis/admission_metadata_test.go`, and `scripts/check-admin-ui.js`.
 Real teacher writes are never used for tests. Live school-year retention and
 upstream account metadata availability still require read-only acceptance checks.
+
+## Release update detector
+
+`GET /admin/updates` checks the latest published stable release of
+`UntisPlus/UntisPlus-Proxy` through GitHub's releases API. It returns the running
+version, latest tag/release URL, comparison status, nullable `matchesLatest` and
+`updateAvailable`, check times, staleness and any error category. Only dashboard
+administrators can access it. The dashboard overview displays the result.
+
+Checks run on demand when requested or when the overview refreshes. Successful
+results are cached in memory for one hour; concurrent requests share the same
+check. Failures retry after two minutes; rate limits/no published release wait
+one hour. Requests time out after five seconds, response parsing is bounded,
+and API redirects are not followed. No background polling or automatic update
+installation is performed. No account credentials or school data are sent.
+
+Statuses distinguish `current`, `update_available`, `ahead`, `development`,
+`unknown`, and `disabled`. Development/prerelease builds are not declared current
+from their version prefix. Stable semantic versions are compared numerically;
+nonstandard unequal tags return unknown. Failed checks never claim current and
+mark retained last-known release information stale.
+
+The server-wide `update_check` master switch disables outbound checks and the
+endpoint reports disabled. This switch is edited at server scope, not per school.
+The detector does not compare image digests, branch commits, or install updates.
+Tests are in `internal/proxy/updates_test.go`.
