@@ -4,14 +4,17 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
 	"untis-proxy/internal/access"
 	"untis-proxy/internal/store"
+	"untis-proxy/internal/untis"
 )
 
 func analyticsFixture(t *testing.T) (*Proxy, *store.Store, *fakeUpstream) {
@@ -38,6 +41,75 @@ func analyticsReq(t *testing.T, p *Proxy, user, body string) *httptest.ResponseR
 	p.handleCancellationAnalytics(w, r)
 	return w
 }
+
+// Exercise the same cookie issuance and report routes used by the beta smoke
+// script. A dashboard administrator still needs the feature and the grant.
+func TestAnalyticsAfterAuthenticatorSignIn(t *testing.T) {
+	day := time.Now().UTC().AddDate(0, 0, -7).Format(time.DateOnly)
+	f := &fakeUpstream{timetable: fmt.Sprintf(`{"result":{"periods":[{"id":95,"date":%q,"code":"cancelled","teachers":[{"id":42,"name":"Example Teacher"}]}]}}`, day)}
+	p, st := newFakeProxyUpstream(t, f)
+	const user = "analytics-admin"
+	const testKey = "JBSWY3DPEHPK3PXP"
+	if err := st.UpsertUser(&store.User{Username: user, School: "testschool", Admin: true, Method: "key", Password: testKey, PersonType: 5, PersonID: 7, ClassID: 5000}); err != nil {
+		t.Fatal(err)
+	}
+
+	handler := p.Handler()
+	login := httptest.NewRequest(http.MethodPost, "/WebUntis/jsonrpc_intern.do?school=testschool", strings.NewReader(loginBody(t, user, untis.TOTP(testKey))))
+	login.Header.Set("Content-Type", "application/json")
+	signedIn := httptest.NewRecorder()
+	handler.ServeHTTP(signedIn, login)
+	var sessionCookie *http.Cookie
+	for _, cookie := range signedIn.Result().Cookies() {
+		if cookie.Name == "JSESSIONID" {
+			sessionCookie = cookie
+			break
+		}
+	}
+	if signedIn.Code != http.StatusOK || sessionCookie == nil || sessionCookie.Value == "" {
+		t.Fatalf("authenticator login failed: HTTP %d, %s", signedIn.Code, signedIn.Body.String())
+	}
+
+	sendReport := func(cookie *http.Cookie) *httptest.ResponseRecorder {
+		t.Helper()
+		body := fmt.Sprintf(`{"mode":"personal","from":%q,"to":%q,"anonymise":true}`, day, day)
+		req := httptest.NewRequest(http.MethodPost, "/api/analytics/teacher-cancellations?school=testschool", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	assertDenied := func(label string, cookie *http.Cookie, want int) {
+		t.Helper()
+		rec := sendReport(cookie)
+		if rec.Code != want || len(f.Forwards()) != 0 {
+			t.Fatalf("%s: HTTP %d, want %d with no upstream timetable request: %s", label, rec.Code, want, rec.Body.String())
+		}
+	}
+	assertDenied("without a session", nil, http.StatusUnauthorized)
+	assertDenied("analytics disabled", sessionCookie, http.StatusForbidden)
+	if err := st.SetFeatureEnabled("", "analytics", true); err != nil {
+		t.Fatal(err)
+	}
+	assertDenied("feature enabled without a grant", sessionCookie, http.StatusForbidden)
+	if err := st.SetUserCapGrant("testschool", user, string(access.CapAnalyticsPersonal), 1); err != nil {
+		t.Fatal(err)
+	}
+	rec := sendReport(sessionCookie)
+	var report analyticsResponse
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &report) != nil ||
+		!report.Complete || !report.Anonymised || report.Totals.Cancelled != 1 || report.UniqueLessons != 1 {
+		t.Fatalf("authorized report: HTTP %d, %s", rec.Code, rec.Body.String())
+	}
+	calls := f.Forwards()
+	if len(calls) != 1 || calls[0].Method != "getTimetable2017" {
+		t.Fatalf("expected exactly one upstream timetable read, got %d calls", len(calls))
+	}
+}
+
 func TestAnalyticsPersonalStatsAndAnonymisedExports(t *testing.T) {
 	p, _, f := analyticsFixture(t)
 	w := analyticsReq(t, p, "student", `{"from":"2026-09-21","to":"2026-09-21"}`)
