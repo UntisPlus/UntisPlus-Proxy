@@ -23,6 +23,7 @@ import (
 	"untis-proxy/internal/access"
 	"untis-proxy/internal/permcli"
 	"untis-proxy/internal/seedcli"
+	"untis-proxy/internal/server"
 	"untis-proxy/internal/store"
 	"untis-proxy/internal/untis"
 )
@@ -37,10 +38,16 @@ import (
 // set UNTIS_PUBLIC_BASE or pass --base when minting tokens for real users.
 const defaultPublicBase = ""
 
+// The container build stamps the version of the server command.
+var buildVersion = "dev"
+
 func main() {
 	// Container aliases share this executable and its SQLite runtime. Dispatch
 	// before registering flags so each command keeps its own argument syntax.
 	switch filepath.Base(os.Args[0]) {
+	case "untis-server":
+		server.Run(buildVersion)
+		return
 	case "untis-seed":
 		seedcli.Run()
 		return

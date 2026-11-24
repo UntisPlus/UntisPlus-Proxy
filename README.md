@@ -629,6 +629,8 @@ rows match that student's existing appointment by date and title, optionally
 narrowed by room/start time, or by date and appointment key. An omitted absence
 time uses the event time. Imports create proxy events and update local event
 registers. The Technik export button still supports the original export format.
+See the [CSV mapping guide](docs/EVENTS-CSV-IMPORT.md) for an example, supported
+fields, permissions and API details.
 
 **Notes are private to the student, by construction.** They are stored per viewer
 and are only ever attached to an absence whose own `studentId` matches the
@@ -976,6 +978,8 @@ those describe how the current code behaves and are kept in step with it.
 |---|---|
 | [`docs/AUDIT-2026-11-24.md`](docs/AUDIT-2026-11-24.md) | account boundaries, runtime optimization and release changes |
 | [`DEPLOYMENT.md`](DEPLOYMENT.md) | running it, Docker, the tunnel, `-metrics-addr`, backups, the log, ops troubleshooting |
+| [`docs/ANALYTICS-AND-ACCESS.md`](docs/ANALYTICS-AND-ACCESS.md) | teacher cancellation reports, feature switches, and terminal smoke test |
+| [`docs/EVENTS-CSV-IMPORT.md`](docs/EVENTS-CSV-IMPORT.md) | room and student dropdowns, CSV mapping, previews and import API |
 | [`docs/APP-INTEGRATION.md`](docs/APP-INTEGRATION.md) | the contract for a client that wants live changes |
 | [`docs/ADMIN-WEBHOOKS-NTFY.md`](docs/ADMIN-WEBHOOKS-NTFY.md) | full `/admin/*` API, ntfy, multi-school |
 | [`docs/GOD-API-PLAN.md`](docs/GOD-API-PLAN.md) | the Basic/Reconstruction/Boosted/Editor permission tiers and planned upstream API coverage |

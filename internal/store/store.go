@@ -2572,7 +2572,7 @@ func (s *Store) ClassForPerson(school string, personID int64) (int64, error) {
 // Sharing permission controls donation, independently of viewing permissions.
 // Materialise candidates before resolving permissions: nested queries must not
 // hold a users cursor open. Class-specific queries retain the class/school index.
-func (s *Store) poolCandidates(school string, classID int64, replayOnly, allSchools bool) ([]*User, error) {
+func (s *Store) poolCandidates(db queryReader, school string, classID int64, replayOnly, allSchools bool) ([]*User, error) {
 	query := `SELECT ` + userCols + ` FROM users WHERE class_id>0`
 	args := []any{}
 	if classID > 0 {
@@ -2587,7 +2587,7 @@ func (s *Store) poolCandidates(school string, classID int64, replayOnly, allScho
 		query += ` AND password<>''`
 	}
 	query += ` ORDER BY last_seen DESC,id DESC`
-	rows, err := s.db.Query(query, args...)
+	rows, err := db.Query(query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -2614,11 +2614,17 @@ func (s *Store) SharesTimetable(school string, u *User) bool {
 }
 
 func (s *Store) Pool(school string) ([]Class, error) {
-	users, err := s.poolCandidates(school, 0, false, school == "")
+	tx, err := s.beginRead()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	users, err := s.poolCandidates(tx, school, 0, false, school == "")
 	if err != nil {
 		return nil, err
 	}
 	classes := map[int64]string{}
+	scopes := map[string]*permissionScope{}
 	for _, u := range users {
 		if u.ClassID <= 0 || (school != "" && u.School != "" && u.School != school) {
 			continue
@@ -2629,7 +2635,23 @@ func (s *Store) Pool(school string) ([]Class, error) {
 		if name, ok := classes[u.ClassID]; ok && u.ClassName <= name {
 			continue
 		}
-		if !s.SharesTimetable(school, u) {
+		donorSchool := u.School
+		if donorSchool == "" {
+			donorSchool = school
+		}
+		scope := scopes[donorSchool]
+		if scope == nil {
+			scope, err = newPermissionScope(tx, donorSchool)
+			if err != nil {
+				return nil, err
+			}
+			scopes[donorSchool] = scope
+		}
+		accessResult, err := scope.resolve(u, nil, []access.Capability{access.CapPoolTimetableShare})
+		if err != nil {
+			return nil, err
+		}
+		if !access.Effective(accessResult.Decisions, access.CapPoolTimetableShare) {
 			continue
 		}
 		classes[u.ClassID] = u.ClassName
@@ -2652,7 +2674,7 @@ func (s *Store) PoolContains(school string, classID int64) (bool, error) {
 	if classID <= 0 {
 		return false, nil
 	}
-	users, err := s.poolCandidates(school, classID, false, false)
+	users, err := s.poolCandidates(s.db, school, classID, false, false)
 	if err != nil {
 		return false, err
 	}
@@ -2666,7 +2688,7 @@ func (s *Store) PoolContains(school string, classID int64) (bool, error) {
 
 // OwnerForClass never uses an account that has opted out of sharing.
 func (s *Store) OwnerForClass(school string, classID int64) (*User, error) {
-	users, err := s.poolCandidates(school, classID, true, false)
+	users, err := s.poolCandidates(s.db, school, classID, true, false)
 	if err != nil {
 		return nil, err
 	}

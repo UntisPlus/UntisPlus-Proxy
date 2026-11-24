@@ -14,8 +14,10 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -217,7 +219,8 @@ func (p *Proxy) resolveTechnicianUsername(key string, doc technikExport, byCode,
 // parseTechnikExport reads either export form. JSON is detected by its opening
 // brace; everything else is treated as the semicolon CSV.
 func parseTechnikExport(body []byte) (technikExport, error) {
-	if bytes.HasPrefix(bytes.TrimSpace(body), []byte("{")) {
+	body = bytes.TrimSpace(bytes.TrimPrefix(body, []byte("\ufeff")))
+	if bytes.HasPrefix(body, []byte("{")) {
 		return parseTechnikJSON(body)
 	}
 	return parseTechnikCSV(body)
@@ -278,13 +281,18 @@ func parseTechnikCSV(body []byte) (technikExport, error) {
 	if !utf8.Valid(body) {
 		text = decodeLatin1(body)
 	}
+	reader := csv.NewReader(strings.NewReader(strings.TrimPrefix(text, "\ufeff")))
+	reader.Comma = ';'
+	reader.FieldsPerRecord = -1
 	var out technikExport
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimRight(line, "\r")
-		if strings.TrimSpace(line) == "" {
-			continue
+	for {
+		fields, err := reader.Read()
+		if err == io.EOF {
+			break
 		}
-		fields := strings.Split(line, ";")
+		if err != nil {
+			return technikExport{}, err
+		}
 		if len(fields) < 13 {
 			continue
 		}

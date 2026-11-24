@@ -150,6 +150,34 @@ metadata. Dates and statistical patterns remain, so this is not a guarantee of
 irreversible anonymisation. No credentials, source-account identity, class IDs,
 profile IDs or raw lesson bodies are returned.
 
+## Smoke test from a terminal
+
+Run `python3 scripts/test-teacher-cancellations.py USERNAME` for the last seven
+completed days on beta. Enter the current WebUntis authenticator code when
+prompted. The script keeps the resulting proxy session in memory and prints
+pseudonymised totals. Use `--from YYYY-MM-DD --to YYYY-MM-DD` to choose dates or
+`--json` to see the full report.
+
+Personal mode needs the analytics switch, `analytics.personal.view`, and saved
+replay credentials for the account. A one-time code signs the script in.
+The server uses its saved source credentials to retrieve timetable data.
+Add `--teacher-id ID` for an approved teacher target. This mode needs
+`analytics.teacher.view`, the explicit target ID, and an eligible saved teacher
+source. The source account is used for timetable reads.
+
+The script labels errors by stage. Use the stage to decide what to check:
+
+| Output | What to check |
+| --- | --- |
+| `Sign-in failed` | Use the login for the selected school and a fresh code. Use `--school` if it differs from the server default. |
+| `Sign-in was blocked by Cloudflare (error 1010)` | Update to the current script, which identifies itself as the UntisPlus analytics client. If it recurs, check the Cloudflare settings for the beta host. |
+| `Analytics returned HTTP 403` | Sign-in succeeded. Enable Analytics under **Permissions → Feature switches & login rules**, then assign a group with `analytics.personal.view` or `analytics.teacher.view` as appropriate. For a teacher query, approve that teacher ID. Check the school and server gates if access is still denied. |
+| Partial or empty report, exit code 2 | Use `--json` to inspect the coverage windows and try a known teaching week. Check saved source credentials for unavailable windows. |
+
+A one-time-code-only sign-in can establish a session even when no reusable
+credential is saved. Use **Account warnings** to check the account's credential
+status. Administrator status alone does not grant access to reports.
+
 ## Exports
 
 `export-json` downloads the identical report as JSON.

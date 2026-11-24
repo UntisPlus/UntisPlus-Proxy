@@ -36,9 +36,14 @@ func (p *Proxy) adminControls(w http.ResponseWriter, r *http.Request, part strin
 				names = append(names, name)
 			}
 			sort.Strings(names)
-			features := []map[string]any{}
+			serverStates := p.store.FeatureStates("")
+			schoolStates := serverStates
+			if school != "" {
+				schoolStates = p.store.FeatureStates(school)
+			}
+			features := make([]map[string]any, 0, len(names))
 			for _, name := range names {
-				features = append(features, map[string]any{"name": name, "serverEnabled": p.store.FeatureEnabled("", name), "effective": p.store.FeatureEnabled(school, name)})
+				features = append(features, map[string]any{"name": name, "serverEnabled": serverStates[name], "effective": schoolStates[name]})
 			}
 			p.writeJSON(w, map[string]any{"features": features})
 			return

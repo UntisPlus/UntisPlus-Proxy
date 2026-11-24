@@ -169,6 +169,10 @@ func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, erro
 	if u == nil {
 		return &EffectiveResult{Role: access.RoleUnknown, Decisions: access.Resolve(access.Inputs{})}, nil
 	}
+	return s.resolveCapabilities(school, u, access.AllCapabilities)
+}
+
+func (s *Store) resolveCapabilities(school string, u *User, caps []access.Capability) (*EffectiveResult, error) {
 	tx, err := s.beginRead()
 	if err != nil {
 		return nil, err
@@ -178,7 +182,7 @@ func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, erro
 	if err != nil {
 		return nil, err
 	}
-	return p.resolve(u, nil, access.AllCapabilities)
+	return p.resolve(u, nil, caps)
 }
 
 func (p *permissionScope) resolve(u *User, preview *GroupPreview, caps []access.Capability) (*EffectiveResult, error) {

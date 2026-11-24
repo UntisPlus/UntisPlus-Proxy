@@ -177,3 +177,15 @@ func TestFoldCodeAndImportDate(t *testing.T) {
 		}
 	}
 }
+
+func TestLegacyTechnikCSVPreservesQuotedFields(t *testing.T) {
+	input := []byte("\ufeff07.08.2026;10:00;12:00;2;;;;Büro;\"Rehearsal; soundcheck\";\"First line\nsecond line\";Abc;Dee;Dee;\n")
+	doc, err := parseTechnikCSV(input)
+	if err != nil || len(doc.Events) != 1 {
+		t.Fatalf("quoted CSV: %+v, %v", doc, err)
+	}
+	event := doc.Events[0]
+	if event.Title != "Rehearsal; soundcheck" || event.Description != "First line\nsecond line" || len(event.Codes) != 1 || event.Codes[0] != "Dee" {
+		t.Fatalf("quoted fields were split: %+v", event)
+	}
+}

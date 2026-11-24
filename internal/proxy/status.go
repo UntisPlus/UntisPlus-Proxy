@@ -57,10 +57,14 @@ func (p *Proxy) handleMe(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet, "":
 		p.writeMe(w, school, user)
 	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		if !sameOriginBrowserRequest(p, r) {
+			writeJSONError(w, http.StatusForbidden, "cross-origin request refused")
+			return
+		}
 		var req struct {
 			Preferences map[string]bool `json:"preferences"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if json.Unmarshal(readBody(r), &req) != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": "bad request"})
 			return
@@ -76,6 +80,7 @@ func (p *Proxy) handleMe(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": "resolve failed"})
 			return
 		}
+		prefs := make(map[string]bool, len(req.Preferences))
 		for capStr, optIn := range req.Preferences {
 			cap := access.Capability(strings.TrimSpace(capStr))
 			d, ok := res.Decisions[cap]
@@ -94,11 +99,15 @@ func (p *Proxy) handleMe(w http.ResponseWriter, r *http.Request) {
 				_ = json.NewEncoder(w).Encode(map[string]any{"error": "cannot opt in beyond allowed ceiling", "capability": capStr})
 				return
 			}
-			if err := p.store.SetUserCapPref(school, user.Username, string(cap), optIn); err != nil {
-				w.WriteHeader(http.StatusInternalServerError)
-				_ = json.NewEncoder(w).Encode(map[string]any{"error": "store error"})
+			if _, duplicate := prefs[string(cap)]; duplicate {
+				writeJSONError(w, http.StatusBadRequest, "duplicate capability")
 				return
 			}
+			prefs[string(cap)] = optIn
+		}
+		if err := p.store.SetUserCapPrefs(school, user.Username, prefs); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, "store error")
+			return
 		}
 		// reload user in case needed and respond with updated state
 		if u2, err := p.store.GetUser(user.Username); err == nil && u2 != nil {
@@ -152,10 +161,11 @@ func (p *Proxy) writeMeUser(w http.ResponseWriter, school string, user *store.Us
 	}
 	sort.Strings(groupNames)
 
-	// coarse compat view derived from effective caps (best-effort)
-	boosted := p.store.EffectiveHas(school, user, access.CapTimetableClassBoostedRawView) || p.store.EffectiveHas(school, user, access.CapAbsenceWrite)
-	editor := p.store.EffectiveHas(school, user, access.CapAbsenceWrite) || p.store.EffectiveHas(school, user, access.CapLessonWrite)
-	recon, _ := p.store.ReconAccess(user.Username, "TEACHER")
+	// Derive the compatibility summary from the same permission snapshot.
+	absenceWrite := access.Effective(res.Decisions, access.CapAbsenceWrite)
+	boosted := access.Effective(res.Decisions, access.CapTimetableClassBoostedRawView) || absenceWrite
+	editor := absenceWrite || access.Effective(res.Decisions, access.CapLessonWrite)
+	recon := access.Effective(res.Decisions, access.CapTimetableTeacherReconstructedView)
 	level := "basic"
 	switch {
 	case editor:

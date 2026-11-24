@@ -1,4 +1,4 @@
-package main
+package server
 
 // Config precedence: an explicit command-line flag beats the environment, which
 // beats the built-in default. The compose files and the Dockerfile rely on this

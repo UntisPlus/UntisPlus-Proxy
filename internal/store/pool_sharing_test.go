@@ -110,3 +110,30 @@ func TestPoolDeduplicationPreservesSharingAndNames(t *testing.T) {
 		t.Fatalf("revoked class remained: %v %v", pool, err)
 	}
 }
+
+func TestSingleCapabilityCheckMatchesEffectiveSnapshot(t *testing.T) {
+	st := openTestStore(t)
+	u := &User{Username: "student", School: "school", PersonType: 5}
+	if err := st.UpsertUser(u); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetUserCapGrant("school", u.Username, string(access.CapEventsTechnikManage), 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetUserCapGrant("school", u.Username, string(access.CapEventsTechnikDelete), -1); err != nil {
+		t.Fatal(err)
+	}
+	full, err := st.ResolveEffective("school", u)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !access.Effective(full.Decisions, access.CapEventsTechnikCreate) ||
+		access.Effective(full.Decisions, access.CapEventsTechnikDelete) {
+		t.Fatal("expected legacy grant for create, with explicit deny for delete")
+	}
+	for _, cap := range access.AllCapabilities {
+		if got, want := st.EffectiveHas("school", u, cap), access.Effective(full.Decisions, cap); got != want {
+			t.Errorf("%s: single capability = %v, full snapshot = %v", cap, got, want)
+		}
+	}
+}

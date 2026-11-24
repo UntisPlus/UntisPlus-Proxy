@@ -12,12 +12,10 @@ RUN go build -trimpath modernc.org/sqlite
 
 COPY internal/ ./internal/
 COPY cmd/untisctl/ ./cmd/untisctl/
-RUN go build -trimpath -ldflags="-s -w" -o /out/untisctl ./cmd/untisctl && \
-    ln -s untisctl /out/untis-seed && ln -s untisctl /out/untis-perm
-
-COPY cmd/server/ ./cmd/server/
+# One executable shares Go, SQLite and proxy code across all four commands.
 ARG VERSION=dev
-RUN go build -trimpath -ldflags="-s -w -X main.buildVersion=${VERSION}" -o /out/untis-server ./cmd/server
+RUN go build -trimpath -ldflags="-s -w -X main.buildVersion=${VERSION}" -o /out/untisctl ./cmd/untisctl && \
+    ln -s untisctl /out/untis-server && ln -s untisctl /out/untis-seed && ln -s untisctl /out/untis-perm
 
 FROM alpine:3.24
 RUN apk add --no-cache ca-certificates tzdata && \

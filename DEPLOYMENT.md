@@ -184,6 +184,12 @@ labels themselves.
 
 ## Building and pushing the image
 
+The runtime packages one stripped executable. `untis-server`, `untis-seed`
+and `untis-perm` are aliases that preserve their existing commands and flags.
+The standalone Go entry points remain available for native builds. A local
+amd64 image measured about 25.7 MB compared with 36.8 MB for the previous beta,
+using the uncompressed image size reported by Podman.
+
 Use the [tagged GitHub workflow](#github-actions-cicd) for the canonical repository.
 For an independently hosted image, build a versioned tag in your own namespace:
 
@@ -333,6 +339,20 @@ Provision the intended first administrator using `UNTIS_ADMIN`, `-admin` or
 `untisctl`; login never promotes an account. The image now uses UID/GID
 `10001:10001`, and the supplied compose files use a read-only root filesystem,
 no Linux capabilities, no-new-privileges and a temporary `/tmp`.
+
+After a fresh database or an intentional beta reset, an operator can provision
+the first dashboard administrator using the exact upstream login:
+
+```sh
+docker compose exec untis-proxy untisctl -db /data/untis.db users admin --user YOUR_USERNAME
+```
+
+Replace `untis-proxy` if your Compose service has a different name, and replace
+`YOUR_USERNAME` with the upstream login. The
+administrator can then open `/admin/login` and enter a current WebUntis
+authenticator code. WebUntis validates the code upstream and UntisPlus issues
+its own session. The code alone does not enrol a reusable credential for later
+background fetches.
 
 **Upgrade existing bind mounts before restarting:** take a database backup, stop
 the target instance, and make its data directory and database/WAL files writable

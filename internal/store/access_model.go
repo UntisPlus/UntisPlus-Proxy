@@ -758,11 +758,30 @@ func (s *Store) DeletePersonTypeRole(scope string, personType int64) error {
 // User preferences
 
 func (s *Store) SetUserCapPref(school, username, cap string, optedIn bool) error {
+	return setUserCapPref(s.db, school, username, cap, optedIn)
+}
+
+// SetUserCapPrefs commits already validated preferences as one change.
+func (s *Store) SetUserCapPrefs(school, username string, prefs map[string]bool) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for cap, optedIn := range prefs {
+		if err = setUserCapPref(tx, school, username, cap, optedIn); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func setUserCapPref(db outboxInserter, school, username, cap string, optedIn bool) error {
 	v := 0
 	if optedIn {
 		v = 1
 	}
-	_, err := s.db.Exec(`INSERT INTO user_cap_prefs (school,username,capability,opted_in,updated_at) VALUES (?,?,?,?,?)
+	_, err := db.Exec(`INSERT INTO user_cap_prefs (school,username,capability,opted_in,updated_at) VALUES (?,?,?,?,?)
 		ON CONFLICT(school,username,capability) DO UPDATE SET opted_in=excluded.opted_in, updated_at=excluded.updated_at`,
 		school, norm(username), cap, v, time.Now().Unix())
 	return err
@@ -935,14 +954,19 @@ type EffectiveResult struct {
 	InheritRoleDefaults     bool
 }
 
-// EffectiveHas is a convenience helper.
-
+// EffectiveHas resolves only the requested decision and its legacy dependency.
 func (s *Store) EffectiveHas(school string, u *User, cap access.Capability) bool {
-	res, err := s.ResolveEffective(school, u)
-	if err != nil || res == nil {
+	if u == nil {
 		return false
 	}
-	return access.Effective(res.Decisions, cap)
+	caps := []access.Capability{cap}
+	switch cap {
+	case access.CapEventsTechnikCreate, access.CapEventsTechnikEdit, access.CapEventsTechnikDelete,
+		access.CapEventsTechnikImport, access.CapEventsTechnikAttendanceRead, access.CapEventsTechnikAttendanceWrite:
+		caps = append(caps, access.CapEventsTechnikManage)
+	}
+	res, err := s.resolveCapabilities(school, u, caps)
+	return err == nil && access.Effective(res.Decisions, cap)
 }
 
 // v1 compat helpers

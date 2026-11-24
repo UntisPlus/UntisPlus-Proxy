@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"untis-proxy/internal/store"
@@ -197,5 +198,36 @@ func TestMe_PermissionsMap(t *testing.T) {
 	}
 	if out.Permissions["editor"] {
 		t.Errorf("permissions.editor = true, want false (not granted)")
+	}
+}
+
+func TestMePreferenceBatchRejectsInvalidUpdates(t *testing.T) {
+	p, st := newTestProxy(t)
+	if err := st.UpsertUser(&store.User{Username: "prefs", School: "testschool", PersonType: 5}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		body string
+		code int
+	}{
+		{`{"preferences":{"pool.timetable.share":false,"unknown.rule":true}}`, 400},
+		{`{"preferences":{"pool.timetable.share":false," pool.timetable.share":false}}`, 400},
+		{`{"preferences":{"pool.timetable.share":false}} {}`, 400},
+		{`{"preferences":{"pool.timetable.share":false}}`, 200},
+	} {
+		r := httptest.NewRequest(http.MethodPatch, "/me", strings.NewReader(tt.body))
+		r.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: p.sessions.New("prefs", 0).ID})
+		w := httptest.NewRecorder()
+		p.Handler().ServeHTTP(w, r)
+		if w.Code != tt.code {
+			t.Fatalf("status %d want %d: %s", w.Code, tt.code, w.Body.String())
+		}
+		prefs, err := st.UserCapPrefs("testschool", "prefs")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if value, found := prefs["pool.timetable.share"]; found != (tt.code == 200) || value {
+			t.Fatalf("unexpected saved preferences after status %d: %v", tt.code, prefs)
+		}
 	}
 }
