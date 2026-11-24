@@ -50,6 +50,10 @@ const (
 // can be added without schema changes.
 const (
 	// Timetable viewing / data access.
+	CapTimetableUpstreamView                  Capability = "timetable.upstream.view"
+	CapHomeworkOwnManage                      Capability = "homework.own.manage"
+	CapAbsenceNotesOwnManage                  Capability = "absence.notes.own.manage"
+	CapEventsPersonalView                     Capability = "events.personal.view"
 	CapTimetableClassPooledView               Capability = "timetable.class.pooled.view"
 	CapTimetableClassUpstreamView             Capability = "timetable.class.upstream.view"
 	CapTimetableClassBoostedRawView           Capability = "timetable.class.boosted_raw.view"
@@ -112,6 +116,7 @@ const (
 
 // AllCapabilities lists canonical capabilities in deterministic order.
 var AllCapabilities = []Capability{
+	CapTimetableUpstreamView, CapHomeworkOwnManage, CapAbsenceNotesOwnManage, CapEventsPersonalView,
 	CapTimetableClassPooledView,
 	CapTimetableClassUpstreamView,
 	CapTimetableClassBoostedRawView,

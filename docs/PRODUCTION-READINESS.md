@@ -2,6 +2,14 @@
 
 Reviewed: **2026-11-23**. Decision: **security fixes deployed to beta; production acceptance still pending**.
 
+## Basic and diagnostics follow-up
+
+The [Basic and compatibility controls](BASIC-AND-COMPATIBILITY.md) add an explicit
+upstream-read reset, inherited-group exceptions and bounded own-account probes.
+They do not automatically change existing account policies. Live compatibility
+and historical retention still require representative read-only acceptance checks;
+empty responses are not proof of support. Basic does not grant upstream writes.
+
 ## Subsequent feature update
 
 The new [analytics and access contract](ANALYTICS-AND-ACCESS.md) covers on-demand

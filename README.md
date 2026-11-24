@@ -127,6 +127,9 @@ school.
 
 ## Permissions
 
+See [Basic, inherited-group exceptions and read-only diagnostics](docs/BASIC-AND-COMPATIBILITY.md)
+for the clean upstream-read preset and per-person default controls.
+
 For cancellation analytics JSON/exports, feature master switches, permission preview,
 Technik action permissions and account-type admission rules, see
 [Analytics and access controls](docs/ANALYTICS-AND-ACCESS.md).

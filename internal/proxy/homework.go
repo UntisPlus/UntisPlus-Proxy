@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"sort"
 	"time"
+	"untis-proxy/internal/access"
 )
 
 // readBody reads a request body, treating a read failure as empty so the
@@ -80,7 +81,7 @@ func (p *Proxy) markHomeWorkList(container jsonObject, done map[int64]time.Time)
 // unknown or the response cannot be read, so a missing enrichment degrades to
 // plain upstream data rather than to an error.
 func (p *Proxy) enrichHomeWorkResponse(raw []byte, school, viewer string) []byte {
-	if !p.store.FeatureEnabled(school, "homework") {
+	if !p.store.FeatureEnabled(school, "homework") || !p.proxyLocalAllowed(school, viewer, access.CapHomeworkOwnManage) {
 		return raw
 	}
 	if viewer == "" || school == "" {
@@ -122,6 +123,10 @@ func (p *Proxy) handleHomeworkFlags(w http.ResponseWriter, r *http.Request) {
 	school := r.URL.Query().Get("school")
 	if school == "" {
 		school = p.opts.School
+	}
+	if p.userSchool(user, p.opts.School) != school || !p.effective(user, school, access.CapHomeworkOwnManage) {
+		p.forbidden(w)
+		return
 	}
 	done, err := p.store.HomeworkDone(school, user.Username)
 	if err != nil {
@@ -170,6 +175,10 @@ func (p *Proxy) handleHomeworkDone(w http.ResponseWriter, r *http.Request) {
 	school := r.URL.Query().Get("school")
 	if school == "" {
 		school = p.opts.School
+	}
+	if p.userSchool(user, p.opts.School) != school || !p.effective(user, school, access.CapHomeworkOwnManage) {
+		p.forbidden(w)
+		return
 	}
 	var req struct {
 		HomeworkID int64 `json:"homeworkId"`

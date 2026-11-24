@@ -507,6 +507,9 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 // Element reconstruction access is granted per type (TEACHER/ROOM/SUBJECT) via
 // a per-user override or the global switch; un-granted types stay hidden.
 func (p *Proxy) markPooledElementsDisplayable(school string, body []byte, username string) []byte {
+	if p.basicMasterData(school, username) {
+		return body
+	}
 	return p.injectTechnikClass(username, p.markPooledElementsDisplayableInner(school, body, username))
 }
 
@@ -966,6 +969,10 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 	// capability allows it and a boosted source account is available. Other
 	// allowed modes (reconstructed/pooled/upstream) may still apply below.
 	ownReq := p.ownsTimetable(requester, pr)
+	if p.prefersOwnUpstream(requester, school, pr.Type, ownReq) {
+		p.writeOwnUpstreamTimetable(w, r, school, requester, id, body, pr)
+		return
+	}
 	if p.canBoostedRawForTimetable(requester, school, pr.Type, ownReq) {
 		if p.serveRawFromBoostedSource(w, r, school, id, requesterName, requester, pr, body) {
 			return

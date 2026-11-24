@@ -319,13 +319,8 @@ func TestEnrichmentSurvivesAnUnreadableNoteTable(t *testing.T) {
 	}
 }
 
-// TestEnrichmentNeedsAReadableUserForAbsencesOnly: absence enrichment compares
-// each entry's studentId against the session user's person id, so it needs a
-// readable user row. Homework does not: its flags are keyed by the session
-// username, which the dispatcher already resolved, so a missing users table costs
-// absences their derived block and leaves homework untouched. The asymmetry is
-// deliberate — absence checks identity independently, homework trusts a key it
-// was handed.
+// Both enrichments require a readable identity and permission rules. If user
+// storage fails, neither private data nor completion flags may be attached.
 func TestEnrichmentNeedsAReadableUserForAbsencesOnly(t *testing.T) {
 	p, _, path := storeProxyWithPath(t)
 	dropTable(t, path, "users")
@@ -340,8 +335,8 @@ func TestEnrichmentNeedsAReadableUserForAbsencesOnly(t *testing.T) {
 	if len(homework) != 0 {
 		t.Fatalf("precondition: expected no flags")
 	}
-	if got := string(p.enrichHomeWorkResponse([]byte(oneHomework), "testschool", "dee")); !strings.Contains(got, `"done":false`) {
-		t.Errorf("homework: flags should still be reported without a readable user row, got %s", got)
+	if got := string(p.enrichHomeWorkResponse([]byte(oneHomework), "testschool", "dee")); got != oneHomework {
+		t.Errorf("homework must fail closed when identity/permission storage is unreadable: %s", got)
 	}
 }
 

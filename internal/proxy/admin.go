@@ -180,7 +180,7 @@ func (p *Proxy) adminAccessAPI(w http.ResponseWriter, r *http.Request, parts []s
 		return
 	}
 	switch parts[0] {
-	case "preview", "features", "admission", "analytics-access", "analytics-years":
+	case "preview", "features", "admission", "analytics-access", "analytics-years", "default-group-policy", "apply-basic", "compatibility", "compatibility-probe":
 		p.adminControls(w, r, parts[0])
 	case "group-editor":
 		if r.Method != http.MethodPost {
@@ -263,6 +263,7 @@ func (p *Proxy) adminAccessAPI(w http.ResponseWriter, r *http.Request, parts []s
 			"groups": groups, "groupIds": res.GroupIDs,
 			"directGrants": res.DirectGrants, "roleDefaultGroupIds": roleDefIDs,
 			"effective": effective, "decisions": decisions,
+			"inheritedGroupIds": res.InheritedGroupIDs, "excludedDefaultGroupIds": res.ExcludedDefaultGroupIDs, "inheritRoleDefaults": res.InheritRoleDefaults,
 		})
 	case "groups":
 		// GET /admin/v2/groups?school=, GET /admin/v2/groups/{id}

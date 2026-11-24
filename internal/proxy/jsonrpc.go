@@ -194,7 +194,7 @@ func (p *Proxy) logout(w http.ResponseWriter, r *http.Request, id json.RawMessag
 // using the requesting user's real session.
 func (p *Proxy) passthrough(w http.ResponseWriter, r *http.Request, school string, body []byte) {
 	user := p.sessionUser(r)
-	if user == nil {
+	if user == nil || p.userSchool(user, p.opts.School) != school {
 		p.writeJSONRPCError(w, idOf(body), "not logged in", -8520)
 		return
 	}

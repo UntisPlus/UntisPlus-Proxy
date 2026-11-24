@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"untis-proxy/internal/access"
 
 	"untis-proxy/internal/store"
 )
@@ -189,7 +190,7 @@ func dateInt(date string) int64 {
 // and without a viewer there is no identity to key on. Returning nothing in that
 // case is what keeps a class feed from ever picking up a student's events.
 func (p *Proxy) studentEventPeriods(school, username, from, to string, loc *time.Location) []map[string]any {
-	if !p.store.FeatureEnabled(school, "technik") {
+	if !p.store.FeatureEnabled(school, "technik") || !p.proxyLocalAllowed(school, username, access.CapEventsPersonalView) {
 		return nil
 	}
 	if school == "" || username == "" {
@@ -258,7 +259,7 @@ func (p *Proxy) labelAppointmentRoster(school, from, to string, periods []map[st
 // returns the original bytes, and a response that gains nothing is returned
 // un-re-encoded rather than reformatted.
 func (p *Proxy) decorateStudentEvents(raw []byte, school, username, from, to string) []byte {
-	if !p.store.FeatureEnabled(school, "technik") {
+	if !p.store.FeatureEnabled(school, "technik") || !p.proxyLocalAllowed(school, username, access.CapEventsPersonalView) {
 		return raw
 	}
 	if school == "" || username == "" {

@@ -117,3 +117,19 @@ func (s *Store) HasAdmissionRestrictions(school string) bool {
 	}
 	return false
 }
+
+func (s *Store) AdmissionIdentity(school, user string) (AdmissionIdentity, bool, error) {
+	var i AdmissionIdentity
+	raw, found, err := s.GetSetting(controlKey("admission-identity", school, norm(user)))
+	if err == nil && found {
+		err = json.Unmarshal([]byte(raw), &i)
+	}
+	return i, found, err
+}
+func (s *Store) CompatibilityResult(school, user string) ([]byte, bool, error) {
+	raw, found, err := s.GetSetting(controlKey("compatibility", school, norm(user)))
+	return []byte(raw), found, err
+}
+func (s *Store) SaveCompatibilityResult(school, user string, result []byte) error {
+	return s.SetSetting(controlKey("compatibility", school, norm(user)), string(result))
+}

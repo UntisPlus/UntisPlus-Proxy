@@ -497,27 +497,27 @@ func TestAbsenceNoteIsCappedNotTruncated(t *testing.T) {
 // separate note sets, since the same absence id can mean different things.
 func TestAbsenceNotesAreScopedBySchool(t *testing.T) {
 	p, st := absenceProxy(t)
-	sessionedRequest(t, p, "dee", http.MethodPost, "/api/absence/notes?school=schoolA",
-		`{"absenceKey":300001,"note":"at A"}`)
-	sessionedRequest(t, p, "dee", http.MethodPost, "/api/absence/notes?school=schoolB",
-		`{"absenceKey":300001,"note":"at B"}`)
-
-	a, err := st.AbsenceNotes("schoolA", "dee")
-	if err != nil {
-		t.Fatalf("AbsenceNotes A: %v", err)
+	for _, school := range []string{"schoolA", "schoolB"} {
+		rec := sessionedRequest(t, p, "dee", http.MethodPost, "/api/absence/notes?school="+school, `{"absenceKey":300001,"note":"foreign"}`)
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("cross-school write status=%d", rec.Code)
+		}
+		rec = sessionedRequest(t, p, "dee", http.MethodGet, "/api/absence/notes?school="+school, "")
+		if rec.Code != http.StatusForbidden {
+			t.Fatal("cross-school read accepted")
+		}
+		notes, err := st.AbsenceNotes(school, "dee")
+		if err != nil || len(notes) != 0 {
+			t.Fatal("foreign-school notes changed")
+		}
 	}
-	b, err := st.AbsenceNotes("schoolB", "dee")
-	if err != nil {
-		t.Fatalf("AbsenceNotes B: %v", err)
+	rec := sessionedRequest(t, p, "dee", http.MethodPost, "/api/absence/notes", `{"absenceKey":300001,"note":"own"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatal(rec.Body.String())
 	}
-	if a[300001].Note != "at A" || b[300001].Note != "at B" {
-		t.Errorf("notes crossed schools: A=%q B=%q", a[300001].Note, b[300001].Note)
-	}
-
-	// A read for one school must not list the other's note.
-	rec := sessionedRequest(t, p, "dee", http.MethodGet, "/api/absence/notes?school=schoolA", "")
-	if strings.Contains(rec.Body.String(), "at B") {
-		t.Errorf("the read for schoolA leaked schoolB's note: %s", rec.Body.String())
+	notes, err := st.AbsenceNotes("testschool", "dee")
+	if err != nil || notes[300001].Note != "own" {
+		t.Fatal("own school note unavailable")
 	}
 }
 

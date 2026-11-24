@@ -1031,7 +1031,7 @@ const simpleGroupDescriptions = {
   'v2.default_new_user':'An additional access group available for compatibility with earlier setups.'
 };
 function groupID(g){ return Number(g && (g.ID || g.id) || 0); }
-function groupName(g){ const n=String(g && (g.Name || g.name) || 'Access group'); return simpleGroupNames[n] || n; }
+function groupName(g){ const n=String(g && (g.Name || g.name) || 'Access group'); if(n==='v2.upstream_basic')return 'Basic · upstream-only reads';return simpleGroupNames[n] || n; }
 function groupDescription(g){ const n=String(g && (g.Name || g.name) || ''); return simpleGroupDescriptions[n] || String(g && (g.Description || g.description) || ''); }
 function simpleAccessSchool(){ return ($('simpleAccessSchool')?.value || defaultSchool() || '').trim(); }
 function roleLabel(role){ return ({'*':'Everyone',student:'Students',teacher:'Teachers',staff:'Staff',unknown:'Unclassified accounts',other:'Other accounts',parent:'Guardians / parents'})[role] || role; }
@@ -1102,6 +1102,12 @@ async function saveAnalyticsScope(){try{const teacherIds=$('analyticsTeacherIds'
 async function loadAnalyticsYears(){try{const d=await api('GET','access/analytics-years?school='+encodeURIComponent(simpleAccessSchool()));if(d.error)throw new Error(d.error);$('analyticsYears').value=JSON.stringify(d.years||[],null,2);}catch(e){$('featureControlMessage').textContent=e.message;}}
 async function saveAnalyticsYears(){try{const years=JSON.parse($('analyticsYears').value||'[]'),d=await api('PUT','access/analytics-years?school='+encodeURIComponent(simpleAccessSchool()),{years});if(d.error)throw new Error(d.error);$('featureControlMessage').textContent='School years saved.';}catch(e){$('featureControlMessage').textContent=e.message;}}
 
+permissionSections.push(['Upstream baseline and personal extras',[
+ ['timetable.upstream.view','Use my own upstream timetable access','Reads timetable targets through this account only. Upstream decides visibility; this never borrows a teacher account.'],
+ ['homework.own.manage','Use personal homework completion','Save and read your own proxy-local homework completion flags.'],
+ ['absence.notes.own.manage','Use private absence notes','Save and read your own private proxy-local absence notes.'],
+ ['events.personal.view','See assigned personal events','Add your assigned proxy-local events to your own timetable. Does not grant aggregate Technik access.']
+]]);
 function permissionHelp(text){return '<button type="button" class="help-icon" aria-label="Explain this permission">i<span class="help-tip" role="tooltip">'+esc(text)+'</span></button>';}
 function renderPermissionChoices(grants={}){
   const box=$('permissionChoices');if(!box)return;
@@ -1216,13 +1222,33 @@ async function loadSimpleUserAccess(){
       api('GET','access/user-groups?school='+encodeURIComponent(school)+'&user='+encodeURIComponent(user))
     ]);
     const groups=(window.simpleAccessGroups||[]), assignedIds=new Set((assigned.groups||[]).map(groupID));
+    const inherited=new Set((eff.inheritedGroupIds||[]).map(Number)),excluded=new Set((eff.excludedDefaultGroupIds||[]).map(Number));
+    window.personInheritance={school,user,inherit:eff.inheritRoleDefaults!==false,excludedGroupIds:Array.from(excluded)};
+
     box.innerHTML='<div class="panel"><div class="panel-header"><div><h3>'+esc(user)+' · '+esc(roleLabel(eff.role||'account'))+'</h3><p class="desc">Default groups come from the account type. Add or remove extra groups below.</p></div></div>'+
+
+      '<div class="callout"><strong>Inherited account-type groups</strong><label class="row"><input type="checkbox" '+(eff.inheritRoleDefaults!==false?'checked':'')+' onchange="savePersonInheritance(this.checked,null,null)">Use automatic groups for this person</label><p class="small">Turning this off leaves directly assigned groups and person-level rules in place. It also prevents future defaults from being added automatically.</p>'+groups.filter(g=>inherited.has(groupID(g))).map(g=>'<label class="row"><input type="checkbox" '+(eff.inheritRoleDefaults!==false&&!excluded.has(groupID(g))?'checked':'')+' '+(eff.inheritRoleDefaults===false?'disabled':'')+' onchange="savePersonInheritance(null,'+groupID(g)+',this.checked)">'+esc(groupName(g))+' — '+(eff.inheritRoleDefaults===false?'Automatic groups off':excluded.has(groupID(g))?'Excluded for this person':'Inherited')+'</label>').join('')+'<button class="secondary" onclick="applyBasicToPerson()">Reset to upstream-only Basic</button><p class="small">Reset clears this person’s direct groups, rules and preferences (including global person-level rules), switches off automatic groups, and assigns Basic. The dashboard administrator flag is unchanged. Add extra groups afterward.</p></div>'+
+      '<div class="callout"><strong>Read-only compatibility diagnostics</strong><button class="secondary mini" onclick="loadPersonCompatibility()">Show stored diagnostics</button><label class="field">Probe from<input id="compatFrom" type="date"></label><label class="field">Probe to<input id="compatTo" type="date"></label><label class="field">Linked student ID (guardians only, optional)<input id="compatPersonId" inputmode="numeric"></label><button class="secondary" onclick="probePersonCompatibility()">Read upstream for this window</button><p class="small">At most 31 days. This reads the selected account’s own data; it never edits upstream. Empty responses do not prove historical availability.</p><pre id="personCompatibility" class="small"></pre></div>'+
       '<label class="row callout"><input type="checkbox" '+((eff.effective||[]).includes('pool.timetable.share')?'checked':'')+' onchange="setAccountPoolSharing('+jsq(user)+',this.checked)"><span>Share this account’s class timetable with the pool</span>'+permissionHelp('This saves a person-level Allow or Block. Blocking removes this account as a shared class source without removing its own upstream timetable. Other accounts can still contribute the same class; independently granted teacher access is separate.')+'</label>'+
       '<div class="stack">'+groups.map(g=>'<label class="row callout"><input type="checkbox" '+(assignedIds.has(groupID(g))?'checked':'')+' onchange="toggleSimpleUserGroup('+jsq(user)+','+groupID(g)+',this.checked)"><span><strong>'+esc(groupName(g))+'</strong>'+
       (groupDescription(g)?'<span class="small muted" style="display:block">'+esc(groupDescription(g))+'</span>':'')+'</span></label>').join('')+'</div>'+
       '<details class="mt"><summary>What this person can currently access</summary><div class="row mt">'+permissionSections.flatMap(([,items])=>items).map(([c,label])=>'<span class="chip">'+esc(label)+' — '+((eff.effective||[]).includes(c)?'Allowed':'Disabled')+'</span>').join('')+'</div></details></div>';
   }catch(e){box.innerHTML='<div class="callout warn">Could not resolve this person’s access: '+esc(e.message)+'</div>';}
 }
+function personControlPath(action){const state=window.personInheritance;if(!state)throw new Error('Choose a person first.');return 'access/'+action+'?school='+encodeURIComponent(state.school)+'&user='+encodeURIComponent(state.user);}
+async function savePersonInheritance(inherit,groupId,include){
+ const state=window.personInheritance;if(!state)return;const excluded=new Set(state.excludedGroupIds||[]);if(groupId!==null){if(include)excluded.delete(groupId);else excluded.add(groupId);}const payload={inherit:inherit===null?state.inherit:inherit,excludedGroupIds:Array.from(excluded)};
+ try{const d=await api('PUT',personControlPath('default-group-policy'),payload);if(d.error)throw new Error(d.error);log('Updated inherited groups for '+state.user);}catch(e){log(e.message);}await loadSimpleUserAccess();
+}
+async function applyBasicToPerson(){if(!confirm('Reset this person to Basic? This clears their direct groups, permission rules and preferences, including global person-level rules, and turns off automatic groups. Dashboard administrator status and upstream data are unchanged.'))return;try{const d=await api('POST',personControlPath('apply-basic'),{});if(d.error)throw new Error(d.error);log('Applied upstream-only Basic. Add any extra groups separately.');}catch(e){log(e.message);}await loadSimpleUserAccess();}
+function formatPersonCompatibility(d){
+ const flag=d.upstreamAdmin===true?'Yes':d.upstreamAdmin===false?'No':'Not reported by upstream';
+ if(d.status)return 'Checked: '+(d.checkedAt||'Unknown')+'\nWindow: '+d.from+' to '+d.to+'\nResult: '+d.status.replaceAll('_',' ')+'\nObserved lessons: '+(d.periodCount||0)+'\nAccount type: '+(d.role||'Not reported')+'\nUpstream administrator: '+flag+'\n'+(d.notes||[]).join('\n');
+ let text='Stored account type: '+(d.storedRole||'Unknown')+'\nLinked people: '+(d.linkedPeople||0)+'\nUpstream administrator: '+flag+'\nToken stored: '+(d.hasToken?'Yes':'No')+' · Password stored: '+(d.hasPassword?'Yes':'No')+'\nLogin allowed by current rules: '+(d.admissionAllowed?'Yes':'No')+'\n';
+ return text+(d.lastProbe?'\nLast explicit probe:\n'+formatPersonCompatibility(d.lastProbe):'No explicit historical probe recorded. Stored data does not prove live compatibility.');
+}
+async function loadPersonCompatibility(){const out=$('personCompatibility');try{const d=await api('GET',personControlPath('compatibility'));if(d.error)throw new Error(d.error);out.textContent=formatPersonCompatibility(d);}catch(e){out.textContent=e.message;}}
+async function probePersonCompatibility(){const out=$('personCompatibility');if(!confirm('Read this account’s upstream identity and timetable for the selected window? No upstream records will be changed.'))return;try{const d=await api('POST',personControlPath('compatibility-probe'),{from:$('compatFrom').value,to:$('compatTo').value,personId:Number($('compatPersonId').value)||0});if(d.error)throw new Error(d.error);out.textContent=formatPersonCompatibility(d);}catch(e){out.textContent=e.message;}}
 async function setAccountPoolSharing(user,enabled){
  try{const d=await api('POST','access/grant',{school:simpleAccessSchool(),user,capability:'pool.timetable.share',effect:enabled?'allow':'deny'});if(d.error)throw new Error(d.error);log((enabled?'Enabled':'Disabled')+' pool contribution for '+user);}
  catch(e){log('Could not update pool sharing: '+e.message);}

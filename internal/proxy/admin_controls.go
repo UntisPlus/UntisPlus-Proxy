@@ -9,6 +9,10 @@ import (
 func (p *Proxy) adminControls(w http.ResponseWriter, r *http.Request, part string) {
 	school := r.URL.Query().Get("school")
 	switch part {
+	case "default-group-policy", "apply-basic", "compatibility", "compatibility-probe":
+		p.adminBaselineControls(w, r, part)
+		return
+
 	case "preview":
 		if r.Method != http.MethodPost {
 			w.WriteHeader(405)

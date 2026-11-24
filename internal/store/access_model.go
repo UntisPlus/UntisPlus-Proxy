@@ -127,6 +127,7 @@ func (s *Store) migrateAccessData() error {
 const (
 	CapGroupStudentBase    = "v2.student_base"
 	CapGroupTeacherBase    = "v2.teacher_base"
+	CapGroupUpstreamBasic  = "v2.upstream_basic"
 	CapGroupRecon          = "v2.recon"
 	CapGroupBoosted        = "v2.boosted"
 	CapGroupEditor         = "v2.editor"
@@ -140,7 +141,17 @@ func (s *Store) ensureBuiltinCapGroups() error {
 		desc   string
 		grants []access.Grant
 	}{
+		{name: CapGroupUpstreamBasic, desc: "Basic: stock upstream reads only; add proxy features separately", grants: []access.Grant{
+			{Capability: access.CapTimetableUpstreamView, Allow: true},
+			{Capability: access.CapTimetableClassUpstreamView, Allow: true},
+			{Capability: access.CapTimetableStudentPersonalUpstreamView, Allow: true},
+			{Capability: access.CapAbsenceOwnRead, Allow: true},
+		}},
 		{name: CapGroupStudentBase, desc: "Baseline capabilities for authenticated real student accounts", grants: []access.Grant{
+			{Capability: access.CapHomeworkOwnManage, Allow: true},
+			{Capability: access.CapAbsenceNotesOwnManage, Allow: true},
+			{Capability: access.CapEventsPersonalView, Allow: true},
+
 			{Capability: access.CapTimetableClassPooledView, Allow: true},
 			{Capability: access.CapTimetableClassUpstreamView, Allow: true},
 			{Capability: access.CapPoolTimetableShare, Allow: true},
@@ -158,6 +169,10 @@ func (s *Store) ensureBuiltinCapGroups() error {
 			{Capability: access.CapCalendarStudentPersonalMint, Allow: true},
 		}},
 		{name: CapGroupTeacherBase, desc: "Baseline capabilities for authenticated teacher/staff accounts", grants: []access.Grant{
+			{Capability: access.CapHomeworkOwnManage, Allow: true},
+			{Capability: access.CapAbsenceNotesOwnManage, Allow: true},
+			{Capability: access.CapEventsPersonalView, Allow: true},
+
 			{Capability: access.CapTimetableClassUpstreamView, Allow: true},
 			{Capability: access.CapPoolTimetableShare, Allow: true},
 			{Capability: access.CapAbsenceOwnRead, Allow: true},
@@ -214,6 +229,10 @@ func (s *Store) ensureBuiltinCapGroups() error {
 			{Capability: access.CapCalendarTechnikMint, Allow: true},
 		}},
 		{name: "v2.guardian_base", desc: "Own upstream linked-child timetable reads for guardian accounts", grants: []access.Grant{
+			{Capability: access.CapHomeworkOwnManage, Allow: true},
+			{Capability: access.CapAbsenceNotesOwnManage, Allow: true},
+			{Capability: access.CapEventsPersonalView, Allow: true},
+
 			{Capability: access.CapTimetableStudentPersonalUpstreamView, Allow: true},
 			{Capability: access.CapAbsenceOwnRead, Allow: true},
 			{Capability: access.CapNotifyNtfyCreate, Allow: true},
@@ -981,10 +1000,13 @@ func (s *Store) ListServerCapGates() ([]struct {
 // Effective resolution (v2)
 
 type EffectiveResult struct {
-	Role         access.Role
-	Decisions    map[access.Capability]access.Decision
-	GroupIDs     []int64
-	DirectGrants []CapGroupGrant
+	Role                    access.Role
+	Decisions               map[access.Capability]access.Decision
+	GroupIDs                []int64
+	DirectGrants            []CapGroupGrant
+	InheritedGroupIDs       []int64
+	ExcludedDefaultGroupIDs []int64
+	InheritRoleDefaults     bool
 }
 
 func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, error) {
@@ -1069,6 +1091,19 @@ func (s *Store) resolveEffective(school string, u *User, preview *GroupPreview) 
 		defIDs = append(defIDs, preview.ID)
 	}
 
+	inheritance, inheritErr := s.DefaultGroupPolicy(school, u.Username)
+	if inheritErr != nil {
+		return nil, inheritErr
+	}
+	inheritedIDs := append([]int64{}, defIDs...)
+	filteredIDs := []int64{}
+	for _, id := range defIDs {
+		if inheritance.Inherit && !containsGroupID(inheritance.ExcludedGroupIDs, id) {
+			filteredIDs = append(filteredIDs, id)
+		}
+	}
+	defIDs = filteredIDs
+
 	var roleGrants []map[access.Capability]access.Effect
 	for _, id := range defIDs {
 		if m, err := s.previewGroupEffects(id, preview); err == nil {
@@ -1110,10 +1145,11 @@ func (s *Store) resolveEffective(school string, u *User, preview *GroupPreview) 
 	}
 
 	return &EffectiveResult{
-		Role:         role,
-		Decisions:    decisions,
-		GroupIDs:     groupIDs,
-		DirectGrants: directRows,
+		Role:              role,
+		Decisions:         decisions,
+		GroupIDs:          groupIDs,
+		DirectGrants:      directRows,
+		InheritedGroupIDs: inheritedIDs, ExcludedDefaultGroupIDs: inheritance.ExcludedGroupIDs, InheritRoleDefaults: inheritance.Inherit,
 	}, nil
 }
 

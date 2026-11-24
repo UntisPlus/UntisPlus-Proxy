@@ -25,6 +25,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"untis-proxy/internal/access"
 
 	"untis-proxy/internal/store"
 )
@@ -182,7 +183,7 @@ func sortedObjectKeys(m jsonObject) []string {
 // metadata and the viewer's private note. Any problem returns the original bytes,
 // because a student's absence list is more useful undecorated than wrong.
 func (p *Proxy) enrichAbsenceResponse(raw []byte, school, viewer string) []byte {
-	if !p.store.FeatureEnabled(school, "absence_notes") {
+	if !p.store.FeatureEnabled(school, "absence_notes") || !p.proxyLocalAllowed(school, viewer, access.CapAbsenceNotesOwnManage) {
 		return raw
 	}
 	if viewer == "" || school == "" {
@@ -438,6 +439,10 @@ func (p *Proxy) handleAbsenceNotes(w http.ResponseWriter, r *http.Request) {
 	school := r.URL.Query().Get("school")
 	if school == "" {
 		school = p.opts.School
+	}
+	if p.userSchool(user, p.opts.School) != school || !p.effective(user, school, access.CapAbsenceNotesOwnManage) {
+		p.forbidden(w)
+		return
 	}
 
 	if r.Method == http.MethodGet {

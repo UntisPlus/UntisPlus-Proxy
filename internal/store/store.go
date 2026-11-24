@@ -2724,7 +2724,7 @@ func (s *Store) DeleteUser(username string) (int64, error) {
 		return 0, err
 	}
 	suffix := controlKey("", username)
-	if err := del(`DELETE FROM settings WHERE (key LIKE 'analytics-access/%' OR key LIKE 'admission-identity/%') AND substr(key,-length(?))=?`, suffix, suffix); err != nil {
+	if err := del(`DELETE FROM settings WHERE (key LIKE 'analytics-access/%' OR key LIKE 'admission-identity/%' OR key LIKE 'default-groups/%' OR key LIKE 'compatibility/%') AND substr(key,-length(?))=?`, suffix, suffix); err != nil {
 		tx.Rollback()
 		return 0, err
 	}

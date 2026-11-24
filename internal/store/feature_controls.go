@@ -11,7 +11,7 @@ import (
 var FeatureDefaults = map[string]bool{"update_check": true, "analytics": false, "technik": true, "calendar": true, "ntfy": true, "webhooks": true, "changes": true, "reconstruction": true, "homework": true, "absence_notes": true}
 
 func FeatureForCapability(cap string) string {
-	for prefix, feature := range map[string]string{"analytics.": "analytics", "events.technik.": "technik", "calendar.": "calendar", "notify.ntfy.": "ntfy", "notify.webhook.": "webhooks", "changes.": "changes"} {
+	for prefix, feature := range map[string]string{"analytics.": "analytics", "homework.": "homework", "absence.notes.": "absence_notes", "events.personal.": "technik", "events.technik.": "technik", "calendar.": "calendar", "notify.ntfy.": "ntfy", "notify.webhook.": "webhooks", "changes.": "changes"} {
 		if strings.HasPrefix(cap, prefix) {
 			return feature
 		}

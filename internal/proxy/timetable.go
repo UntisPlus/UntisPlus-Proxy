@@ -15,7 +15,7 @@ import (
 
 func (p *Proxy) getTimetable(w http.ResponseWriter, r *http.Request, school string, id json.RawMessage, paramsRaw json.RawMessage, body []byte) {
 	user := p.sessionUser(r)
-	if user == nil {
+	if user == nil || p.userSchool(user, p.opts.School) != school {
 		p.writeJSONRPCError(w, id, "not logged in", -8520)
 		return
 	}
@@ -34,7 +34,7 @@ func (p *Proxy) getTimetable(w http.ResponseWriter, r *http.Request, school stri
 
 	// Non-class elements: proxy with the requesting user's real session and let
 	// the real server decide (mirrors real behaviour exactly).
-	if elType != 1 {
+	if elType != 1 || p.prefersOwnUpstream(user, school, "CLASS", elID == user.ClassID) {
 		b, status, err := p.escalatedIntern(school, user, "jsonrpc.do", body)
 		if err != nil {
 			p.writeJSONRPCError(w, id, "no right for timetable", -8509)

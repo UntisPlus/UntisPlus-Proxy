@@ -317,6 +317,19 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
   must(previewCalls[0].body.assignTo==='student','preview lost audience');
   const capKeys=permissionSections.flatMap(([,rows])=>rows.map(([key])=>key));
   for(const key of ['analytics.personal.view','analytics.personal.history','analytics.teacher.view','analytics.class_history.view','analytics.export','events.technik.create','events.technik.attendance.write'])must(capKeys.includes(key),'new permission missing '+key);
+
+  const originalUserReload=loadSimpleUserAccess;
+  loadSimpleUserAccess=async()=>{};
+  window.personInheritance={school:'testschool',user:'dee',inherit:true,excludedGroupIds:[12]};
+  const inheritanceCalls=[];
+  api=async(method,path,body)=>{inheritanceCalls.push({method,path,body});return {ok:true};};
+  await savePersonInheritance(null,12,true);
+  must(inheritanceCalls[0].method==='PUT'&&inheritanceCalls[0].path.startsWith('access/default-group-policy?'),'inheritance control used wrong endpoint');
+  must(inheritanceCalls[0].body.inherit===true&&inheritanceCalls[0].body.excludedGroupIds.length===0,'restoring inherited group failed');
+  await savePersonInheritance(false,null,null);
+  must(inheritanceCalls[1].body.inherit===false,'automatic inheritance off not sent');
+  loadSimpleUserAccess=originalUserReload;
+  must(formatPersonCompatibility({storedRole:'teacher',upstreamAdmin:null}).includes('Not reported by upstream'),'unknown upstream administrator mislabelled');
   console.log('check-admin-ui: all admin UI checks passed');
 })().catch(function(e){ console.error('FAIL: ' + (e && e.stack || e)); process.exit(1); });
 `;
