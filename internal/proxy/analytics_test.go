@@ -355,7 +355,7 @@ func TestAnalyticsCountsModernCancellationsAndCover(t *testing.T) {
 	}
 }
 
-func TestAnalyticsRetriesSingleDayWithoutCountingNeighbouringLessons(t *testing.T) {
+func TestAnalyticsFetchesSingleDayWithNormalMobileWindow(t *testing.T) {
 	p, _, f := analyticsFixture(t)
 	f.mu.Lock()
 	f.rejectSingleDayTimetable = true
@@ -372,8 +372,10 @@ func TestAnalyticsRetriesSingleDayWithoutCountingNeighbouringLessons(t *testing.
 		len(report.Windows) != 1 || report.Windows[0].To != "2026-09-21" || report.Windows[0].UpstreamCode != nil {
 		t.Fatalf("unexpected single-day report: HTTP %d, %s", w.Code, w.Body.String())
 	}
-	if f.TimetableCalls() != 2 {
-		t.Fatalf("expected one bounded retry, got %d requests", f.TimetableCalls())
+	calls := f.Forwards()
+	if len(calls) != 1 || !strings.Contains(string(calls[0].Body), `"startDate":"2026-09-21"`) ||
+		!strings.Contains(string(calls[0].Body), `"endDate":"2026-09-27"`) {
+		t.Fatal("expected one upstream read using a seven-day window")
 	}
 }
 
@@ -423,14 +425,17 @@ func TestAnalyticsPersonalOTPUsesCallerIdentityWithoutSavedKey(t *testing.T) {
 		Params []struct {
 			ID   int64
 			Type string
-			Auth struct{ User, OTP string }
+			Auth struct {
+				User string
+				OTP  int
+			}
 		}
 	}
 	if len(calls) != 1 || json.Unmarshal(calls[0].Body, &forwarded) != nil || len(forwarded.Params) != 1 {
 		t.Fatal("expected one upstream timetable read")
 	}
 	params := forwarded.Params[0]
-	if params.ID != 7 || params.Type != "STUDENT" || params.Auth.User != "student" || params.Auth.OTP != "012345" {
+	if params.ID != 7 || params.Type != "STUDENT" || params.Auth.User != "student" || params.Auth.OTP != 12345 {
 		t.Fatal("expected the caller identity and the original six-digit code")
 	}
 	saved, _, err := st.SchoolCredential("testschool", "student")

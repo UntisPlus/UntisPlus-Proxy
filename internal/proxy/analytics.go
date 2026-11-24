@@ -3,7 +3,6 @@ package proxy
 import (
 	"archive/zip"
 	"bytes"
-	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/csv"
@@ -19,7 +18,6 @@ import (
 	"untis-proxy/internal/access"
 	"untis-proxy/internal/analytics"
 	"untis-proxy/internal/store"
-	"untis-proxy/internal/untis"
 )
 
 type analyticsRequest struct {
@@ -234,7 +232,7 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 			p.forbidden(w)
 			return
 		}
-		parsed, observed := p.fetchAnalyticsWindow(r.Context(), school, window, today, q.Mode == "personal", q.PersonalOTP)
+		parsed, observed := p.fetchAnalyticsWindow(school, window, today, q.Mode == "personal", q.PersonalOTP)
 		lessons = append(lessons, parsed...)
 		result.Windows = append(result.Windows, observed)
 		if observed.Status != "observed" {
@@ -372,41 +370,36 @@ func validAnalyticsOTP(otp string) bool {
 	return true
 }
 
-// fetchAnalyticsWindow keeps the user-requested dates in the report even when
-// upstream needs a normal mobile-app window to serve a one-day personal query.
-func (p *Proxy) fetchAnalyticsWindow(ctx context.Context, school string, window analyticsTarget, today string, personal bool, otp string) ([]analytics.Lesson, analyticsWindow) {
-	parsed, observed, rangeRetry := p.readAnalyticsWindow(school, window, window.From, window.To, otp)
-	if !rangeRetry || !personal || window.From != window.To || ctx.Err() != nil {
-		return parsed, observed
-	}
-	day, err := time.Parse(time.DateOnly, window.From)
-	if err != nil {
-		return parsed, observed
-	}
-	end := day.AddDate(0, 0, 6).Format(time.DateOnly)
-	start := window.From
-	if end > today {
-		end = today
-		if end == start {
-			// The preceding day is within the standard personal history allowance.
-			start = day.AddDate(0, 0, -1).Format(time.DateOnly)
+// fetchAnalyticsWindow uses a mobile-sized upstream request for one-day
+// personal reports. Only the originally requested dates reach the report.
+func (p *Proxy) fetchAnalyticsWindow(school string, window analyticsTarget, today string, personal bool, otp string) ([]analytics.Lesson, analyticsWindow) {
+	start, end := window.From, window.To
+	if personal && start == end {
+		day, err := time.Parse(time.DateOnly, start)
+		if err == nil {
+			end = day.AddDate(0, 0, 6).Format(time.DateOnly)
+			if end > today {
+				end = today
+				if end == start {
+					// Only today's query needs a preceding day, which is
+					// within the standard personal history allowance.
+					start = day.AddDate(0, 0, -1).Format(time.DateOnly)
+				}
+			}
 		}
 	}
-	parsed, retried, _ := p.readAnalyticsWindow(school, window, start, end, otp)
-	if retried.Status == "observed" {
-		return parsed, retried
-	}
-	// Preserve the original upstream code if the alternate range also fails.
-	return nil, observed
+	return p.readAnalyticsWindow(school, window, start, end, otp)
 }
 
-func (p *Proxy) readAnalyticsWindow(school string, window analyticsTarget, requestFrom, requestTo, otp string) ([]analytics.Lesson, analyticsWindow, bool) {
+func (p *Proxy) readAnalyticsWindow(school string, window analyticsTarget, requestFrom, requestTo, otp string) ([]analytics.Lesson, analyticsWindow) {
 	observed := analyticsWindow{From: window.From, To: window.To, Status: "unavailable"}
 	auth := map[string]any{}
 	if otp != "" {
 		// The target was resolved from the authenticated personal account. Use
 		// the supplied live code only as proof for this upstream read.
-		auth = map[string]any{"user": window.Owner.Username, "otp": otp, "clientTime": time.Now().UnixMilli()}
+		// The mobile client's timetable auth serializes OTP as a number.
+		code, _ := strconv.Atoi(otp)
+		auth = map[string]any{"user": window.Owner.Username, "otp": code, "clientTime": time.Now().UnixMilli()}
 	}
 	body, _ := json.Marshal(map[string]any{"id": "analytics", "jsonrpc": "2.0", "method": "getTimetable2017", "params": []any{
 		map[string]any{"id": window.ID, "type": window.Kind, "startDate": requestFrom, "endDate": requestTo,
@@ -416,7 +409,7 @@ func (p *Proxy) readAnalyticsWindow(school string, window analyticsTarget, reque
 		rewritten, err := p.rewriteAuthForOwner(school, body, window.Owner)
 		if err != nil {
 			observed.Reason = "source_auth_unavailable"
-			return nil, observed, false
+			return nil, observed
 		}
 		body = rewritten
 	}
@@ -432,7 +425,7 @@ func (p *Proxy) readAnalyticsWindow(school string, window analyticsTarget, reque
 		lessons, err := p.parseAnalyticsLessons(school, data, window.From, window.To)
 		if err == nil {
 			observed.Status = "observed"
-			return lessons, observed, false
+			return lessons, observed
 		}
 		if !errors.Is(err, errAnalyticsUpstreamRejected) {
 			observed.Reason = "invalid_timetable_response"
@@ -440,11 +433,8 @@ func (p *Proxy) readAnalyticsWindow(school string, window analyticsTarget, reque
 		}
 		observed.Reason = "upstream_rejected"
 		observed.UpstreamCode = analyticsUpstreamCode(data)
-		// Do not reissue requests when upstream denied authentication or access.
-		retry := !untis.IsAuthFailure(data) && (observed.UpstreamCode == nil || *observed.UpstreamCode != -8509)
-		return nil, observed, retry
 	}
-	return nil, observed, false
+	return nil, observed
 }
 
 // Only a numeric protocol code is exposed, never upstream message text.

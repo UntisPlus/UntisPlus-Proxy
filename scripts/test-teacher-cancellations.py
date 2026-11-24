@@ -49,6 +49,8 @@ def main():
     parser.add_argument("--teacher-id", type=int, help="use an explicitly approved teacher source and target")
     parser.add_argument("--json", action="store_true", help="print the full report")
     parser.add_argument("--show-names", action="store_true", help="include teacher and subject names in the report")
+    parser.add_argument("--saved-source", action="store_true",
+                        help="use the proxy's saved replay credential for the report")
     args = parser.parse_args()
 
     url = urlsplit(args.url)
@@ -88,7 +90,7 @@ def main():
         }
         if args.teacher_id is not None:
             payload["teacherId"] = args.teacher_id
-        elif (args.end - args.start).days < 31:
+        elif not args.saved_source and (args.end - args.start).days < 31:
             payload["personalOtp"] = code
         report = post(opener, origin + "/api/analytics/teacher-cancellations" + query, payload)
     except HTTPError as error:
@@ -130,8 +132,12 @@ def main():
             print(f"Warning: {warning}")
     if not report.get("complete") or not any(report.get(key) for key in
                                              ("uniqueLessons", "cancelledLessons", "coveredLessons")):
-        print("The report is partial or empty. Check replay credentials and try a date range with lessons.",
-              file=sys.stderr)
+        if payload.get("personalOtp"):
+            print("The live-code report is partial or empty. Use --saved-source to compare the saved credential.",
+                  file=sys.stderr)
+        else:
+            print("The saved-source report is partial or empty. Check account enrolment and the requested dates.",
+                  file=sys.stderr)
         return 2
     return 0
 

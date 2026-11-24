@@ -109,7 +109,7 @@ func (f *fakeUpstream) handler() http.Handler {
 					Params []struct{ StartDate, EndDate string }
 				}
 				if json.Unmarshal(body, &call) == nil && len(call.Params) == 1 && call.Params[0].StartDate == call.Params[0].EndDate {
-					_, _ = w.Write([]byte(`{"error":{"code":-32602,"message":"date window rejected"}}`))
+					_, _ = w.Write([]byte(`{"error":{"code":-8998,"message":"date window rejected"}}`))
 					return
 				}
 			}

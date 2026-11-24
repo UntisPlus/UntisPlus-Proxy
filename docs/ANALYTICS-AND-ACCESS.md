@@ -109,10 +109,9 @@ importer.
   apply. Omit it to use saved source credentials.
 
 Dates are inclusive; the current-day/future cutoff uses UTC. A request covers at most 366 days and 32 source windows;
-upstream requests are split into at most 31-day chunks. If upstream rejects
-the date window of a one-day personal query, the proxy may retry once over up to
-seven nearby days on the same timetable. The report only includes the requested
-date. Known upstream authentication and access denials skip this retry. Personal history has no
+upstream requests are split into at most 31-day chunks. A one-day personal query
+reads up to seven nearby dates from the same timetable in a single upstream
+request and reports only the requested date. Personal history has no
 proxy retention cutoff back to practical historical dates (1900 or later), but
 requires the extra history grant for older dates. Request multiple ranges to
 cover multiple years. Upstream may not retain or expose old data. Future days
@@ -204,7 +203,9 @@ and subject names in your terminal output.
 
 Personal mode needs the analytics switch and `analytics.personal.view`. For
 queries of up to 31 days, the script uses the fresh code for sign-in and the
-personal timetable request. Longer reports use the saved account credential.
+personal timetable request. Add `--saved-source` to use the account's saved
+replay credential for the timetable read. Longer reports always use the saved
+credential. The sign-in prompt still asks for a fresh code in either case.
 Add `--teacher-id ID` for an approved teacher target. This mode needs
 `analytics.teacher.view`, the explicit target ID, and an eligible saved teacher
 source. The source account is used for timetable reads.
