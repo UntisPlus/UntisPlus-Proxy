@@ -11,6 +11,34 @@ import (
 	"untis-proxy/internal/store"
 )
 
+func TestAnalyticsDiscoveryAcceptsLargeTeacherCatalog(t *testing.T) {
+	p, st, upstream := analyticsFixture(t)
+	ids := make([]int64, 537)
+	for i := range ids {
+		ids[i] = int64(10000 + i)
+	}
+	if err := st.SetAnalyticsAccess("testschool", "student", store.AnalyticsAccess{TeacherIDs: ids}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/analytics/options?school=testschool", nil)
+	req.AddCookie(&http.Cookie{Name: "JSESSIONID", Value: p.sessions.New("student", 5000).ID})
+	w := httptest.NewRecorder()
+	p.Handler().ServeHTTP(w, req)
+	var options struct{ Targets []analyticsOption }
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &options) != nil {
+		t.Fatalf("large catalog unavailable: HTTP %d", w.Code)
+	}
+	count := 0
+	for _, target := range options.Targets {
+		if target.Mode == "teacher" {
+			count++
+		}
+	}
+	if count != len(ids) || upstream.TimetableCalls() != 0 {
+		t.Fatalf("expected %d approved teachers with no timetable reads, got %d", len(ids), count)
+	}
+}
+
 func TestAnalyticsOptionsAndReportsRecheckTargetScopes(t *testing.T) {
 	p, st, upstream := analyticsFixture(t)
 	const caller = "report-caller"

@@ -116,7 +116,7 @@ func (p *Proxy) adminControls(w http.ResponseWriter, r *http.Request, part strin
 			store.AnalyticsAccess
 			RoomSelectors []string `json:"roomSelectors"`
 		}
-		if decodeJSONBody(r, &req) != nil || len(req.RoomSelectors) > 500 {
+		if decodeJSONBody(r, &req) != nil || len(req.RoomSelectors) > store.MaxAnalyticsTargetIDs {
 			badRequest(w, "invalid scope")
 			return
 		}

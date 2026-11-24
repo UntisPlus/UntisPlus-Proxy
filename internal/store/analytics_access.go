@@ -28,6 +28,8 @@ type AnalyticsAccess struct {
 	Profiles   []AnalyticsProfile `json:"profiles"`
 }
 
+const MaxAnalyticsTargetIDs = 2000
+
 func validAnalyticsDates(from, to string) bool {
 	a, e := time.Parse("2006-01-02", from)
 	b, f := time.Parse("2006-01-02", to)
@@ -47,7 +49,7 @@ func (s *Store) SetAnalyticsAccess(school, user string, a AnalyticsAccess) error
 		return fmt.Errorf("account not found in this school")
 	}
 	for _, ids := range [][]int64{a.TeacherIDs, a.RoomIDs, a.StudentIDs, a.ClassIDs} {
-		if len(ids) > 500 {
+		if len(ids) > MaxAnalyticsTargetIDs {
 			return fmt.Errorf("too many analytics targets")
 		}
 		for _, id := range ids {

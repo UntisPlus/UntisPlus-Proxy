@@ -48,6 +48,11 @@ func (p *Proxy) handleAnalyticsOptions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	options := []analyticsOption{}
+	// Each of these lists already has its individual target approvals. Source
+	// availability then depends on the account and school, not on the ID.
+	// Resolve it once per mode so a full school roster does not repeat the
+	// same teacher eligibility and shared-class lookups for every target.
+	availableSources := map[[2]string]string{}
 	add := func(option analyticsOption, request analyticsRequest, sources ...string) {
 		if !resolved.Decisions[analyticsCapability(request.Mode)].Effective {
 			return
@@ -55,17 +60,28 @@ func (p *Proxy) handleAnalyticsOptions(w http.ResponseWriter, r *http.Request) {
 		option.Mode = request.Mode
 		for _, source := range sources {
 			request.DataSource = source
-			targets, err := p.analyticsTargets(u, school, request)
-			if err == nil && len(targets) > 0 && !slices.Contains(option.DataSources, targets[0].DataSource) {
-				option.DataSources = append(option.DataSources, targets[0].DataSource)
+			key := [2]string{request.Mode, source}
+			available, cached := availableSources[key]
+			if !cached {
+				if targets, err := p.analyticsTargets(u, school, request); err == nil && len(targets) > 0 {
+					available = targets[0].DataSource
+				}
+				switch request.Mode {
+				case "teacher", "room", "student":
+					availableSources[key] = available
+				}
+			}
+			if available != "" && !slices.Contains(option.DataSources, available) {
+				option.DataSources = append(option.DataSources, available)
 			}
 		}
 		if len(option.DataSources) > 0 {
 			options = append(options, option)
 		}
 	}
+	catalog, _ := p.store.ListElementsWithNames(school)
 	name := func(kind, fallback string, id int64) string {
-		if value := p.store.ElementName(school, kind, id); value != "" {
+		if value := catalog[kind][id]; value != "" {
 			return value
 		}
 		return fmt.Sprintf("%s %d", fallback, id)
