@@ -88,6 +88,8 @@ def main():
         }
         if args.teacher_id is not None:
             payload["teacherId"] = args.teacher_id
+        elif (args.end - args.start).days < 31:
+            payload["personalOtp"] = code
         report = post(opener, origin + "/api/analytics/teacher-cancellations" + query, payload)
     except HTTPError as error:
         detail = error.read(4096)

@@ -389,3 +389,55 @@ func TestAnalyticsDoesNotRetryUpstreamAuthRejection(t *testing.T) {
 		t.Fatalf("unexpected rejection: HTTP %d, %s", w.Code, w.Body.String())
 	}
 }
+
+func TestAnalyticsPersonalOTPUsesCallerIdentityWithoutSavedKey(t *testing.T) {
+	p, st, f := analyticsFixture(t)
+	u, err := st.GetUser("student")
+	if err != nil || u == nil {
+		t.Fatalf("load student: %v", err)
+	}
+	u.Password = ""
+	if err := st.UpsertUser(u); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, body := range []string{
+		`{"mode":"teacher","teacherId":42,"from":"2026-09-21","to":"2026-09-21","personalOtp":"012345"}`,
+		`{"mode":"class-history","from":"2026-09-21","to":"2026-09-21","personalOtp":"012345"}`,
+		`{"from":"2026-09-21","to":"2026-09-21","personalOtp":"abc123"}`,
+		`{"from":"2026-09-21","to":"2026-10-22","personalOtp":"012345"}`,
+	} {
+		if w := analyticsReq(t, p, "student", body); w.Code != http.StatusBadRequest || f.TimetableCalls() != 0 {
+			t.Fatalf("invalid OTP request reached upstream: HTTP %d, %s", w.Code, w.Body.String())
+		}
+	}
+
+	w := analyticsReq(t, p, "student", `{"from":"2026-09-21","to":"2026-09-21","personalOtp":"012345"}`)
+	var report analyticsResponse
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &report) != nil ||
+		!report.Complete || report.CancelledLessons != 1 || strings.Contains(w.Body.String(), "012345") {
+		t.Fatalf("unexpected OTP report: HTTP %d, %s", w.Code, w.Body.String())
+	}
+	calls := f.Forwards()
+	var forwarded struct {
+		Params []struct {
+			ID   int64
+			Type string
+			Auth struct{ User, OTP string }
+		}
+	}
+	if len(calls) != 1 || json.Unmarshal(calls[0].Body, &forwarded) != nil || len(forwarded.Params) != 1 {
+		t.Fatal("expected one upstream timetable read")
+	}
+	params := forwarded.Params[0]
+	if params.ID != 7 || params.Type != "STUDENT" || params.Auth.User != "student" || params.Auth.OTP != "012345" {
+		t.Fatal("expected the caller identity and the original six-digit code")
+	}
+	saved, _, err := st.SchoolCredential("testschool", "student")
+	if err != nil || saved != "" {
+		t.Fatal("the report stored its one-time code")
+	}
+	if updated, err := st.GetUser("student"); err != nil || updated == nil || updated.Password != "" {
+		t.Fatal("the report modified the legacy replay credential")
+	}
+}

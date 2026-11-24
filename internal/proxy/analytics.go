@@ -34,6 +34,7 @@ type analyticsRequest struct {
 	Format           string   `json:"format"`
 	IncludeIrregular bool     `json:"includeIrregular"`
 	ExcludePrefixes  []string `json:"excludeTeacherPrefixes"`
+	PersonalOTP      string   `json:"personalOtp"`
 }
 type analyticsWindow struct {
 	From         string `json:"from"`
@@ -112,6 +113,10 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 		badRequest(w, "invalid source mode")
 		return
 	}
+	if q.PersonalOTP != "" && (q.Mode != "personal" || !validAnalyticsOTP(q.PersonalOTP)) {
+		badRequest(w, "personalOtp requires personal mode and a six-digit code")
+		return
+	}
 	// Administrator status deliberately does not bypass analytics scope grants.
 	if !p.effective(u, school, cap) || (q.Format != "json" && !p.effective(u, school, access.CapAnalyticsExport)) {
 		p.forbidden(w)
@@ -148,6 +153,10 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 	to, e2 := time.Parse("2006-01-02", q.To)
 	if e1 != nil || e2 != nil || to.Before(from) || to.Sub(from) > 365*24*time.Hour || from.Year() < 1900 || q.MinLessons < 0 || q.MinLessons > 100000 || q.TeacherID < 0 || len(q.ExcludePrefixes) > 20 {
 		badRequest(w, "use valid dates, at most 366 days per request, and valid filters")
+		return
+	}
+	if q.PersonalOTP != "" && to.Sub(from) > 30*24*time.Hour {
+		badRequest(w, "personalOtp supports at most 31 days per request")
 		return
 	}
 	for _, prefix := range q.ExcludePrefixes {
@@ -225,7 +234,7 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 			p.forbidden(w)
 			return
 		}
-		parsed, observed := p.fetchAnalyticsWindow(r.Context(), school, window, today, q.Mode == "personal")
+		parsed, observed := p.fetchAnalyticsWindow(r.Context(), school, window, today, q.Mode == "personal", q.PersonalOTP)
 		lessons = append(lessons, parsed...)
 		result.Windows = append(result.Windows, observed)
 		if observed.Status != "observed" {
@@ -351,10 +360,22 @@ func (p *Proxy) analyticsTargets(u *store.User, school string, q analyticsReques
 	return targets, nil
 }
 
+func validAnalyticsOTP(otp string) bool {
+	if len(otp) != 6 {
+		return false
+	}
+	for i := range otp {
+		if otp[i] < '0' || otp[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // fetchAnalyticsWindow keeps the user-requested dates in the report even when
 // upstream needs a normal mobile-app window to serve a one-day personal query.
-func (p *Proxy) fetchAnalyticsWindow(ctx context.Context, school string, window analyticsTarget, today string, personal bool) ([]analytics.Lesson, analyticsWindow) {
-	parsed, observed, rangeRetry := p.readAnalyticsWindow(school, window, window.From, window.To)
+func (p *Proxy) fetchAnalyticsWindow(ctx context.Context, school string, window analyticsTarget, today string, personal bool, otp string) ([]analytics.Lesson, analyticsWindow) {
+	parsed, observed, rangeRetry := p.readAnalyticsWindow(school, window, window.From, window.To, otp)
 	if !rangeRetry || !personal || window.From != window.To || ctx.Err() != nil {
 		return parsed, observed
 	}
@@ -371,7 +392,7 @@ func (p *Proxy) fetchAnalyticsWindow(ctx context.Context, school string, window 
 			start = day.AddDate(0, 0, -1).Format(time.DateOnly)
 		}
 	}
-	parsed, retried, _ := p.readAnalyticsWindow(school, window, start, end)
+	parsed, retried, _ := p.readAnalyticsWindow(school, window, start, end, otp)
 	if retried.Status == "observed" {
 		return parsed, retried
 	}
@@ -379,16 +400,25 @@ func (p *Proxy) fetchAnalyticsWindow(ctx context.Context, school string, window 
 	return nil, observed
 }
 
-func (p *Proxy) readAnalyticsWindow(school string, window analyticsTarget, requestFrom, requestTo string) ([]analytics.Lesson, analyticsWindow, bool) {
+func (p *Proxy) readAnalyticsWindow(school string, window analyticsTarget, requestFrom, requestTo, otp string) ([]analytics.Lesson, analyticsWindow, bool) {
 	observed := analyticsWindow{From: window.From, To: window.To, Status: "unavailable"}
-	raw, _ := json.Marshal(map[string]any{"id": "analytics", "jsonrpc": "2.0", "method": "getTimetable2017", "params": []any{
+	auth := map[string]any{}
+	if otp != "" {
+		// The target was resolved from the authenticated personal account. Use
+		// the supplied live code only as proof for this upstream read.
+		auth = map[string]any{"user": window.Owner.Username, "otp": otp, "clientTime": time.Now().UnixMilli()}
+	}
+	body, _ := json.Marshal(map[string]any{"id": "analytics", "jsonrpc": "2.0", "method": "getTimetable2017", "params": []any{
 		map[string]any{"id": window.ID, "type": window.Kind, "startDate": requestFrom, "endDate": requestTo,
-			"masterDataTimestamp": 0, "timetableTimestamp": 0, "timetableTimestamps": [7]int{}, "auth": map[string]any{}},
+			"masterDataTimestamp": 0, "timetableTimestamp": 0, "timetableTimestamps": [7]int{}, "auth": auth},
 	}})
-	body, err := p.rewriteAuthForOwner(school, raw, window.Owner)
-	if err != nil {
-		observed.Reason = "source_auth_unavailable"
-		return nil, observed, false
+	if otp == "" {
+		rewritten, err := p.rewriteAuthForOwner(school, body, window.Owner)
+		if err != nil {
+			observed.Reason = "source_auth_unavailable"
+			return nil, observed, false
+		}
+		body = rewritten
 	}
 	data, status, _, err := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
 	switch {
