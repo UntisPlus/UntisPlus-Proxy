@@ -19,8 +19,12 @@ func containsGroupID(ids []int64, id int64) bool {
 	return false
 }
 func (s *Store) DefaultGroupPolicy(school, user string) (DefaultGroupPolicy, error) {
+	return (accessReader{s.db}).DefaultGroupPolicy(school, user)
+}
+
+func (r accessReader) DefaultGroupPolicy(school, user string) (DefaultGroupPolicy, error) {
 	p := DefaultGroupPolicy{Inherit: true, ExcludedGroupIDs: []int64{}}
-	raw, found, err := s.GetSetting(controlKey("default-groups", school, norm(user)))
+	raw, found, err := r.GetSetting(controlKey("default-groups", school, norm(user)))
 	if err == nil && found {
 		err = json.Unmarshal([]byte(raw), &p)
 	}

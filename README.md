@@ -965,6 +965,7 @@ those describe how the current code behaves and are kept in step with it.
 
 | Doc | Read it for |
 |---|---|
+| [`docs/AUDIT-2026-11-24.md`](docs/AUDIT-2026-11-24.md) | account boundaries, runtime optimization and release changes |
 | [`DEPLOYMENT.md`](DEPLOYMENT.md) | running it, Docker, the tunnel, `-metrics-addr`, backups, the log, ops troubleshooting |
 | [`docs/APP-INTEGRATION.md`](docs/APP-INTEGRATION.md) | the contract for a client that wants live changes |
 | [`docs/ADMIN-WEBHOOKS-NTFY.md`](docs/ADMIN-WEBHOOKS-NTFY.md) | full `/admin/*` API, ntfy, multi-school |

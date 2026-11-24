@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"untis-proxy/internal/access"
@@ -10,10 +9,16 @@ import (
 
 var FeatureDefaults = map[string]bool{"update_check": true, "analytics": false, "technik": true, "calendar": true, "ntfy": true, "webhooks": true, "changes": true, "reconstruction": true, "homework": true, "absence_notes": true}
 
+var featurePrefixes = []struct{ prefix, feature string }{
+	{"analytics.", "analytics"}, {"homework.", "homework"}, {"absence.notes.", "absence_notes"},
+	{"events.personal.", "technik"}, {"events.technik.", "technik"}, {"calendar.", "calendar"},
+	{"notify.ntfy.", "ntfy"}, {"notify.webhook.", "webhooks"}, {"changes.", "changes"},
+}
+
 func FeatureForCapability(cap string) string {
-	for prefix, feature := range map[string]string{"analytics.": "analytics", "homework.": "homework", "absence.notes.": "absence_notes", "events.personal.": "technik", "events.technik.": "technik", "calendar.": "calendar", "notify.ntfy.": "ntfy", "notify.webhook.": "webhooks", "changes.": "changes"} {
-		if strings.HasPrefix(cap, prefix) {
-			return feature
+	for _, p := range featurePrefixes {
+		if strings.HasPrefix(cap, p.prefix) {
+			return p.feature
 		}
 	}
 	if strings.Contains(cap, ".reconstructed.") {
@@ -21,6 +26,17 @@ func FeatureForCapability(cap string) string {
 	}
 	return ""
 }
+
+var capabilityFeatures = func() map[access.Capability]string {
+	m := map[access.Capability]string{}
+	for _, c := range access.AllCapabilities {
+		if feature := FeatureForCapability(string(c)); feature != "" {
+			m[c] = feature
+		}
+	}
+	return m
+}()
+
 func (s *Store) FeatureEnabled(school, feature string) bool {
 	enabled, known := FeatureDefaults[feature]
 	if s == nil {
@@ -34,9 +50,7 @@ func (s *Store) FeatureEnabled(school, feature string) bool {
 		return false
 	}
 	if found {
-		if json.Unmarshal([]byte(raw), &enabled) != nil {
-			return false
-		}
+		enabled = strings.TrimSpace(raw) == "true"
 	}
 	if !enabled {
 		return false
@@ -47,9 +61,7 @@ func (s *Store) FeatureEnabled(school, feature string) bool {
 			return false
 		}
 		if found {
-			if json.Unmarshal([]byte(raw), &enabled) != nil {
-				return false
-			}
+			enabled = strings.TrimSpace(raw) == "true"
 		}
 	}
 	return enabled
@@ -80,20 +92,6 @@ type UserPermissionPreview struct {
 	Changes  []PermissionChange `json:"changes"`
 }
 
-func (s *Store) previewGroupEffects(id int64, p *GroupPreview) (map[access.Capability]access.Effect, error) {
-	if p == nil || p.ID != id {
-		return s.groupGrantEffects(id)
-	}
-	out := map[access.Capability]access.Effect{}
-	for c, e := range p.Grants {
-		if e > 0 {
-			out[access.Capability(c)] = access.EffectAllow
-		} else if e < 0 {
-			out[access.Capability(c)] = access.EffectDeny
-		}
-	}
-	return out, nil
-}
 func (s *Store) PreviewPermissionGroup(p GroupPreview) ([]UserPermissionPreview, error) {
 	if p.School == "" {
 		return nil, fmt.Errorf("school required")
@@ -120,20 +118,31 @@ func (s *Store) PreviewPermissionGroup(p GroupPreview) ([]UserPermissionPreview,
 	default:
 		return nil, fmt.Errorf("invalid audience")
 	}
-	users, err := s.ListUsers()
+	tx, err := s.beginRead()
 	if err != nil {
 		return nil, err
 	}
+	defer tx.Rollback()
+	scope, err := newPermissionScope(tx, p.School)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.Query(`SELECT username,person_type FROM users WHERE school=? ORDER BY last_seen DESC,id DESC`, p.School)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
 	out := []UserPermissionPreview{}
-	for _, u := range users {
-		if u.School != p.School {
-			continue
+	for rows.Next() {
+		u := User{School: p.School}
+		if err := rows.Scan(&u.Username, &u.PersonType); err != nil {
+			return nil, err
 		}
-		before, err := s.ResolveEffective(p.School, u)
+		before, err := scope.resolve(&u, nil, access.AllCapabilities)
 		if err != nil {
 			return nil, err
 		}
-		after, err := s.resolveEffective(p.School, u, &p)
+		after, err := scope.resolve(&u, &p, access.AllCapabilities)
 		if err != nil {
 			return nil, err
 		}
@@ -148,57 +157,56 @@ func (s *Store) PreviewPermissionGroup(p GroupPreview) ([]UserPermissionPreview,
 			out = append(out, UserPermissionPreview{u.Username, changes})
 		}
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // FeatureStates reads the two applicable scopes in one query, so resolving many
 // capabilities does not perform a settings query for every permission family.
 func (s *Store) FeatureStates(school string) map[string]bool {
-	out := map[string]bool{}
-	for name, enabled := range FeatureDefaults {
-		out[name] = enabled
-	}
-	rows, err := s.db.Query(`SELECT key,value FROM settings WHERE key LIKE 'feature/%'`)
+	states, err := (accessReader{s.db}).featureStates(school)
 	if err != nil {
-		for name := range out {
-			out[name] = false
+		states = make(map[string]bool, len(FeatureDefaults))
+		for name := range FeatureDefaults {
+			states[name] = false
 		}
-		return out
+	}
+	return states
+}
+
+func (r accessReader) featureStates(school string) (map[string]bool, error) {
+	// '/' and '0' are consecutive bytes. These exact, case-sensitive ranges
+	// use the settings primary key and do not scan other schools or cache blobs.
+	serverPrefix := controlKey("feature", "")
+	schoolPrefix := controlKey("feature", school)
+	rows, err := r.Query(`SELECT key,value FROM settings WHERE
+		(key>=? AND key<?) OR (key>=? AND key<?)`, serverPrefix+"/", serverPrefix+"0", schoolPrefix+"/", schoolPrefix+"0")
+	if err != nil {
+		return nil, err
 	}
 	defer rows.Close()
-	raw := map[string]string{}
+	values := map[string]bool{}
 	for rows.Next() {
-		var k, v string
-		if rows.Scan(&k, &v) != nil {
-			for name := range out {
-				out[name] = false
-			}
-			return out
+		var key, value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
 		}
-		raw[k] = v
+		values[key] = strings.TrimSpace(value) == "true"
 	}
-	if rows.Err() != nil {
-		for name := range out {
-			out[name] = false
-		}
-		return out
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
-	for name, enabled := range out {
-		if value, ok := raw[controlKey("feature", "", name)]; ok {
-			if json.Unmarshal([]byte(value), &enabled) != nil {
-				enabled = false
-			}
+	out := make(map[string]bool, len(FeatureDefaults))
+	for name, on := range FeatureDefaults {
+		suffix := "/" + base64.RawURLEncoding.EncodeToString([]byte(name))
+		if v, ok := values[serverPrefix+suffix]; ok {
+			on = v
 		}
-		if enabled && school != "" {
-			if value, ok := raw[controlKey("feature", school, name)]; ok {
-				if json.Unmarshal([]byte(value), &enabled) != nil {
-					enabled = false
-				}
-			}
+		if v, ok := values[schoolPrefix+suffix]; ok {
+			on = on && v
 		}
-		out[name] = enabled
+		out[name] = on
 	}
-	return out
+	return out, nil
 }
 
 func controlKey(prefix string, parts ...string) string {

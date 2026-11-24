@@ -247,7 +247,7 @@ func TestBoostedSelfTimetableStillCarriesOwnEvents(t *testing.T) {
 	seedSessionUser(t, st, "dee", 5, 7, 5000)
 	if err := st.UpsertUser(&store.User{
 		Username: "owner", School: "testschool", PersonType: 2, PersonID: 100,
-		Password: "s3cret", Method: "key",
+		Password: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", Method: "key",
 	}); err != nil {
 		t.Fatalf("seed owner: %v", err)
 	}

@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Release gate + ship: format check, vet, build, full test run, admin UI
-# runtime check (node, skipped if node is absent), then Docker Hub push and
-# GitHub push.
+# runtime check, then push one release tag for GitHub to test and publish.
 #
 # Usage:
 #   ./scripts/release.sh                 # test everything, then push
@@ -9,14 +8,11 @@
 #   PUSH=0 ./scripts/release.sh          # just the local gate (compile+test)
 #
 # Env overrides:
-#   IMAGE       Docker Hub repository, e.g. <your-namespace>/untisplus-proxy.
-#               Required when PUSH=1: there is deliberately no default, so a
-#               release cannot be pushed to whichever account happens to be
-#               logged in.
-#   VERSION     tag pushed to Docker Hub (default: exact git tag, else "dev").
+#   The release workflow owns the image repository and multi-platform publishing.
+#   VERSION     release tag (default: exact git tag, else "dev" for PUSH=0).
 #               Compiled into the binary, so /status reports it without anyone
 #               having to set an environment variable that can disagree.
-#   PUSH        set to 0 to skip docker push / git push
+#   PUSH        set to 0 to skip release-tag submission
 #   BACKUP_DB   path to the live database; set it to take a VACUUM INTO backup
 #               before shipping (upgrades run migrations that cannot be undone)
 #   BACKUP_KEEP how many automatic backups to keep (default 7)
@@ -31,15 +27,23 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-IMAGE="${IMAGE:-}"
 VERSION="${VERSION:-$(git describe --tags --exact-match 2>/dev/null || echo dev)}"
 PUSH="${PUSH:-1}"
 
-if [ "$PUSH" = "1" ] && [ -z "$IMAGE" ]; then
-  echo "error: IMAGE is required to push, e.g. IMAGE=<your-namespace>/untisplus-proxy $0" >&2
-  echo "       (there is no default: a release must not land in whichever account" >&2
-  echo "        happens to be logged in). Use PUSH=0 for the local gate only." >&2
-  exit 2
+if [ "$PUSH" = "1" ]; then
+  if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+    echo "error: shipping requires an explicit release tag such as VERSION=v2.0.0" >&2
+    exit 2
+  fi
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "error: commit changes before creating a release" >&2
+    exit 2
+  fi
+  if git rev-parse --verify "refs/tags/$VERSION" >/dev/null 2>&1 &&
+     [ "$(git rev-parse "refs/tags/$VERSION^{commit}")" != "$(git rev-parse HEAD)" ]; then
+    echo "error: release tag already names a different commit" >&2
+    exit 2
+  fi
 fi
 
 echo "==> [1/6] go vet ./..."
@@ -77,16 +81,9 @@ if [ "$PUSH" != "1" ]; then
   exit 0
 fi
 
-echo "==> [6/6] ship ${IMAGE}:${VERSION}"
-echo "==> docker build"
-docker build --build-arg VERSION="${VERSION}" -t "${IMAGE}:${VERSION}" -t "${IMAGE}:latest" .
-echo "==> docker push"
-docker push "${IMAGE}:${VERSION}"
-docker push "${IMAGE}:latest"
-
-branch="$(git branch --show-current)"
-echo "==> git push origin $branch"
-git push origin "$branch"
-git push origin --tags
-
-echo "done: ${IMAGE}:${VERSION} pushed (docker latest + ${VERSION}, branch ${branch})"
+echo "==> [6/6] submit ${VERSION} to the tested multi-platform release workflow"
+if ! git rev-parse --verify "refs/tags/$VERSION" >/dev/null 2>&1; then
+  git tag "$VERSION"
+fi
+git push origin "refs/tags/$VERSION"
+echo "submitted ${VERSION}; GitHub CI must pass before publishing images and the release"

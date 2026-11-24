@@ -7,6 +7,9 @@ import (
 
 func TestSessionRoundTrip(t *testing.T) {
 	st := openTestStore(t)
+	if err := st.UpsertUser(&User{Username: "dee"}); err != nil {
+		t.Fatal(err)
+	}
 	expires := time.Now().Add(time.Hour).Truncate(time.Second)
 	if err := st.SaveSession("sid-1", "Dee", 5000, expires); err != nil {
 		t.Fatalf("SaveSession: %v", err)
@@ -40,6 +43,9 @@ func TestSessionRoundTrip(t *testing.T) {
 
 func TestLoadSessionsDropsExpired(t *testing.T) {
 	st := openTestStore(t)
+	if err := st.UpsertUser(&User{Username: "dee"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.SaveSession("old", "dee", 0, time.Now().Add(-time.Minute)); err != nil {
 		t.Fatalf("SaveSession: %v", err)
 	}

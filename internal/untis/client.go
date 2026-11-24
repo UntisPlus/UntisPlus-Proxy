@@ -98,16 +98,20 @@ func TOTP(secret string) string {
 	return TOTPAt(secret, totpNow())
 }
 
-// TOTPAt is TOTP for a specific instant. A per-request check must evaluate the
-// code at the client's clock, not the server's, so the aggregate gate passes the
-// auth block's clientTime here rather than the wall clock.
+// TOTPAt calculates the code at t, or returns an empty string for an invalid key.
 func TOTPAt(secret string, t time.Time) string {
+	if secret == "" {
+		return ""
+	}
 	key, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(strings.ToUpper(secret))
 	if err != nil {
 		key, err = base32.StdEncoding.DecodeString(strings.ToUpper(secret))
 		if err != nil {
-			return "000000"
+			return ""
 		}
+	}
+	if len(key) == 0 {
+		return ""
 	}
 	counter := uint64(t.Unix() / 30)
 	var msg [8]byte

@@ -32,9 +32,13 @@ func (s *Store) SaveAccountLinks(school, username string, activeID int64, payloa
 	return err
 }
 func (s *Store) AccountLinks(school, username string) (AccountLinks, error) {
+	return (accessReader{s.db}).AccountLinks(school, username)
+}
+
+func (r accessReader) AccountLinks(school, username string) (AccountLinks, error) {
 	var links AccountLinks
 	var raw string
-	err := s.db.QueryRow(`SELECT active_person_id,persons_json FROM account_person_links WHERE school=? AND username=?`, school, norm(username)).Scan(&links.ActivePersonID, &raw)
+	err := r.QueryRow(`SELECT active_person_id,persons_json FROM account_person_links WHERE school=? AND username=?`, school, norm(username)).Scan(&links.ActivePersonID, &raw)
 	if err != nil {
 		return links, err
 	}

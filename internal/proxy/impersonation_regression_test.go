@@ -194,14 +194,13 @@ func TestFailedEnrollmentCannotReplaceSavedCredentials(t *testing.T) {
 			if err := st.UpsertCredential("victim", original, "original-password"); err != nil {
 				t.Fatal(err)
 			}
-			p.setReplayKey("victim", original)
 			for _, password := range []string{"wrong-password", "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"} {
 				rec := internReq(t, p, "getAppSharedSecret", "", internBody("getAppSharedSecret", map[string]any{"userName": "victim", "password": password}))
 				if rec.Code != http.StatusOK {
 					t.Fatalf("upstream reply not preserved: %d", rec.Code)
 				}
 				key, pw, err := st.GetCredential("victim")
-				if err != nil || key != original || pw != "original-password" || p.replayKey("victim") != original {
+				if err != nil || key != original || pw != "original-password" {
 					t.Fatal("failed enrollment poisoned credentials")
 				}
 			}

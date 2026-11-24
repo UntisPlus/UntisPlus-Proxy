@@ -9,7 +9,7 @@ on:
     tags: ['v*']
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-${{ github.ref }}
@@ -32,12 +32,6 @@ jobs:
 
       - uses: docker/setup-buildx-action@v4
 
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v4
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@v6
@@ -47,10 +41,30 @@ jobs:
           # latest. The tag is also compiled into the binary as VERSION.
           tags: |
             type=ref,event=tag
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
           labels: |
             org.opencontainers.image.title=untis-proxy
             org.opencontainers.image.version=${{ github.ref_name }}
+
+      - name: Verify tagged amd64 image
+        uses: ./.github/actions/check-image
+        with:
+          architecture: amd64
+          version: ${{ github.ref_name }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Verify tagged arm64 image
+        uses: ./.github/actions/check-image
+        with:
+          architecture: arm64
+          version: ${{ github.ref_name }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Build and push
         uses: docker/build-push-action@v7
@@ -61,18 +75,20 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: VERSION=${{ github.ref_name }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=untisplus-image
+            type=gha,scope=untisplus-arm64
+          cache-to: type=gha,scope=untisplus-image,mode=max
           provenance: true
           sbom: true
 
   github-release:
     name: Create GitHub release
     needs: publish
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-
       - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -82,5 +98,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             echo "release $TAG already exists; leaving it in place"
           else
-            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG"
+            flags=()
+            if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+            gh release create "$TAG" --verify-tag --generate-notes --title "$TAG" "${flags[@]}"
           fi

@@ -76,9 +76,6 @@ type Proxy struct {
 	flightMu sync.Mutex
 	flights  map[string]*classFetchCall
 
-	secretsMu sync.Mutex
-	secrets   map[string]string
-
 	// mdRaw caches the *unmodified* getUserData2017 result body per school.
 	// displayAllowed is stamped per request from it, so permission changes
 	// apply without a re-login and one user's grants never leak into another
@@ -198,7 +195,6 @@ func New(st *store.Store, uc *untis.Client, sm *session.Manager, opts Options) *
 		tt:          newTTCache(opts.TTL),
 		classDays:   newClassDayCache(),
 		studentDays: newClassDayCache(),
-		secrets:     map[string]string{},
 		mdView:      map[string][]byte{},
 		hub:         newNotifyHub(),
 		schools:     map[string]*schoolState{},
@@ -781,7 +777,7 @@ func (p *Proxy) sessionUser(r *http.Request) *store.User {
 		return nil
 	}
 	u, err := p.store.GetUser(s.Username)
-	if err != nil || u == nil || !p.store.UserAdmissionAllowed(p.userSchool(u, p.opts.School), u) {
+	if err != nil || u == nil || (s.UserID != 0 && s.UserID != u.ID) || !p.store.UserAdmissionAllowed(p.userSchool(u, p.opts.School), u) {
 		return nil
 	}
 	return u
@@ -991,23 +987,6 @@ func (p *Proxy) classNameFor(school, cookie string, classID int64) string {
 func (p *Proxy) hasPerm(username, feature string) bool {
 	ok, _ := p.store.HasPerm(username, feature)
 	return ok
-}
-
-// replayKey returns the in-memory replay key (shared secret) cached for a user,
-// or "" if none. It takes the secrets lock so a concurrent login/secret capture
-// cannot race the map.
-func (p *Proxy) replayKey(username string) string {
-	p.secretsMu.Lock()
-	defer p.secretsMu.Unlock()
-	return p.secrets[strings.ToLower(username)]
-}
-
-// setReplayKey stores the replay key for a user, taking the same lock as
-// replayKey so the map is never touched unsynchronised.
-func (p *Proxy) setReplayKey(username, secret string) {
-	p.secretsMu.Lock()
-	p.secrets[strings.ToLower(username)] = secret
-	p.secretsMu.Unlock()
 }
 
 // isAdmin reports whether a user holds the admin flag (DB `admin` column).

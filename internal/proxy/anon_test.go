@@ -27,7 +27,6 @@ func TestKeyLoginAnonymousSkipsReplayKey(t *testing.T) {
 	if err := st.UpsertSecret("#anonymous#", placeholder); err != nil {
 		t.Fatal(err)
 	}
-	p.setReplayKey("#anonymous#", placeholder)
 
 	req := httptest.NewRequest(http.MethodPost,
 		"/WebUntis/jsonrpc_intern.do?m=getUserData2017&school=testschool",

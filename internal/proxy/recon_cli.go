@@ -120,10 +120,9 @@ func RunRecon(ctx context.Context, st *store.Store, uc *untis.Client, opts Recon
 		delay = opts.Mode.defaultDelay()
 	}
 	p := &Proxy{
-		store:   st,
-		untis:   uc,
-		tt:      newTTCache(time.Minute),
-		secrets: map[string]string{},
+		store: st,
+		untis: uc,
+		tt:    newTTCache(time.Minute),
 	}
 	fetch := func(school string, classID int64, start, end string) ([]map[string]any, error) {
 		// No cache: a sweep touches every chunk once and would otherwise keep

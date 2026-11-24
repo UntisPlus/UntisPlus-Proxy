@@ -1,24 +1,14 @@
-bin/
-data/
-untis.db
-*.db-journal
-*.db-wal
-*.db-shm
-*.log
-.git/
-.tunnel-token
-# The live configuration: real school, upstream host, and whatever secrets the
-# deployment keeps here. The Dockerfile only COPYs cmd/ and internal/, so it
-# never reaches a layer, but the build context is uploaded to the daemon whole —
-# which matters the moment the build runs on a remote or rootless builder.
-.env
-.env.*
-
-# Local agent state and exported sessions never belong in a build context.
-.agents/
-.codex/
-.aws/
-.freebuff/
-docs/
-*.md
-le/
+# Only inputs needed to compile the runtime may leave this checkout.
+**
+!go.mod
+!go.sum
+!cmd/
+!cmd/server/
+!cmd/server/*.go
+!cmd/untisctl/
+!cmd/untisctl/*.go
+!internal/
+!internal/**/
+!internal/**/*.go
+!internal/proxy/static/*.html
+**/*_test.go

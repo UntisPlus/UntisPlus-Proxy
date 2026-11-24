@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeLoginServer stands in for the WebUntis backend.
@@ -155,8 +156,8 @@ func TestTOTPFormatAndValidity(t *testing.T) {
 			break
 		}
 	}
-	if got := TOTP("not-a-base32-secret!"); got != "000000" {
-		t.Errorf("invalid secret TOTP = %q, want 000000", got)
+	if got := TOTP("not-a-base32-secret!"); got != "" {
+		t.Errorf("invalid secret TOTP = %q, want empty", got)
 	}
 }
 
@@ -396,5 +397,13 @@ func TestJSONRPCErrorsOnNon200(t *testing.T) {
 	}
 	if !regexp.MustCompile(`502`).MatchString(err.Error()) {
 		t.Errorf("error = %v, want upstream status 502", err)
+	}
+}
+
+func TestInvalidTOTPKeysNeverProduceCode(t *testing.T) {
+	for _, key := range []string{"", "!", "========", "1", "s3cret"} {
+		if got := TOTPAt(key, time.Unix(0, 0)); got != "" {
+			t.Errorf("invalid key %q produced a code", key)
+		}
 	}
 }

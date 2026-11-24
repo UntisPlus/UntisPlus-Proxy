@@ -135,6 +135,7 @@ func main() {
 
 	uc := untis.New(untis.Config{Server: *server, School: *school})
 	sm := session.NewManager(24 * time.Hour)
+	defer sm.Close()
 	sm.SetPersister(st)
 	if saved, err := st.LoadSessions(time.Now()); err != nil {
 		log.Printf("restore sessions: %v", err)
@@ -142,7 +143,7 @@ func main() {
 		sessions := make([]session.Session, 0, len(saved))
 		for _, s := range saved {
 			sessions = append(sessions, session.Session{
-				ID: s.ID, Username: s.Username, ClassID: s.ClassID, Expires: s.Expires,
+				ID: s.ID, UserID: s.UserID, Username: s.Username, ClassID: s.ClassID, Expires: s.Expires,
 			})
 		}
 		sm.Restore(sessions)

@@ -239,5 +239,7 @@ func newFakeProxyUpstreamWithStore(t *testing.T, f *fakeUpstream, st *store.Stor
 	t.Cleanup(srv.Close)
 	host := strings.TrimPrefix(srv.URL, "https://")
 	cl := untis.New(untis.Config{Server: host, School: "testschool", HTTPClient: srv.Client()})
-	return New(st, cl, session.NewManager(5*time.Minute), Options{School: "testschool"})
+	sm := session.NewManager(5 * time.Minute)
+	t.Cleanup(sm.Close)
+	return New(st, cl, sm, Options{School: "testschool"})
 }

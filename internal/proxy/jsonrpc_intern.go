@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -94,11 +95,10 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 			if isBase32Secret(password) {
 				password = ""
 			}
-			if err := p.store.UpsertCredential(username, response.Result, password); err != nil {
-				http.Error(w, "failed to save credentials", http.StatusInternalServerError)
+			if err := p.store.SaveLoginCredential(school, username, response.Result, password); err != nil {
+				p.writeJSONRPCError(w, req.ID, "account unavailable", -8504)
 				return
 			}
-			p.setReplayKey(username, response.Result)
 			p.recordLoginSuccess(school, username)
 		} else if status >= 200 && status < 500 {
 			p.recordLoginFailure(r, school, username)
@@ -371,18 +371,7 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 			otp = s
 		}
 	}
-	extra := map[string]any{}
 	replayKey := ""
-	if !isAnon {
-		replayKey = auth.Key
-		if replayKey == "" {
-			replayKey = p.replayKey(auth.User)
-		}
-		if replayKey == "" {
-			replayKey, _ = p.store.GetSecret(auth.User)
-		}
-	}
-
 	// Password fallback: a base32-shaped value in the "otp" field means the
 	// submitter pasted the shared secret itself instead of a live 6-digit code
 	// (the app setup flow always displays the secret). Use it as the replay key
@@ -395,10 +384,11 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 		replayKey = otp
 		loginOTP = untis.TOTP(otp)
 	}
-	if replayKey != "" {
-		extra["key"] = replayKey
+	if !isAnon && replayKey == "" && isBase32Secret(auth.Key) && currentKeyMatches(auth.Key, otp) {
+		replayKey = auth.Key
 	}
-	cookie, realBody, err := p.untis.KeyLogin(school, auth.User, loginOTP, time.Now().UnixMilli(), extra)
+	// Upstream authenticates the one-time code. Keep replay keys local.
+	cookie, realBody, err := p.untis.KeyLogin(school, auth.User, loginOTP, time.Now().UnixMilli(), nil)
 	if err != nil {
 		if ue, ok := err.(*untis.UpstreamError); ok {
 			// Only an upstream rejection is a credential failure worth counting.
@@ -439,18 +429,27 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 		p.writeJSONRPCError(w, req.ID, "account type is not admitted", -8504)
 		return
 	}
-	// A login the upstream accepted is the strongest proof the presented replay
-	// key (stored secret or pasted base32 secret) is valid, so record it for
-	// future session escalation even if it wasn't captured before. Anonymous is
-	// not replayable, so it has no key to record.
-	if replayKey != "" && !isAnon {
-		p.setReplayKey(auth.User, replayKey)
-		_ = p.store.UpsertSecret(auth.User, replayKey)
-	}
-
-	if !isAnon && replayKey == "" {
-		if existing, err := p.store.GetUser(auth.User); err == nil && existing != nil && existing.Password != "" {
-			replayKey = existing.Password
+	method := "key"
+	if !isAnon {
+		if err := p.store.SaveLoginCredential(school, auth.User, replayKey, ""); err != nil {
+			go p.untis.Logout(school, cookie)
+			p.writeJSONRPCError(w, req.ID, "account unavailable", -8504)
+			return
+		}
+		if replayKey == "" {
+			replayKey, _, err = p.store.SchoolCredential(school, auth.User)
+			if err != nil {
+				go p.untis.Logout(school, cookie)
+				p.writeJSONRPCError(w, req.ID, "account unavailable", -8504)
+				return
+			}
+			if replayKey == "" {
+				// An OTP-only login may follow a password login. Preserve the
+				// credential type instead of interpreting a password as a TOTP key.
+				if previous, err := p.store.GetUserInSchool(school, auth.User); err == nil && previous != nil && previous.School == school && previous.Password != "" {
+					method, replayKey = previous.Method, previous.Password
+				}
+			}
 		}
 	}
 	// Donation rule: everyone donates their class to the pool, so Pool()/
@@ -459,7 +458,7 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	user := &store.User{
 		Username:    auth.User,
 		Password:    replayKey,
-		Method:      "key",
+		Method:      method,
 		School:      school,
 		PersonID:    info.PersonID,
 		PersonType:  info.PersonType,
@@ -476,7 +475,11 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	// The official anonymous login is only a session: don't persist
 	// "#anonymous#" as a pool account or owner.
 	if !isAnon {
-		_ = p.store.UpsertUser(user)
+		if err := p.store.UpsertLoginUser(user); err != nil {
+			go p.untis.Logout(school, cookie)
+			p.writeJSONRPCError(w, req.ID, "account unavailable", -8504)
+			return
+		}
 		if info.LinkedPersons != nil {
 			if links, e := json.Marshal(info.LinkedPersons); e == nil {
 				_ = p.store.SaveAccountLinks(school, user.Username, info.PersonID, links)
@@ -495,6 +498,10 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	go p.untis.Logout(school, cookie)
 
 	s := p.sessions.New(auth.User, user.ClassID)
+	if s == nil {
+		p.forbidden(w)
+		return
+	}
 	p.setSessionCookies(w, r, s.ID, school)
 	rewritten := p.markPooledElementsDisplayable(school, realBody, auth.User)
 	w.Header().Set("Content-Type", "application/json")
@@ -777,24 +784,23 @@ func normalizedOTP(raw json.RawMessage) string {
 			s = unq
 		}
 	}
-	var b strings.Builder
+	if len(s) == 0 || len(s) > 6 {
+		return ""
+	}
 	for _, r := range s {
-		if r >= '0' && r <= '9' {
-			b.WriteRune(r)
+		if r < '0' || r > '9' {
+			return ""
 		}
 	}
-	return b.String()
+	return s
 }
 
-// otpEquals compares two live codes ignoring a dropped leading zero ("88179"
-// matches "088179"). It never treats two empty strings as a match.
 func otpEquals(presented, expected string) bool {
-	p := strings.TrimLeft(presented, "0")
-	e := strings.TrimLeft(expected, "0")
-	if p == "" && e == "" {
-		return presented != ""
+	if len(presented) == 0 || len(presented) > 6 || len(expected) != 6 {
+		return false
 	}
-	return p == e
+	padded := strings.Repeat("0", 6-len(presented)) + presented
+	return subtle.ConstantTimeCompare([]byte(padded), []byte(expected)) == 1
 }
 
 // userFromRequestOTP resolves the user named in an auth block, but only when the
@@ -835,10 +841,18 @@ func (p *Proxy) authenticatedUpstreamRequester(r *http.Request, school, username
 // Only server-clock windows can establish a current OTP. The client timestamp
 // is untrusted and must not turn historical captured codes into live credentials.
 func (p *Proxy) verifyUserOTP(username, otp string, _ int64) bool {
-	secret, _ := p.store.GetSecret(username)
-	if secret == "" {
-		secret = p.replayKey(username)
+	u, err := p.store.GetUser(username)
+	if err != nil || u == nil {
+		return false
 	}
+	secret, _, err := p.store.SchoolCredential(p.userSchool(u, p.opts.School), u.Username)
+	if err != nil {
+		return false
+	}
+	return currentKeyMatches(secret, otp)
+}
+
+func currentKeyMatches(secret, otp string) bool {
 	if secret == "" {
 		return false
 	}
@@ -1752,8 +1766,13 @@ func (p *Proxy) renderCachedTimetable(school, viewer string, id any, raw []byte,
 // rewriteAuthForOwner replaces the auth block in a getTimetable2017 request with
 // a fresh OTP for the class owner, so the real server serves the class timetable.
 func (p *Proxy) rewriteAuthForOwner(school string, body []byte, owner *store.User) ([]byte, error) {
+	if owner == nil || p.userSchool(owner, p.opts.School) != school {
+		return nil, store.ErrAccountSchool
+	}
 	var req map[string]any
-	if err := json.Unmarshal(body, &req); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	if err := decoder.Decode(&req); err != nil {
 		return nil, err
 	}
 	params, ok := req["params"].([]any)
@@ -1770,7 +1789,7 @@ func (p *Proxy) rewriteAuthForOwner(school string, body []byte, owner *store.Use
 	case "key":
 		secret = owner.Password
 		if secret == "" {
-			secret, _ = p.store.GetSecret(owner.Username)
+			secret, _, _ = p.store.SchoolCredential(school, owner.Username)
 		}
 	default:
 		secBody, _ := json.Marshal(map[string]any{
@@ -1790,6 +1809,9 @@ func (p *Proxy) rewriteAuthForOwner(school string, body []byte, owner *store.Use
 		secret = resp.Result
 	}
 	otp = untis.TOTP(secret)
+	if otp == "" {
+		return nil, fmt.Errorf("no valid replay key")
+	}
 
 	p0["auth"] = map[string]any{
 		"user":       owner.Username,

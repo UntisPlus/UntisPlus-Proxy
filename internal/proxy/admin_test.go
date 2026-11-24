@@ -34,6 +34,7 @@ func newTestProxy(t *testing.T) (*Proxy, *store.Store) {
 	}
 	_ = st.SetDefaultSchool("testschool")
 	p := New(st, untis.New(untis.Config{Server: "school.example.com", School: "testschool"}), session.NewManager(5*time.Minute), Options{School: "testschool", OutageVerifyPings: -1})
+	t.Cleanup(p.sessions.Close)
 	return p, st
 }
 
@@ -295,7 +296,7 @@ func TestMultiSchoolAutoRegisterAndPoolIsolation(t *testing.T) {
 
 	// 2. Per-school pools are isolated: otherschool's class never leaks into
 	// testschool's pool (and vice-versa); a school='' account (pre-multi-school)
-	// matches any school.
+	// is bound to the configured default school.
 	if err := st.UpsertUser(&store.User{Username: "a1", PersonType: 5, PersonID: 1, ClassID: 101, School: "testschool"}); err != nil {
 		t.Fatal(err)
 	}
@@ -328,8 +329,8 @@ func TestMultiSchoolAutoRegisterAndPoolIsolation(t *testing.T) {
 	if herSchools[102] {
 		t.Errorf("testschool pool = %v, but otherschool class 102 leaked in", testschool)
 	}
-	if !neSchools[102] || !neSchools[200] {
-		t.Errorf("otherschool pool = %v, want classes 102 + 200", otherschool)
+	if !neSchools[102] || neSchools[200] {
+		t.Errorf("otherschool pool = %v, want only class 102", otherschool)
 	}
 	if neSchools[101] {
 		t.Errorf("otherschool pool = %v, but testschool class 101 leaked in", otherschool)

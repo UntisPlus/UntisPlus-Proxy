@@ -1,0 +1,37 @@
+name: Verify a runtime image
+description: Load one platform into the runner and smoke-test the compiled version offline.
+inputs:
+  architecture:
+    description: Target Linux architecture (amd64 or arm64)
+    required: true
+  version:
+    description: Version to embed in the server and check in /status
+    required: true
+  labels:
+    description: OCI labels applied to the tested build
+    default: ''
+  cache-to:
+    description: Optional external cache export
+    default: ''
+runs:
+  using: composite
+  steps:
+    - uses: docker/build-push-action@v7
+      with:
+        context: .
+        platforms: linux/${{ inputs.architecture }}
+        load: true
+        tags: untisplus/untisplus-proxy:ci-${{ inputs.architecture }}
+        build-args: VERSION=${{ inputs.version }}
+        labels: ${{ inputs.labels }}
+        cache-from: |
+          type=gha,scope=untisplus-image
+          type=gha,scope=untisplus-arm64
+        cache-to: ${{ inputs.cache-to }}
+    - name: Check default startup, CLI aliases, backup and restore
+      shell: bash
+      env:
+        DOCKER_DEFAULT_PLATFORM: linux/${{ inputs.architecture }}
+        IMAGE: untisplus/untisplus-proxy:ci-${{ inputs.architecture }}
+        VERSION: ${{ inputs.version }}
+      run: scripts/check-container.sh "$IMAGE" "$VERSION"

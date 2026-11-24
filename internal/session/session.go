@@ -3,6 +3,7 @@ package session
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strings"
 	"sync"
 	"time"
 )
@@ -11,6 +12,7 @@ type Session struct {
 	ID       string
 	Username string
 	ClassID  int64
+	UserID   int64
 	Expires  time.Time
 }
 
@@ -27,10 +29,12 @@ type Manager struct {
 	sessions  map[string]*Session
 	ttl       time.Duration
 	persister Persister
+	stop      chan struct{}
+	closeOnce sync.Once
 }
 
 func NewManager(ttl time.Duration) *Manager {
-	m := &Manager{sessions: make(map[string]*Session), ttl: ttl}
+	m := &Manager{sessions: make(map[string]*Session), ttl: ttl, stop: make(chan struct{})}
 	go m.gc()
 	return m
 }
@@ -64,7 +68,9 @@ func (m *Manager) Restore(sessions []Session) {
 
 func (m *Manager) New(username string, classID int64) *Session {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		return nil
+	}
 	s := &Session{
 		ID:       hex.EncodeToString(b),
 		Username: username,
@@ -72,15 +78,32 @@ func (m *Manager) New(username string, classID int64) *Session {
 		Expires:  time.Now().Add(m.ttl),
 	}
 	m.mu.Lock()
-	m.sessions[s.ID] = s
+	defer m.mu.Unlock()
 	p := m.persister
-	m.mu.Unlock()
-	if p != nil {
-		// A failed write only costs a re-login after a restart; it must never
-		// fail the login that just succeeded in memory.
-		_ = p.SaveSession(s.ID, s.Username, s.ClassID, s.Expires)
+	if binder, ok := p.(interface{ SessionUserID(string) (int64, error) }); ok {
+		id, err := binder.SessionUserID(username)
+		if err != nil || (id == 0 && username != "#anonymous#") {
+			return nil
+		}
+		s.UserID = id
 	}
-	return s
+	m.sessions[s.ID] = s
+	if p != nil {
+		// Bound storage must still recognize the account before issuing a
+		// session. Legacy persisters retain their best-effort behavior.
+		if bound, ok := p.(interface {
+			SaveBoundSession(string, string, int64, int64, time.Time) error
+		}); ok {
+			if err := bound.SaveBoundSession(s.ID, s.Username, s.ClassID, s.UserID, s.Expires); err != nil {
+				delete(m.sessions, s.ID)
+				return nil
+			}
+		} else {
+			_ = p.SaveSession(s.ID, s.Username, s.ClassID, s.Expires)
+		}
+	}
+	copied := *s
+	return &copied
 }
 
 func (m *Manager) Get(id string) *Session {
@@ -90,14 +113,15 @@ func (m *Manager) Get(id string) *Session {
 	if s == nil || time.Now().After(s.Expires) {
 		return nil
 	}
-	return s
+	copied := *s
+	return &copied
 }
 
 func (m *Manager) Delete(id string) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.sessions, id)
 	p := m.persister
-	m.mu.Unlock()
 	if p != nil {
 		_ = p.DeleteSession(id)
 	}
@@ -106,8 +130,13 @@ func (m *Manager) Delete(id string) {
 func (m *Manager) gc() {
 	t := time.NewTicker(10 * time.Minute)
 	defer t.Stop()
-	for range t.C {
-		m.sweepExpired()
+	for {
+		select {
+		case <-t.C:
+			m.sweepExpired()
+		case <-m.stop:
+			return
+		}
 	}
 }
 
@@ -115,6 +144,7 @@ func (m *Manager) gc() {
 // background GC; exposed so tests can drive it deterministically.
 func (m *Manager) sweepExpired() {
 	m.mu.Lock()
+	defer m.mu.Unlock()
 	now := time.Now()
 	var expired []string
 	for id, s := range m.sessions {
@@ -124,10 +154,26 @@ func (m *Manager) sweepExpired() {
 		}
 	}
 	p := m.persister
-	m.mu.Unlock()
 	if p != nil {
 		for _, id := range expired {
 			_ = p.DeleteSession(id)
+		}
+	}
+}
+
+// Close stops maintenance without revoking durable sessions.
+func (m *Manager) Close() { m.closeOnce.Do(func() { close(m.stop) }) }
+
+// DeleteUser revokes all live sessions after account deletion.
+func (m *Manager) DeleteUser(username string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for id, s := range m.sessions {
+		if strings.EqualFold(strings.TrimSpace(username), s.Username) {
+			delete(m.sessions, id)
+			if m.persister != nil {
+				_ = m.persister.DeleteSession(id)
+			}
 		}
 	}
 }

@@ -596,22 +596,17 @@ func (s *Store) UnassignUserCapGroup(school, username string, groupID int64) err
 }
 
 func (s *Store) ListUserCapGroups(school, username string) ([]CapGroup, error) {
-	q := `SELECT g.id,g.school,g.name,g.description,g.created_at,g.updated_at
+	return (accessReader{s.db}).ListUserCapGroups(school, username)
+}
+
+func (r accessReader) ListUserCapGroups(school, username string) ([]CapGroup, error) {
+	rows, err := r.Query(`SELECT DISTINCT g.id,g.school,g.name,g.description,g.created_at,g.updated_at
 		FROM cap_groups g JOIN user_cap_groups ug ON ug.group_id=g.id
-		WHERE ug.username=? AND ug.school=? ORDER BY g.name`
-	args := []any{norm(username), school}
-	if school != "" {
-		q = `SELECT g.id,g.school,g.name,g.description,g.created_at,g.updated_at
-		FROM cap_groups g JOIN user_cap_groups ug ON ug.group_id=g.id
-		WHERE ug.username=? AND (ug.school=? OR ug.school='') ORDER BY g.name, g.id`
-		args = []any{norm(username), school}
-	}
-	rows, err := s.db.Query(q, args...)
+		WHERE ug.username=? AND ug.school IN ('',?) AND g.school IN ('',?) ORDER BY g.name, g.id`, norm(username), school, school)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	seen := map[int64]bool{}
 	var out []CapGroup
 	for rows.Next() {
 		var g CapGroup
@@ -619,10 +614,6 @@ func (s *Store) ListUserCapGroups(school, username string) ([]CapGroup, error) {
 		if err := rows.Scan(&g.ID, &g.School, &g.Name, &g.Description, &ca, &ua); err != nil {
 			return nil, err
 		}
-		if seen[g.ID] {
-			continue
-		}
-		seen[g.ID] = true
 		g.CreatedAt, g.UpdatedAt = time.Unix(ca, 0), time.Unix(ua, 0)
 		out = append(out, g)
 	}
@@ -651,56 +642,30 @@ func (s *Store) SetUserCapGrant(school, username, cap string, effect int) error 
 }
 
 func (s *Store) ListUserCapGrants(school, username string) ([]CapGroupGrant, error) {
-	q := `SELECT capability,effect FROM user_cap_grants WHERE school=? AND username=? ORDER BY capability`
-	args := []any{school, norm(username)}
-	if school != "" {
-		q = `SELECT capability,effect,school FROM user_cap_grants WHERE username=? AND (school=? OR school='') ORDER BY capability, school`
-		args = []any{norm(username), school}
-	}
-	rows, err := s.db.Query(q, args...)
+	return (accessReader{s.db}).ListUserCapGrants(school, username)
+}
+
+func (r accessReader) ListUserCapGrants(school, username string) ([]CapGroupGrant, error) {
+	rows, err := r.Query(`SELECT capability,effect FROM user_cap_grants
+		WHERE username=? AND school IN ('',?) ORDER BY capability, school`, norm(username), school)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	type item struct {
-		eff   int
-		scope string
-	}
-	best := map[string]item{}
+	out := []CapGroupGrant{}
 	for rows.Next() {
-		var cap string
-		var eff int
-		scope := school
-		if school != "" {
-			if err := rows.Scan(&cap, &eff, &scope); err != nil {
-				return nil, err
-			}
+		var g CapGroupGrant
+		if err := rows.Scan(&g.Capability, &g.Effect); err != nil {
+			return nil, err
+		}
+		// Global rows sort first. A school-specific row replaces its global rule.
+		if last := len(out) - 1; last >= 0 && out[last].Capability == g.Capability {
+			out[last] = g
 		} else {
-			if err := rows.Scan(&cap, &eff); err != nil {
-				return nil, err
-			}
+			out = append(out, g)
 		}
-		if prev, ok := best[cap]; ok {
-			// prefer school-specific over global
-			if prev.scope == school && scope == "" {
-				continue
-			}
-		}
-		best[cap] = item{eff: eff, scope: scope}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	keys := make([]string, 0, len(best))
-	for k := range best {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	out := make([]CapGroupGrant, 0, len(keys))
-	for _, k := range keys {
-		out = append(out, CapGroupGrant{Capability: k, Effect: best[k].eff})
-	}
-	return out, nil
+	return out, rows.Err()
 }
 
 // Role defaults
@@ -720,22 +685,25 @@ func (s *Store) SetRoleDefaultGroup(school, role string, groupID int64, priority
 }
 
 func (s *Store) ListRoleDefaultGroups(school, role string) ([]int64, error) {
-	rows, err := s.db.Query(`SELECT group_id FROM role_default_groups WHERE (school=? OR school='') AND role=? ORDER BY priority,group_id`, school, strings.ToLower(role))
+	return (accessReader{s.db}).ListRoleDefaultGroups(school, role)
+}
+
+func (r accessReader) ListRoleDefaultGroups(school, role string) ([]int64, error) {
+	rows, err := r.Query(`SELECT d.group_id FROM role_default_groups d
+		JOIN cap_groups g ON g.id=d.group_id WHERE d.school IN ('',?) AND g.school IN ('',?) AND d.role=?
+		GROUP BY d.group_id ORDER BY MIN(d.priority), d.group_id`, school, school, strings.ToLower(role))
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	seen := map[int64]bool{}
+
 	var out []int64
 	for rows.Next() {
 		var id int64
 		if err := rows.Scan(&id); err != nil {
 			return nil, err
 		}
-		if !seen[id] {
-			seen[id] = true
-			out = append(out, id)
-		}
+		out = append(out, id)
 	}
 	return out, rows.Err()
 }
@@ -801,63 +769,17 @@ func (s *Store) SetUserCapPref(school, username, cap string, optedIn bool) error
 }
 
 func (s *Store) UserCapPrefs(school, username string) (map[string]bool, error) {
-	out := map[string]bool{}
-	if school != "" {
-		// global defaults first, then school-specific overrides
-		rows, err := s.db.Query(`SELECT capability,opted_in,school FROM user_cap_prefs WHERE username=? AND (school=? OR school='') ORDER BY school='' DESC`, norm(username), school)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var cap string
-			var v int
-			var sc string
-			if err := rows.Scan(&cap, &v, &sc); err != nil {
-				return nil, err
-			}
-			// rows ordered so global ('') come last? "school='' DESC" gives true(1) for '' in SQLite? in SQLite boolean expr returns 0/1; DESC means 1 first (global) then 0 (specific) - so specific would overwrite. better to process in deterministic way: read all then apply with precedence.
-			out[cap] = v != 0
-			_ = sc
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		// re-apply with explicit precedence: global then specific
-		out = map[string]bool{}
-		rows2, err := s.db.Query(`SELECT capability,opted_in,school FROM user_cap_prefs WHERE username=? AND (school=? OR school='')`, norm(username), school)
-		if err != nil {
-			return nil, err
-		}
-		defer rows2.Close()
-		type pv struct {
-			v        bool
-			specific bool
-		}
-		tmp := map[string]pv{}
-		for rows2.Next() {
-			var cap string
-			var v int
-			var sc string
-			if err := rows2.Scan(&cap, &v, &sc); err != nil {
-				return nil, err
-			}
-			cur, ok := tmp[cap]
-			isSpecific := sc == school
-			if !ok || (!cur.specific && isSpecific) {
-				tmp[cap] = pv{v: v != 0, specific: isSpecific}
-			}
-		}
-		for k, v := range tmp {
-			out[k] = v.v
-		}
-		return out, rows2.Err()
-	}
-	rows, err := s.db.Query(`SELECT capability,opted_in FROM user_cap_prefs WHERE school=? AND username=?`, school, norm(username))
+	return (accessReader{s.db}).UserCapPrefs(school, username)
+}
+
+func (r accessReader) UserCapPrefs(school, username string) (map[string]bool, error) {
+	rows, err := r.Query(`SELECT capability,opted_in FROM user_cap_prefs
+		WHERE username=? AND school IN ('',?) ORDER BY school`, norm(username), school)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	out := map[string]bool{}
 	for rows.Next() {
 		var cap string
 		var v int
@@ -885,7 +807,11 @@ func (s *Store) SetServerCapGate(scope, cap string, enabled bool) error {
 // A global deny is a hard ceiling. Schools can disable a feature but cannot
 // re-enable a capability disabled by the server operator.
 func (s *Store) ServerCapGates(scope string) (map[string]bool, error) {
-	rows, err := s.db.Query(`SELECT capability,enabled FROM server_cap_gates WHERE scope='' OR scope=?`, scope)
+	return (accessReader{s.db}).ServerCapGates(scope)
+}
+
+func (r accessReader) ServerCapGates(scope string) (map[string]bool, error) {
+	rows, err := r.Query(`SELECT capability,enabled FROM server_cap_gates WHERE scope='' OR scope=?`, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -1009,204 +935,8 @@ type EffectiveResult struct {
 	InheritRoleDefaults     bool
 }
 
-func (s *Store) ResolveEffective(school string, u *User) (*EffectiveResult, error) {
-	return s.resolveEffective(school, u, nil)
-}
-func (s *Store) resolveEffective(school string, u *User, preview *GroupPreview) (*EffectiveResult, error) {
-	if u == nil {
-		return &EffectiveResult{Role: access.RoleUnknown, Decisions: access.Resolve(access.Inputs{})}, nil
-	}
-	role := s.resolveUserRole(school, u.PersonType)
-	if links, err := s.AccountLinks(school, u.Username); err == nil && links.Guardian {
-		role = access.Role("parent")
-	}
-	gates, gateErr := s.ServerCapGates(school)
-	if gateErr != nil {
-		return nil, gateErr
-	}
-	serverEnabled := map[access.Capability]bool{}
-	for _, c := range access.AllCapabilities {
-		// default enabled unless explicitly disabled
-		if v, ok := gates[string(c)]; ok {
-			serverEnabled[c] = v
-		} else {
-			serverEnabled[c] = defaultServerEnabled(c)
-		}
-	}
-
-	featureStates := s.FeatureStates(school)
-	for _, c := range access.AllCapabilities {
-		if feature := FeatureForCapability(string(c)); feature != "" && !featureStates[feature] {
-			serverEnabled[c] = false
-		}
-	}
-
-	direct := map[access.Capability]access.Effect{}
-	directRows, directErr := s.ListUserCapGrants(school, u.Username)
-	if directErr != nil {
-		return nil, directErr
-	}
-	for _, g := range directRows {
-		if g.Effect > 0 {
-			direct[access.Capability(g.Capability)] = access.EffectAllow
-		} else if g.Effect < 0 {
-			direct[access.Capability(g.Capability)] = access.EffectDeny
-		}
-	}
-
-	// User groups (school-specific and global? assignments stored with school; also include global groups by group scope handling)
-	groups, groupErr := s.ListUserCapGroups(school, u.Username)
-	if groupErr != nil {
-		return nil, groupErr
-	}
-	var groupGrants []map[access.Capability]access.Effect
-	var groupIDs []int64
-	for _, g := range groups {
-		groupIDs = append(groupIDs, g.ID)
-		if m, err := s.previewGroupEffects(g.ID, preview); err == nil {
-			groupGrants = append(groupGrants, m)
-		} else {
-			return nil, err
-		}
-	}
-
-	// Role defaults
-	defIDs, defaultsErr := s.ListRoleDefaultGroups(school, string(role))
-	if defaultsErr != nil {
-		return nil, defaultsErr
-	}
-	if len(defIDs) == 0 {
-		defIDs, defaultsErr = s.ListRoleDefaultGroups("", string(role))
-		if defaultsErr != nil {
-			return nil, defaultsErr
-		}
-	}
-	// The everyone audience applies to current and future authenticated accounts.
-	everyoneIDs, everyoneErr := s.ListRoleDefaultGroups(school, "*")
-	if everyoneErr != nil {
-		return nil, everyoneErr
-	}
-	defIDs = append(defIDs, everyoneIDs...)
-	if preview != nil && preview.AssignTo != "" && (preview.AssignTo == "*" || preview.AssignTo == string(role)) {
-		defIDs = append(defIDs, preview.ID)
-	}
-
-	inheritance, inheritErr := s.DefaultGroupPolicy(school, u.Username)
-	if inheritErr != nil {
-		return nil, inheritErr
-	}
-	inheritedIDs := append([]int64{}, defIDs...)
-	filteredIDs := []int64{}
-	for _, id := range defIDs {
-		if inheritance.Inherit && !containsGroupID(inheritance.ExcludedGroupIDs, id) {
-			filteredIDs = append(filteredIDs, id)
-		}
-	}
-	defIDs = filteredIDs
-
-	var roleGrants []map[access.Capability]access.Effect
-	for _, id := range defIDs {
-		if m, err := s.previewGroupEffects(id, preview); err == nil {
-			roleGrants = append(roleGrants, m)
-		} else {
-			return nil, err
-		}
-	}
-
-	prefsRaw, prefsErr := s.UserCapPrefs(school, u.Username)
-	if prefsErr != nil {
-		return nil, prefsErr
-	}
-	prefs := map[access.Capability]bool{}
-	for k, v := range prefsRaw {
-		prefs[access.Capability(k)] = v
-	}
-
-	in := access.Inputs{
-		ServerEnabled:     serverEnabled,
-		Direct:            direct,
-		GroupGrants:       groupGrants,
-		RoleDefaultGrants: roleGrants,
-		UserPrefs:         prefs,
-		Toggleable:        defaultToggleableCaps(),
-	}
-	decisions := access.Resolve(in)
-	// Expand legacy manage only when no operation-specific rule exists. Preview
-	// and enforcement consume exactly these same resolved decisions.
-	legacy := decisions[access.CapEventsTechnikManage]
-	for _, cap := range []access.Capability{access.CapEventsTechnikCreate, access.CapEventsTechnikEdit, access.CapEventsTechnikDelete, access.CapEventsTechnikImport, access.CapEventsTechnikAttendanceRead, access.CapEventsTechnikAttendanceWrite} {
-		d := decisions[cap]
-		if d.Source == access.SourceImplicit && legacy.AdminAllowed {
-			d.AdminAllowed = true
-			d.Effective = d.ServerEnabled && d.UserOptedIn && legacy.Effective
-			d.Source = legacy.Source
-			decisions[cap] = d
-		}
-	}
-
-	return &EffectiveResult{
-		Role:              role,
-		Decisions:         decisions,
-		GroupIDs:          groupIDs,
-		DirectGrants:      directRows,
-		InheritedGroupIDs: inheritedIDs, ExcludedDefaultGroupIDs: inheritance.ExcludedGroupIDs, InheritRoleDefaults: inheritance.Inherit,
-	}, nil
-}
-
-func (s *Store) groupGrantEffects(groupID int64) (map[access.Capability]access.Effect, error) {
-	rows, err := s.db.Query(`SELECT capability,effect FROM cap_group_grants WHERE group_id=?`, groupID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[access.Capability]access.Effect{}
-	for rows.Next() {
-		var cap string
-		var eff int
-		if err := rows.Scan(&cap, &eff); err != nil {
-			return nil, err
-		}
-		if eff > 0 {
-			out[access.Capability(cap)] = access.EffectAllow
-		} else if eff < 0 {
-			out[access.Capability(cap)] = access.EffectDeny
-		}
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) resolveUserRole(school string, personType int64) access.Role {
-	// scope-specific mapping wins over global
-	for _, scope := range []string{school, ""} {
-		var role string
-		err := s.db.QueryRow(`SELECT role FROM person_type_roles WHERE scope=? AND person_type=?`, scope, personType).Scan(&role)
-		if err == nil && strings.TrimSpace(role) != "" {
-			return access.NormalizeRole(role)
-		}
-	}
-	return access.DefaultRoleForPersonType(personType)
-}
-
-func defaultServerEnabled(cap access.Capability) bool {
-	// first-level gate: server enablement. Default to enabled so migrated v1
-	// grants/defaults remain effective; operators can restrict via server gates.
-	// Anonymous calendar minting is still forbidden by construction in handlers.
-	_ = cap
-	return true
-}
-
-func defaultToggleableCaps() map[access.Capability]bool {
-	// Conservative set: user may opt out of many granted capabilities.
-	out := map[access.Capability]bool{}
-	for _, c := range access.AllCapabilities {
-		out[c] = true
-	}
-	// Keep own absence read non-toggleable as baseline safety/usability.
-	out[access.CapAbsenceOwnRead] = false
-	return out
-}
-
 // EffectiveHas is a convenience helper.
+
 func (s *Store) EffectiveHas(school string, u *User, cap access.Capability) bool {
 	res, err := s.ResolveEffective(school, u)
 	if err != nil || res == nil {

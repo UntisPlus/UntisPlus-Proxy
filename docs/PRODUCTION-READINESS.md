@@ -1,6 +1,14 @@
 # Production readiness review
 
-Reviewed: **2026-11-23**. Decision: **security fixes deployed to beta; production acceptance still pending**.
+Reviewed: **2026-11-24**. Decision: **security fixes deployed to beta; production acceptance still pending**.
+
+## Latest audit follow-up
+
+The [24 November audit](AUDIT-2026-11-24.md) documents school-bound credentials,
+account-bound sessions, deletion cleanup, permission snapshots, smaller images
+and release gates. It also describes the one-time login required after upgrade.
+The dated deployment evidence below is historical; consult the current deployment
+report for the running beta revision. Production acceptance remains pending.
 
 ## Basic and diagnostics follow-up
 

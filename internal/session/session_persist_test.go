@@ -83,9 +83,42 @@ func TestManagerSweepPersistsExpiredDeletion(t *testing.T) {
 	m := NewManager(time.Hour)
 	m.SetPersister(p)
 	old := m.New("old", 0)
-	old.Expires = time.Now().Add(-time.Minute)
+	m.sessions[old.ID].Expires = time.Now().Add(-time.Minute)
 	m.sweepExpired()
 	if _, ok := p.snapshot()[old.ID]; ok {
 		t.Errorf("expired session %q survived the sweep in the persister", old.ID)
+	}
+}
+
+type blockingPersister struct {
+	*fakePersister
+	entered chan string
+	release chan struct{}
+}
+
+func (p *blockingPersister) SaveSession(id, username string, classID int64, expires time.Time) error {
+	p.entered <- id
+	<-p.release
+	return p.fakePersister.SaveSession(id, username, classID, expires)
+}
+
+func TestCreationAndRevocationSerializePersistence(t *testing.T) {
+	p := &blockingPersister{fakePersister: newFakePersister(), entered: make(chan string, 1), release: make(chan struct{})}
+	m := NewManager(time.Hour)
+	defer m.Close()
+	m.SetPersister(p)
+	created := make(chan struct{})
+	go func() { m.New("person", 0); close(created) }()
+	id := <-p.entered
+	deleted := make(chan struct{})
+	go func() { m.Delete(id); close(deleted) }()
+	close(p.release)
+	<-created
+	<-deleted
+	if m.Get(id) != nil {
+		t.Fatal("revoked session remains in memory")
+	}
+	if _, ok := p.snapshot()[id]; ok {
+		t.Fatal("revoked session was persisted after deletion")
 	}
 }

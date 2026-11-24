@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"untis-proxy/internal/access"
@@ -75,10 +76,15 @@ func (s *Store) UserAdmissionAllowed(school string, u *User) bool {
 	if u == nil {
 		return false
 	}
-	i := AdmissionIdentity{Role: string(s.resolveUserRole(school, u.PersonType))}
-	if links, err := s.AccountLinks(school, u.Username); err == nil && links.Guardian {
-		i.Role = "parent"
+	links, err := s.AccountLinks(school, u.Username)
+	if err != nil && err != sql.ErrNoRows {
+		return false
 	}
+	role, err := s.ResolveLoginRole(school, u.PersonType, links.Guardian)
+	if err != nil {
+		return false
+	}
+	i := AdmissionIdentity{Role: role}
 	raw, ok, err := s.GetSetting(controlKey("admission-identity", school, norm(u.Username)))
 	if err != nil {
 		return false
@@ -96,16 +102,18 @@ func (s *Store) UserAdmissionAllowed(school string, u *User) bool {
 	return s.AdmissionAllowed(school, i)
 }
 func (s *Store) LoginRole(personType int64, guardian bool) string {
+	return s.LoginRoleForSchool("", personType, guardian)
+}
+func (s *Store) ResolveLoginRole(school string, personType int64, guardian bool) (string, error) {
 	if guardian {
-		return "parent"
+		return "parent", nil
 	}
-	return string(s.resolveUserRole("", personType))
+	role, err := (accessReader{s.db}).resolveUserRole(school, personType)
+	return string(role), err
 }
 func (s *Store) LoginRoleForSchool(school string, personType int64, guardian bool) string {
-	if guardian {
-		return "parent"
-	}
-	return string(s.resolveUserRole(school, personType))
+	role, _ := s.ResolveLoginRole(school, personType, guardian)
+	return role
 }
 
 func (s *Store) HasAdmissionRestrictions(school string) bool {

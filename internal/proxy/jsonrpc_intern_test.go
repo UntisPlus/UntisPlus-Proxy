@@ -20,7 +20,7 @@ import (
 type fakeUntis struct {
 	mu        sync.Mutex
 	loginAuth map[string]any // decoded auth block sent to getUserData2017
-	rejectKey string         // if set, logins presenting this replay key fail
+	rejectKey string         // if set, logins presenting the OTP for this key fail
 	appSecret string         // result returned by getAppSharedSecret
 }
 
@@ -58,7 +58,7 @@ func (f *fakeUntis) handler() http.Handler {
 				if len(req.Params) > 0 {
 					auth = req.Params[0].Auth
 				}
-				if got, _ := auth["key"].(string); got == reject {
+				if got, _ := auth["otp"].(string); got == untis.TOTP(reject) {
 					_, _ = w.Write([]byte(`{"error":{"code":-8998,"message":"invalid secret"},"id":"upstream"}`))
 					return
 				}
@@ -111,7 +111,7 @@ func loginBody(t *testing.T, user, otp string) string {
 
 // TestKeyLoginPastedSecret exercises the password fallback: pasting the base32
 // shared secret in the otp field must (a) derive a valid TOTP for the upstream
-// login, (b) present the pasted secret as the replay key, and (c) persist it so
+// login, (b) keep the pasted secret local, and (c) persist it so
 // the account is replayable afterwards — mirroring the getAppSharedSecret path.
 func TestKeyLoginPastedSecret(t *testing.T) {
 	f := &fakeUntis{}
@@ -142,8 +142,8 @@ func TestKeyLoginPastedSecret(t *testing.T) {
 	if got := auth["otp"]; got != untis.TOTP(secret) {
 		t.Errorf("upstream otp = %v, want derived TOTP %s (secret must be turned into a live code)", got, untis.TOTP(secret))
 	}
-	if got := auth["key"]; got != secret {
-		t.Errorf("upstream key = %v, want pasted secret %s", got, secret)
+	if _, sent := auth["key"]; sent {
+		t.Error("sent a reusable key upstream")
 	}
 
 	stored, _ := st.GetSecret("newkid")

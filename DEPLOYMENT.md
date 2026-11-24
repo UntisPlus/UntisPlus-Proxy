@@ -259,29 +259,32 @@ To retry a failed release, open **Actions → Release → the run → Re-run all
 jobs**. The Docker push is idempotent, and an existing GitHub release is left
 alone rather than failing the rerun.
 
-`scripts/release.sh` still works for an offline or manual release, but do not
-run it for the same version as the pipeline — pick one path.
+`scripts/release.sh` runs the local gate and submits one release tag to this
+same pipeline. It does not publish an image directly. Both architectures are
+smoke-tested at the tagged version before publication; prereleases do not
+replace `latest`.
 
 ---
 
 ## The release gate
 
-`scripts/release.sh` is the local path that ships: `go vet`, `go build`, the
-full test run, an optional backup, then the Docker Hub push and the git push.
+`scripts/release.sh` runs `go vet`, `go build`, the full tests and the dashboard
+check, optionally backs up the database, then pushes only the selected release
+tag. A clean committed checkout is required for shipping. GitHub Actions owns
+the tested multi-platform image publication and GitHub release.
 
 ```sh
-./scripts/release.sh                                          # gate, then push
+VERSION=v2.0.0 ./scripts/release.sh                           # gate, then submit tag
 VERSION=<published tag> ./scripts/release.sh                      # explicit tag
 PUSH=0 ./scripts/release.sh                                   # local gate only
-BACKUP_DB=data/untis.db ./scripts/release.sh                  # back up first
+VERSION=v2.0.0 BACKUP_DB=data/untis.db ./scripts/release.sh   # back up first
 PUSH=0 BACKUP_DB=data/untis.db ./scripts/release.sh           # local gate + backup
 ```
 
 | Env | Default | Meaning |
 |---|---|---|
-| `IMAGE` | *required* | Docker Hub repository, without a tag, e.g. `<your-namespace>/untisplus-proxy` — no default, so a release cannot land in whichever account is logged in 
-| `VERSION` | exact git tag, else `dev` | tag pushed to Docker Hub |
-| `PUSH` | `1` | set to `0` to skip docker push / git push |
+| `VERSION` | exact git tag, else `dev` | release tag; an explicit version is required for shipping |
+| `PUSH` | `1` | set to `0` for the local gate without tag submission |
 | `BACKUP_DB` | unset | live database to back up before shipping |
 | `BACKUP_KEEP` | `7` | automatic backups to keep |
 

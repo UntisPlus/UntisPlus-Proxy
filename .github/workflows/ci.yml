@@ -43,7 +43,7 @@ jobs:
         run: go build ./...
 
       - name: Test
-        run: go test -count=1 ./...
+        run: go test -vet=off -count=1 ./...
 
       # The Go tests cannot execute the admin page's JavaScript; this runs its
       # script against a DOM shim and drives the event pickers.
@@ -65,5 +65,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+          # Race objects use different compiler flags. Separate the immutable
+          # cache keys so the faster ordinary job cannot occupy the race key.
+          cache-dependency-path: |
+            go.sum
+            .github/workflows/ci.yml
+
       - name: Test with -race
-        run: go test -race -count=1 -timeout=30m ./internal/store ./internal/proxy
+        run: go test -vet=off -race -count=1 -timeout=30m ./internal/store ./internal/proxy

@@ -57,7 +57,7 @@ func (p *Proxy) preserveUserIdentity(user *store.User) {
 		// the write-time merge will canonicalize it, but only after this read.
 		existing, err = p.store.GetUserAnyCase(user.Username)
 	}
-	if err != nil || existing == nil {
+	if err != nil || existing == nil || p.userSchool(existing, p.opts.School) != user.School {
 		return
 	}
 	if user.PersonID == 0 {
@@ -149,7 +149,16 @@ func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request, school stri
 		DisplayName: info.DisplayName,
 	}
 	p.preserveUserIdentity(user)
-	_ = p.store.UpsertUser(user)
+	if err := p.store.SaveLoginCredential(school, params.User, "", params.Password); err != nil {
+		go p.untis.Logout(school, cookie)
+		p.writeJSONRPCError(w, id, "account unavailable", -8504)
+		return
+	}
+	if err := p.store.UpsertLoginUser(user); err != nil {
+		go p.untis.Logout(school, cookie)
+		p.writeJSONRPCError(w, id, "account unavailable", -8504)
+		return
+	}
 	if info.LinkedPersons != nil {
 		if links, e := json.Marshal(info.LinkedPersons); e == nil {
 			_ = p.store.SaveAccountLinks(school, user.Username, info.PersonID, links)
@@ -158,7 +167,6 @@ func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request, school stri
 	if isAdmin, _ := p.store.IsAdmin(user.Username); isAdmin {
 		user.Admin = true
 	}
-	_ = p.store.SetAccountPassword(params.User, params.Password)
 	_ = p.store.Touch(params.User)
 	p.stateFor(school)
 	if isNewSchool {
@@ -170,6 +178,10 @@ func (p *Proxy) authenticate(w http.ResponseWriter, r *http.Request, school stri
 	// degraded PersonInfo would leave the app without a class even though the
 	// stored account still has one.
 	s := p.sessions.New(params.User, user.ClassID)
+	if s == nil {
+		p.forbidden(w)
+		return
+	}
 	p.setSessionCookies(w, r, s.ID, school)
 	p.writeJSON(w, map[string]any{
 		"jsonrpc": "2.0",

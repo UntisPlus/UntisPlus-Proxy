@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"untis-proxy/internal/access"
+	"untis-proxy/internal/permcli"
+	"untis-proxy/internal/seedcli"
 	"untis-proxy/internal/store"
 	"untis-proxy/internal/untis"
 )
@@ -36,6 +38,17 @@ import (
 const defaultPublicBase = ""
 
 func main() {
+	// Container aliases share this executable and its SQLite runtime. Dispatch
+	// before registering flags so each command keeps its own argument syntax.
+	switch filepath.Base(os.Args[0]) {
+	case "untis-seed":
+		seedcli.Run()
+		return
+	case "untis-perm":
+		permcli.Run()
+		return
+	}
+
 	db := flag.String("db", os.Getenv("UNTIS_DB"), "path to the untis sqlite database (default: $UNTIS_DB, else untis.db)")
 	server := flag.String("server", os.Getenv("UNTIS_SERVER"), "fallback upstream host (default: $UNTIS_SERVER, else auto-resolved per school)")
 	school := flag.String("school", os.Getenv("UNTIS_SCHOOL"), "upstream school name (default: $UNTIS_SCHOOL)")

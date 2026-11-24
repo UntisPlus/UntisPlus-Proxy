@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -147,28 +146,6 @@ func TestRedactBodyHidesMalformed(t *testing.T) {
 	if !strings.Contains(out, "non-json") {
 		t.Errorf("malformed body was not labelled: %q", out)
 	}
-}
-
-// TestReplayKeyIsReadUnderLock exercises the map from many goroutines so
-// `go test -race` catches an unsynchronised read (the C3 crash).
-func TestReplayKeyIsReadUnderLock(t *testing.T) {
-	p, _ := newTestProxy(t)
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			name := fmt.Sprintf("user%d", i%2)
-			for j := 0; j < 500; j++ {
-				p.setReplayKey(name, "secret")
-				if got := p.replayKey(name); got != "secret" {
-					t.Errorf("replayKey(%q) = %q, want secret", name, got)
-					return
-				}
-			}
-		}(i)
-	}
-	wg.Wait()
 }
 
 func TestHandlerRejectsOversizedBody(t *testing.T) {

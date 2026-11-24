@@ -279,6 +279,9 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := addColumnIfMissing(db, "proxy_sessions", "user_id", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return nil, err
+	}
 	_, err = db.Exec(`CREATE TABLE IF NOT EXISTS webhooks (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		school TEXT NOT NULL DEFAULT '',
@@ -634,6 +637,9 @@ func Open(path string) (*Store, error) {
 	// migration: keep the account password next to the replay key so an account
 	// that logs in by TOTP still has its password on record for later use
 	if err := addColumnIfMissing(db, "secrets", "password", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return nil, err
+	}
+	if err := addColumnIfMissing(db, "secrets", "school", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return nil, err
 	}
 	// migration: target element (class/student/teacher/room/subject) for ntfy
@@ -1461,8 +1467,12 @@ func (s *Store) SetSetting(key, value string) error {
 
 // GetSetting reads a stored blob. The boolean reports whether the key exists.
 func (s *Store) GetSetting(key string) (string, bool, error) {
+	return (accessReader{s.db}).GetSetting(key)
+}
+
+func (r accessReader) GetSetting(key string) (string, bool, error) {
 	var v string
-	err := s.db.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&v)
+	err := r.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&v)
 	if err == sql.ErrNoRows {
 		return "", false, nil
 	}
@@ -1494,6 +1504,7 @@ func (s *Store) SettingsByPrefix(prefix string) (map[string]string, error) {
 // importing the session package, keeping the store independent of the HTTP
 // layer that owns the cookie lifecycle.
 type ProxySession struct {
+	UserID   int64
 	ID       string
 	Username string
 	ClassID  int64
@@ -1503,14 +1514,38 @@ type ProxySession struct {
 // SaveSession persists one app session so a proxy restart does not log every
 // phone out. Expired rows are pruned on read and on startup.
 func (s *Store) SaveSession(id, username string, classID int64, expires time.Time) error {
+	userID, err := s.SessionUserID(username)
+	if err != nil {
+		return err
+	}
+	return s.SaveBoundSession(id, username, classID, userID, expires)
+}
+
+// SessionUserID returns the account generation used by durable app sessions.
+func (s *Store) SessionUserID(username string) (int64, error) {
+	var id int64
+	err := s.db.QueryRow(`SELECT id FROM users WHERE username=?`, norm(username)).Scan(&id)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	return id, err
+}
+
+func (s *Store) SaveBoundSession(id, username string, classID, userID int64, expires time.Time) error {
 	if id == "" {
 		return nil
 	}
-	_, err := s.db.Exec(`INSERT INTO proxy_sessions (id, username, class_id, expires)
-		VALUES (?, ?, ?, ?)
-		ON CONFLICT(id) DO UPDATE SET
-			username=excluded.username, class_id=excluded.class_id, expires=excluded.expires`,
-		id, norm(username), classID, expires.Unix())
+	res, err := s.db.Exec(`INSERT INTO proxy_sessions (id,username,class_id,user_id,expires)
+ SELECT ?,?,?,?,? WHERE (?=0 AND ?='#anonymous#') OR EXISTS (SELECT 1 FROM users WHERE username=? AND id=?)
+ ON CONFLICT(id) DO UPDATE SET username=excluded.username,class_id=excluded.class_id,user_id=excluded.user_id,expires=excluded.expires`,
+		id, norm(username), classID, userID, expires.Unix(), userID, norm(username), norm(username), userID)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err == nil && n == 0 {
+		return errors.New("session account no longer exists")
+	}
 	return err
 }
 
@@ -1523,10 +1558,10 @@ func (s *Store) DeleteSession(id string) error {
 // LoadSessions returns every unexpired session. Expired rows are removed in the
 // same call so the table does not grow without a separate maintenance job.
 func (s *Store) LoadSessions(now time.Time) ([]ProxySession, error) {
-	if _, err := s.db.Exec(`DELETE FROM proxy_sessions WHERE expires<=?`, now.Unix()); err != nil {
+	if _, err := s.db.Exec(`DELETE FROM proxy_sessions WHERE expires<=? OR (username<>'#anonymous#' AND NOT EXISTS (SELECT 1 FROM users WHERE users.username=proxy_sessions.username AND users.id=proxy_sessions.user_id))`, now.Unix()); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.Query(`SELECT id, username, class_id, expires FROM proxy_sessions WHERE expires>?`, now.Unix())
+	rows, err := s.db.Query(`SELECT id, username, class_id, user_id, expires FROM proxy_sessions WHERE expires>?`, now.Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -1535,7 +1570,7 @@ func (s *Store) LoadSessions(now time.Time) ([]ProxySession, error) {
 	for rows.Next() {
 		var p ProxySession
 		var expires int64
-		if err := rows.Scan(&p.ID, &p.Username, &p.ClassID, &expires); err != nil {
+		if err := rows.Scan(&p.ID, &p.Username, &p.ClassID, &p.UserID, &expires); err != nil {
 			return nil, err
 		}
 		p.Expires = time.Unix(expires, 0)
@@ -2373,6 +2408,17 @@ func (s *Store) ClearReconScan(school string) error {
 func (s *Store) Close() error { return s.db.Close() }
 
 func (s *Store) UpsertUser(u *User) error {
+	return s.upsertUser(u, false)
+}
+
+// UpsertLoginUser accepts only an identity whose upstream proof already bound
+// the credential row to this school. Check again inside the write to cover
+// concurrent enrollment and account deletion.
+func (s *Store) UpsertLoginUser(u *User) error {
+	return s.upsertUser(u, true)
+}
+
+func (s *Store) upsertUser(u *User, login bool) error {
 	now := time.Now()
 	if u.CreatedAt.IsZero() {
 		u.CreatedAt = now
@@ -2382,9 +2428,9 @@ func (s *Store) UpsertUser(u *User) error {
 	// variant does (e.g. a login right after a capital-cased account was seeded),
 	// collapse the variants first so the upsert below re-targets the merged row
 	// instead of creating yet another case-duplicate.
-	var existing string
+	var existingSchool string
 	isNew := false
-	err := s.db.QueryRow(`SELECT username FROM users WHERE username=?`, u.Username).Scan(&existing)
+	err := s.db.QueryRow(`SELECT school FROM users WHERE username=?`, u.Username).Scan(&existingSchool)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		isNew = true
@@ -2392,7 +2438,7 @@ func (s *Store) UpsertUser(u *User) error {
 			if err := s.normalizeUsernames(); err != nil {
 				return err
 			}
-			err = s.db.QueryRow(`SELECT username FROM users WHERE username=?`, u.Username).Scan(&existing)
+			err = s.db.QueryRow(`SELECT school FROM users WHERE username=?`, u.Username).Scan(&existingSchool)
 			switch {
 			case err == nil:
 				isNew = false
@@ -2405,13 +2451,24 @@ func (s *Store) UpsertUser(u *User) error {
 	case err != nil:
 		return err
 	}
+	if u.School == "" {
+		u.School = existingSchool
+		if u.School == "" {
+			defaultSchool, _, err := s.GetSetting(accountDefaultSchool)
+			if err != nil {
+				return err
+			}
+			u.School = defaultSchool
+		}
+	}
 	admin := 0
-	if u.Admin {
+	if u.Admin && !login {
 		admin = 1
 	}
-	_, err = s.db.Exec(`INSERT INTO users
+	res, err := s.db.Exec(`INSERT INTO users
 		(username, password, method, person_id, person_type, class_id, class_name, email, display_name, created_at, last_seen, school, admin)
-		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+		SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?
+		WHERE NOT ? OR EXISTS (SELECT 1 FROM secrets WHERE username=? AND school=?)
 		ON CONFLICT(username) DO UPDATE SET
 			password=excluded.password,
 			method=excluded.method,
@@ -2427,12 +2484,18 @@ func (s *Store) UpsertUser(u *User) error {
 			-- an upsert, never silently removed. Demotion goes through SetAdmin.
 			school=CASE WHEN excluded.school='' THEN users.school ELSE excluded.school END,
 			admin=MAX(users.admin, excluded.admin),
-			last_seen=excluded.last_seen`,
+			last_seen=excluded.last_seen
+		WHERE NOT ? OR users.school=excluded.school`,
 		u.Username, u.Password, u.Method, u.PersonID, u.PersonType,
 		u.ClassID, u.ClassName, u.Email, u.DisplayName,
-		u.CreatedAt.Unix(), now.Unix(), u.School, admin)
+		u.CreatedAt.Unix(), now.Unix(), u.School, admin, login, u.Username, u.School, login)
 	if err != nil {
 		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrAccountSchool
 	}
 	if isNew {
 		// Apply the operator's default permission set only on the first insert.
@@ -2440,13 +2503,6 @@ func (s *Store) UpsertUser(u *User) error {
 		return s.applyDefaultPerms(u.Username)
 	}
 	return nil
-}
-
-// SetDefaultSchool backfills users whose school has not been recorded yet
-// (pre-multi-school rows) with the given default school.
-func (s *Store) SetDefaultSchool(school string) error {
-	_, err := s.db.Exec(`UPDATE users SET school=? WHERE school=''`, school)
-	return err
 }
 
 func (s *Store) Touch(username string) error {
@@ -2692,7 +2748,7 @@ func (s *Store) ListStudents(school string) ([]*User, error) {
 }
 
 // DeleteUser removes an account plus its secret, per-user permission overrides
-// and any personal calendar tokens bound to that person. Global switches are
+// private data, subscriptions, app sessions and personal calendar tokens. Global switches are
 // untouched.
 func (s *Store) DeleteUser(username string) (int64, error) {
 	username = norm(username)
@@ -2719,6 +2775,18 @@ func (s *Store) DeleteUser(username string) (int64, error) {
 		tx.Rollback()
 		return 0, err
 	}
+	for _, table := range []string{"proxy_sessions", "homework_done", "absence_notes", "student_events", "student_event_versions", "event_absences"} {
+		if err := del("DELETE FROM "+table+" WHERE username=?", username); err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+	}
+	for _, table := range []string{"class_tokens", "webhooks", "ntfy_topics", "outage_ntfy"} {
+		if err := del("DELETE FROM "+table+" WHERE created_by=? COLLATE NOCASE", username); err != nil {
+			tx.Rollback()
+			return 0, err
+		}
+	}
 	if err := del(`DELETE FROM account_person_links WHERE username=?`, username); err != nil {
 		tx.Rollback()
 		return 0, err
@@ -2743,7 +2811,7 @@ func (s *Store) DeleteUser(username string) (int64, error) {
 		return 0, err
 	}
 	if u != nil && u.PersonID > 0 {
-		if err := del(`DELETE FROM class_tokens WHERE person_id=? AND class_id=0`, u.PersonID); err != nil {
+		if err := del(`DELETE FROM class_tokens WHERE person_id=? AND class_id=0 AND school=?`, u.PersonID, u.School); err != nil {
 			tx.Rollback()
 			return 0, err
 		}

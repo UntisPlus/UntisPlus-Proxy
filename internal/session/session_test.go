@@ -17,7 +17,7 @@ func TestManagerNewAndGet(t *testing.T) {
 	if !s.Expires.After(time.Now()) {
 		t.Errorf("expires = %v, want future", s.Expires)
 	}
-	if got := m.Get(s.ID); got != s {
+	if got := m.Get(s.ID); got == nil || *got != *s {
 		t.Errorf("Get returned %+v, want %+v", got, s)
 	}
 }
@@ -40,7 +40,7 @@ func TestManagerGetUnknownAndExpired(t *testing.T) {
 		t.Fatalf("Get(unknown) = %+v, want nil", got)
 	}
 	s := m.New("dee", 0)
-	s.Expires = time.Now().Add(-time.Second)
+	m.sessions[s.ID].Expires = time.Now().Add(-time.Second)
 	if got := m.Get(s.ID); got != nil {
 		t.Fatalf("Get(expired) = %+v, want nil", got)
 	}
@@ -61,7 +61,7 @@ func TestManagerSweepExpired(t *testing.T) {
 	m := NewManager(time.Minute)
 	a := m.New("a", 0)
 	b := m.New("b", 0)
-	a.Expires = time.Now().Add(-time.Minute) // expired
+	m.sessions[a.ID].Expires = time.Now().Add(-time.Minute) // expired
 	m.sweepExpired()
 	if m.Get(a.ID) != nil {
 		t.Error("expired session a survived sweep")
@@ -77,7 +77,7 @@ func TestManagerBackgroundGC(t *testing.T) {
 	m := NewManager(time.Minute)
 	live := m.New("dee", 0)
 	old := m.New("old", 0)
-	old.Expires = time.Now().Add(-time.Hour)
+	m.sessions[old.ID].Expires = time.Now().Add(-time.Hour)
 	m.sweepExpired()
 	m.sweepExpired()
 	if m.Get(live.ID) == nil {
@@ -102,4 +102,30 @@ func TestManagerConcurrentAccess(t *testing.T) {
 		m.sweepExpired()
 	}
 	<-done
+}
+
+func TestManagerReturnsIndependentCopies(t *testing.T) {
+	m := NewManager(time.Hour)
+	defer m.Close()
+	s := m.New("person", 0)
+	s.Username = "different"
+	got := m.Get(s.ID)
+	if got.Username != "person" {
+		t.Fatal("caller changed live session")
+	}
+	got.Username = "another"
+	if m.Get(s.ID).Username != "person" {
+		t.Fatal("Get exposed mutable session")
+	}
+}
+
+func TestManagerDeleteUserRevokesAllSessions(t *testing.T) {
+	m := NewManager(time.Hour)
+	defer m.Close()
+	a, b, c := m.New("person", 0), m.New("person", 1), m.New("other", 0)
+	m.DeleteUser("PERSON")
+	if m.Get(a.ID) != nil || m.Get(b.ID) != nil || m.Get(c.ID) == nil {
+		t.Fatal("incorrect account revocation")
+	}
+	m.Close() // lifecycle shutdown is idempotent
 }

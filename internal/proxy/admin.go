@@ -839,7 +839,7 @@ func (p *Proxy) adminPerms(w http.ResponseWriter, r *http.Request, parts []strin
 }
 
 func (p *Proxy) adminPool(w http.ResponseWriter, r *http.Request, parts []string) {
-	var school string
+	school := p.opts.School
 	if len(parts) > 0 && parts[0] != "" {
 		school = parts[0]
 	}
@@ -2056,6 +2056,7 @@ func (p *Proxy) adminUsers(w http.ResponseWriter, r *http.Request, parts []strin
 				p.writeJSON(w, map[string]any{"error": "store error"})
 				return
 			}
+			p.sessions.DeleteUser(username)
 			p.audit(r, p.opts.School, "user.delete", username, "")
 			p.writeJSON(w, map[string]any{"deleted": n > 0})
 			return

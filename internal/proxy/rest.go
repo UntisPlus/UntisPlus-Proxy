@@ -132,7 +132,7 @@ func (p *Proxy) restWeeklyTimetable(w http.ResponseWriter, r *http.Request, scho
 	switch elType {
 	case "2", "3", "4": // teacher, subject, room: reconstructed from pooled data
 		reconType := map[string]string{"2": "TEACHER", "3": "SUBJECT", "4": "ROOM"}[elType]
-		allowed, _ := p.store.ReconAccess(user.Username, reconType)
+		allowed := p.canViewElementRecon(user, school, reconType)
 		if !allowed {
 			p.forbidden(w)
 			return
@@ -140,6 +140,10 @@ func (p *Proxy) restWeeklyTimetable(w http.ResponseWriter, r *http.Request, scho
 		p.restWeeklyElement(w, r, school, elType, elID, q.Get("date"))
 		return
 	case "1": // class
+		if !p.canViewClassAs(user, school, elID, user.ClassID == elID) {
+			p.forbidden(w)
+			return
+		}
 		owner, err := p.restPoolOwner(school, elID)
 		if owner == nil && user.ClassID == elID && p.canViewClassAs(user, school, elID, true) {
 			owner = user

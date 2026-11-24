@@ -20,12 +20,13 @@ func seedPerfUsers(b *testing.B, st *Store, users, classes int) {
 			school = "other"
 		}
 		u := &User{
-			Username: fmt.Sprintf("u%05d", i),
-			Password: "x",
-			PersonID: int64(100000 + i),
-			ClassID:  int64(i % classes),
-			School:   school,
-			LastSeen: time.Now(),
+			Username:   fmt.Sprintf("u%05d", i),
+			Password:   "x",
+			PersonID:   int64(100000 + i),
+			PersonType: 5,
+			ClassID:    int64(i % classes),
+			School:     school,
+			LastSeen:   time.Now(),
 		}
 		if err := st.UpsertUser(u); err != nil {
 			b.Fatalf("seed user: %v", err)
@@ -48,6 +49,18 @@ func BenchmarkHotPath(b *testing.B) {
 	st := openPerfStore(b)
 	seedPerfUsers(b, st, 5000, 200)
 
+	b.Run("ResolveEffective", func(b *testing.B) {
+		u, err := st.GetUser("u00043")
+		if err != nil || u == nil {
+			b.Fatal("benchmark user missing")
+		}
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			if _, err := st.ResolveEffective("testschool", u); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
 	b.Run("Pool", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			if _, err := st.Pool("testschool"); err != nil {
@@ -57,14 +70,14 @@ func BenchmarkHotPath(b *testing.B) {
 	})
 	b.Run("PoolContains", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			if _, err := st.PoolContains("testschool", 42); err != nil {
+			if _, err := st.PoolContains("testschool", 43); err != nil {
 				b.Fatal(err)
 			}
 		}
 	})
 	b.Run("OwnerForClass", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			if _, err := st.OwnerForClass("testschool", 42); err != nil {
+			if _, err := st.OwnerForClass("testschool", 43); err != nil {
 				b.Fatal(err)
 			}
 		}
@@ -110,7 +123,7 @@ func BenchmarkReadDuringWrite(b *testing.B) {
 	}()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := st.PoolContains("testschool", 42); err != nil {
+		if _, err := st.PoolContains("testschool", 43); err != nil {
 			b.Fatal(err)
 		}
 	}
