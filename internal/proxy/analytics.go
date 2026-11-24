@@ -8,6 +8,7 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -36,6 +37,7 @@ type analyticsWindow struct {
 	From   string `json:"from"`
 	To     string `json:"to"`
 	Status string `json:"status"`
+	Reason string `json:"reason,omitempty"`
 }
 type analyticsResponse struct {
 	Version          string            `json:"version"`
@@ -222,19 +224,34 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 		}
 		raw, _ := json.Marshal(map[string]any{"id": "analytics", "jsonrpc": "2.0", "method": "getTimetable2017", "params": []any{map[string]any{"id": window.ID, "type": window.Kind, "startDate": window.From, "endDate": window.To, "auth": map[string]any{}}}})
 		body, rewriteErr := p.rewriteAuthForOwner(school, raw, window.Owner)
-		status := "unavailable"
-		if rewriteErr == nil {
-			data, httpStatus, _, fetchErr := p.untis.RawIntern(school, "", "getTimetable2017", body)
-			if fetchErr == nil && httpStatus == 200 {
+		observed := analyticsWindow{From: window.From, To: window.To, Status: "unavailable"}
+		if rewriteErr != nil {
+			observed.Reason = "source_auth_unavailable"
+		} else {
+			// Match the upstream Basic timetable path's school routing cookie.
+			data, httpStatus, _, fetchErr := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
+			switch {
+			case fetchErr != nil:
+				observed.Reason = "upstream_unreachable"
+			case httpStatus == http.StatusUnauthorized || httpStatus == http.StatusForbidden:
+				observed.Reason = "upstream_rejected"
+			case httpStatus != http.StatusOK:
+				observed.Reason = "upstream_http_error"
+			default:
 				parsed, parseErr := p.parseAnalyticsLessons(school, data, window.From, window.To)
-				if parseErr == nil {
-					status = "observed"
+				switch {
+				case errors.Is(parseErr, errAnalyticsUpstreamRejected):
+					observed.Reason = "upstream_rejected"
+				case parseErr != nil:
+					observed.Reason = "invalid_timetable_response"
+				default:
+					observed.Status = "observed"
 					lessons = append(lessons, parsed...)
 				}
 			}
 		}
-		result.Windows = append(result.Windows, analyticsWindow{window.From, window.To, status})
-		if status != "observed" {
+		result.Windows = append(result.Windows, observed)
+		if observed.Status != "observed" {
 			result.Complete = false
 		}
 	}
@@ -354,6 +371,9 @@ func (p *Proxy) analyticsTargets(u *store.User, school string, q analyticsReques
 	}
 	return targets, nil
 }
+
+var errAnalyticsUpstreamRejected = errors.New("upstream rejected timetable request")
+
 func (p *Proxy) parseAnalyticsLessons(school string, raw []byte, from, to string) ([]analytics.Lesson, error) {
 	var envelope struct {
 		Result *struct {
@@ -363,7 +383,13 @@ func (p *Proxy) parseAnalyticsLessons(school string, raw []byte, from, to string
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	if decoder.Decode(&envelope) != nil || envelope.Result == nil || envelope.Result.Periods == nil || (len(envelope.Error) > 0 && string(envelope.Error) != "null") {
+	if err := decoder.Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("invalid timetable response")
+	}
+	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
+		return nil, errAnalyticsUpstreamRejected
+	}
+	if envelope.Result == nil || envelope.Result.Periods == nil {
 		return nil, fmt.Errorf("invalid timetable response")
 	}
 	lessons := []analytics.Lesson{}

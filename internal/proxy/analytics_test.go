@@ -105,8 +105,8 @@ func TestAnalyticsAfterAuthenticatorSignIn(t *testing.T) {
 		t.Fatalf("authorized report: HTTP %d, %s", rec.Code, rec.Body.String())
 	}
 	calls := f.Forwards()
-	if len(calls) != 1 || calls[0].Method != "getTimetable2017" {
-		t.Fatalf("expected exactly one upstream timetable read, got %d calls", len(calls))
+	if len(calls) != 1 || calls[0].Method != "getTimetable2017" || calls[0].Cookie != p.untis.SchoolCookie("testschool") {
+		t.Fatalf("expected one upstream timetable read with the school routing cookie, got %d calls", len(calls))
 	}
 }
 
@@ -247,5 +247,42 @@ func TestAnalyticsCSVFormulaAndPreciseIDs(t *testing.T) {
 	}
 	if analyticsCSVSafe("=bad") != "'=bad" {
 		t.Fatal("CSV formula not escaped")
+	}
+}
+
+func TestAnalyticsUnavailableWindowReasons(t *testing.T) {
+	for _, tt := range []struct {
+		name, reply, reason string
+		clearCredential     bool
+	}{
+		{"no saved key", "", "source_auth_unavailable", true},
+		{"upstream error", `{"error":{"code":-8500,"message":"private upstream information"}}`, "upstream_rejected", false},
+		{"missing periods", `{"result":{}}`, "invalid_timetable_response", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			p, st, f := analyticsFixture(t)
+			if tt.clearCredential {
+				u, err := st.GetUser("student")
+				if err != nil || u == nil {
+					t.Fatalf("load test student: %v", err)
+				}
+				u.Password = ""
+				if err = st.UpsertUser(u); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				f.setTimetableBody(tt.reply)
+			}
+			w := analyticsReq(t, p, "student", `{"from":"2026-09-21","to":"2026-09-21"}`)
+			var out analyticsResponse
+			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &out) != nil || out.Complete ||
+				len(out.Windows) != 1 || out.Windows[0].Status != "unavailable" || out.Windows[0].Reason != tt.reason ||
+				strings.Contains(w.Body.String(), "private upstream information") {
+				t.Fatalf("want safe unavailable reason %s, got HTTP %d: %s", tt.reason, w.Code, w.Body.String())
+			}
+			if tt.clearCredential && f.TimetableCalls() != 0 {
+				t.Fatal("called upstream timetable without a saved key")
+			}
+		})
 	}
 }
