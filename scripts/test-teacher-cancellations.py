@@ -33,6 +33,10 @@ def post(opener, url, payload):
             "User-Agent": "UntisPlus-Analytics-Smoke/1.0",
         },
     )
+    return read_json(opener, request)
+
+
+def read_json(opener, request):
     with opener.open(request, timeout=120) as response:
         result = json.load(response)
     if not isinstance(result, dict):
@@ -50,7 +54,11 @@ def main():
     parser.add_argument("--to", dest="end", type=date.fromisoformat)
     parser.add_argument("--school-year", action="append", help="select an imported school year, repeat to compare years")
     parser.add_argument("--teacher-id", type=int, action="append", help="select an approved teacher ID, repeat to compare teachers")
-    parser.add_argument("--room", help="export a room by exact name or ID using your own saved teacher account")
+    parser.add_argument("--student-id", type=int, action="append", help="select an approved student ID")
+    parser.add_argument("--class-id", type=int, action="append", help="select your class or an approved class ID")
+    parser.add_argument("--room", help="export a room by exact name or ID")
+    parser.add_argument("--data-source", choices=("personal", "own-teacher", "saved-teacher", "shared-class", "reconstruction"))
+    parser.add_argument("--options", action="store_true", help="list accessible targets, sources and school years")
     parser.add_argument("--json", action="store_true", help="print the full report")
     parser.add_argument("--show-names", action="store_true", help="include teacher and subject names in the report")
     parser.add_argument("--saved-source", action="store_true",
@@ -61,21 +69,33 @@ def main():
     if url.scheme != "https" or not url.hostname or url.username is not None or url.path not in ("", "/") or url.query or url.fragment:
         parser.error("--url must be the HTTPS origin of your UntisPlus server")
     years = list(dict.fromkeys(args.school_year or [None]))
-    teachers = list(dict.fromkeys(args.teacher_id or [None]))
+    teachers = list(dict.fromkeys(args.teacher_id or []))
     if args.school_year:
-        if args.start is not None or args.end is not None:
-            parser.error("select school years or explicit dates")
+        if len(years) > 1 and (args.start is not None or args.end is not None):
+            parser.error("use explicit dates with a single school year")
+        if args.start and args.end and args.end < args.start:
+            parser.error("the end date must not come before the start date")
     else:
         args.end = args.end or yesterday
         args.start = args.start or (yesterday - timedelta(days=6))
         if not 0 <= (args.end - args.start).days < 366 or args.end > date.today():
             parser.error("choose a date range of up to 366 days ending today or earlier")
-    if any(teacher is not None and teacher <= 0 for teacher in teachers):
+    if any(teacher <= 0 for teacher in teachers):
         parser.error("--teacher-id must be positive")
-    if args.room is not None and (not args.room.strip() or args.teacher_id):
-        parser.error("--room requires a non-empty room name or ID and cannot be combined with --teacher-id")
-    if len(years) * len(teachers) > 6:
-        parser.error("select at most six teacher and school year combinations")
+    targets = [("teacher", teacher) for teacher in teachers]
+    for mode, ids in (("student", args.student_id), ("class", args.class_id)):
+        if ids and any(target <= 0 for target in ids):
+            parser.error(f"--{mode}-id must be positive")
+        targets.extend((mode, target) for target in dict.fromkeys(ids or []))
+    if args.room is not None:
+        if not args.room.strip():
+            parser.error("--room requires a non-empty room name or ID")
+        targets.append(("room", args.room.strip()))
+    if not targets:
+        targets.append(("personal", None))
+    count = len(years) * len(targets)
+    if count > 6:
+        parser.error("select at most six target and school year combinations")
 
     origin = args.url.rstrip("/")
     query = "?" + urlencode({"school": args.school}) if args.school else ""
@@ -99,28 +119,43 @@ def main():
             return 1
 
         stage = "Analytics"
+        if args.options:
+            url = origin + "/api/analytics/options" + query
+            options = read_json(opener, Request(url, headers={
+                "Accept": "application/json", "User-Agent": "UntisPlus-Analytics-Smoke/1.0",
+            }))
+            print(json.dumps(options, indent=2, ensure_ascii=False))
+            return 0
         reports = []
-        for index, teacher in enumerate(teachers, start=1):
+        for index, (mode, target) in enumerate(targets, start=1):
             for year in years:
-                payload = {"mode": "personal" if teacher is None else "teacher",
+                payload = {"mode": mode,
                            "anonymise": not args.show_names, "format": "json"}
-                if args.room is not None:
-                    payload.update({"mode": "room", "room": args.room.strip()})
                 if year is not None:
                     payload["schoolYear"] = year
+                    if args.start:
+                        payload["from"] = args.start.isoformat()
+                    if args.end:
+                        payload["to"] = args.end.isoformat()
                 else:
                     payload.update({"from": args.start.isoformat(), "to": args.end.isoformat()})
-                if teacher is not None:
-                    payload["teacherId"] = teacher
-                elif args.room is None and year is None and not args.saved_source and (args.end - args.start).days < 31:
+                if args.data_source is not None:
+                    payload["dataSource"] = args.data_source
+                if mode in ("teacher", "student", "class"):
+                    payload[f"{mode}Id"] = target
+                elif mode == "room":
+                    payload["room"] = target
+                elif year is None and not args.saved_source and (args.end - args.start).days < 31:
                     payload["personalOtp"] = code
                 entry = {"schoolYear": year}
-                if teacher is not None:
-                    entry["teacherId" if args.show_names else "teacherSelection"] = teacher if args.show_names else index
+                if mode in ("teacher", "student", "class"):
+                    entry[f"{mode}Id" if args.show_names else f"{mode}Selection"] = target if args.show_names else index
+                elif mode == "room":
+                    entry["room" if args.show_names else "roomSelection"] = target if args.show_names else 1
                 try:
                     entry["report"] = post(opener, origin + "/api/analytics/teacher-cancellations" + query, payload)
                 except HTTPError as error:
-                    if len(teachers) * len(years) == 1:
+                    if count == 1:
                         raise
                     entry["httpStatus"] = error.code
                     error.close()
@@ -152,7 +187,16 @@ def main():
             print(json.dumps({"complete": complete, "reports": reports}, indent=2, ensure_ascii=False))
         else:
             for entry in reports:
-                label = f"Teacher {entry.get('teacherId', entry.get('teacherSelection'))}" if args.teacher_id else "Room" if args.room else "Personal"
+                if "teacherId" in entry or "teacherSelection" in entry:
+                    label = f"Teacher {entry.get('teacherId', entry.get('teacherSelection'))}"
+                elif "studentId" in entry or "studentSelection" in entry:
+                    label = f"Student {entry.get('studentId', entry.get('studentSelection'))}"
+                elif "classId" in entry or "classSelection" in entry:
+                    label = f"Class {entry.get('classId', entry.get('classSelection'))}"
+                elif "room" in entry or "roomSelection" in entry:
+                    label = f"Room {entry.get('room', entry.get('roomSelection'))}"
+                else:
+                    label = "Personal"
                 report = entry.get("report")
                 date_label = entry["schoolYear"] or f"{args.start} to {args.end}"
                 if report is None:

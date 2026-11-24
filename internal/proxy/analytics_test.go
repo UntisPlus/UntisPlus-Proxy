@@ -476,6 +476,50 @@ func TestAnalyticsRoomUsesOnlySignedInTeacher(t *testing.T) {
 	}
 }
 
+func TestAnalyticsAdminRoomRequiresApprovalAndEligibleTeacher(t *testing.T) {
+	p, st, f := analyticsFixture(t)
+	const admin = "admin-room-caller"
+	seedClassOwner(t, st, admin, 71, 5000)
+	if err := st.SetAdmin(admin, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertElementNames("testschool", "ROOM", map[int64]string{169: "14-05", 170: "14-06"}); err != nil {
+		t.Fatal(err)
+	}
+	const body = `{"mode":"room","room":"14-05","from":"2026-09-21","to":"2026-09-27"}`
+	if w := analyticsReq(t, p, admin, body); w.Code != http.StatusForbidden || f.TimetableCalls() != 0 {
+		t.Fatal("admin bypassed analytics capability")
+	}
+	if err := st.SetUserCapGrant("testschool", admin, string(access.CapAnalyticsTeacher), 1); err != nil {
+		t.Fatal(err)
+	}
+	if w := analyticsReq(t, p, admin, body); w.Code != http.StatusForbidden || f.TimetableCalls() != 0 {
+		t.Fatal("admin bypassed room approval")
+	}
+	path := "/admin/access/analytics-access?school=testschool&user=" + admin
+	if w := adminRequest(t, p, admin, "PUT", path, `{"teacherIds":[42],"roomSelectors":["14-05"],"profiles":[]}`); w.Code != http.StatusOK {
+		t.Fatalf("could not approve the room by name: %s", w.Body.String())
+	}
+	if w := adminRequest(t, p, admin, "PUT", path, `{"teacherIds":[42],"profiles":[]}`); w.Code != http.StatusOK {
+		t.Fatal("old scope request was rejected")
+	}
+	w := analyticsReq(t, p, admin, body)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"complete":true`) {
+		t.Fatalf("approved room could not be read: HTTP %d %s", w.Code, w.Body.String())
+	}
+	calls := f.Forwards()
+	if len(calls) != 1 || !strings.Contains(string(calls[0].Body), `"user":"source"`) ||
+		strings.Contains(string(calls[0].Body), admin) {
+		t.Fatal("room read did not use the teacher's upstream identity")
+	}
+	if err := st.SetUserCapGrant("testschool", "source", string(access.CapPoolTimetableShare), -1); err != nil {
+		t.Fatal(err)
+	}
+	if w := analyticsReq(t, p, admin, body); w.Code != http.StatusForbidden || f.TimetableCalls() != 1 {
+		t.Fatal("teacher sharing opt-out was ignored")
+	}
+}
+
 func TestAnalyticsPersonalOTPUsesCallerIdentityWithoutSavedKey(t *testing.T) {
 	p, st, f := analyticsFixture(t)
 	u, err := st.GetUser("student")

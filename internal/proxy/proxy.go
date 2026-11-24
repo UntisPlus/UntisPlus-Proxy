@@ -690,6 +690,7 @@ func (p *Proxy) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/technik/attendance", p.handleEventAbsenceEdit)
 	mux.HandleFunc("GET /api/technik/attendance/log", p.handleEventAbsenceLog)
 	mux.HandleFunc("POST /api/analytics/teacher-cancellations", p.handleCancellationAnalytics)
+	mux.HandleFunc("GET /api/analytics/options", p.handleAnalyticsOptions)
 	mux.HandleFunc("/admin", p.handleAdminDashboard)
 	mux.HandleFunc("/admin/login", p.handleAdminLogin)
 	mux.HandleFunc("POST /admin/logout", p.handleAdminLogout)

@@ -22,6 +22,9 @@ type AnalyticsProfile struct {
 }
 type AnalyticsAccess struct {
 	TeacherIDs []int64            `json:"teacherIds"`
+	RoomIDs    []int64            `json:"roomIds"`
+	StudentIDs []int64            `json:"studentIds"`
+	ClassIDs   []int64            `json:"classIds"`
 	Profiles   []AnalyticsProfile `json:"profiles"`
 }
 
@@ -43,13 +46,18 @@ func (s *Store) SetAnalyticsAccess(school, user string, a AnalyticsAccess) error
 	if err != nil || u == nil || u.School != school {
 		return fmt.Errorf("account not found in this school")
 	}
-	if len(a.TeacherIDs) > 500 || len(a.Profiles) > 50 {
-		return fmt.Errorf("too many analytics targets")
-	}
-	for _, id := range a.TeacherIDs {
-		if id <= 0 {
-			return fmt.Errorf("invalid teacher id")
+	for _, ids := range [][]int64{a.TeacherIDs, a.RoomIDs, a.StudentIDs, a.ClassIDs} {
+		if len(ids) > 500 {
+			return fmt.Errorf("too many analytics targets")
 		}
+		for _, id := range ids {
+			if id <= 0 {
+				return fmt.Errorf("invalid analytics target ID")
+			}
+		}
+	}
+	if len(a.Profiles) > 50 {
+		return fmt.Errorf("too many analytics profiles")
 	}
 	seen := map[string]bool{}
 	for _, p := range a.Profiles {

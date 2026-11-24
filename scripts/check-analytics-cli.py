@@ -18,6 +18,24 @@ spec.loader.exec_module(cli)
 
 
 class AnalyticsCLITest(unittest.TestCase):
+    def test_admin_can_request_teacher_and_room_after_one_sign_in(self):
+        argv = ["analytics", "admin", "--teacher-id", "42", "--room", "14-05",
+                "--from", "2026-09-21", "--to", "2026-09-27", "--json", "--show-names"]
+        outcomes = [{"result": {}}, {"complete": True, "source": "teacher"},
+                    {"complete": True, "source": "room"}]
+        output = io.StringIO()
+        with patch.object(cli.sys, "argv", argv), patch.object(cli.sys.stdin, "isatty", return_value=True), \
+                patch.object(cli, "getpass", return_value="123456") as prompt, \
+                patch.object(cli, "CookieJar", return_value=[SimpleNamespace(name="JSESSIONID")]), \
+                patch.object(cli, "post", side_effect=outcomes) as post, contextlib.redirect_stdout(output):
+            self.assertEqual(cli.main(), 0)
+        self.assertEqual(prompt.call_count, 1)
+        teacher, room = [call.args[2] for call in post.call_args_list[1:]]
+        self.assertEqual((teacher["mode"], teacher["teacherId"]), ("teacher", 42))
+        self.assertEqual((room["mode"], room["room"]), ("room", "14-05"))
+        self.assertTrue(all("personalOtp" not in request for request in (teacher, room)))
+        self.assertEqual(json.loads(output.getvalue())["reports"][1]["room"], "14-05")
+
     def test_room_uses_saved_teacher_source_even_for_a_short_range(self):
         argv = ["analytics", "teacher", "--room", "14-05", "--from", "2026-09-21",
                 "--to", "2026-09-27", "--json", "--show-names"]

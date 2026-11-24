@@ -112,10 +112,42 @@ func (p *Proxy) adminControls(w http.ResponseWriter, r *http.Request, part strin
 			w.WriteHeader(405)
 			return
 		}
-		var a store.AnalyticsAccess
-		if decodeJSONBody(r, &a) != nil {
+		var req struct {
+			store.AnalyticsAccess
+			RoomSelectors []string `json:"roomSelectors"`
+		}
+		if decodeJSONBody(r, &req) != nil || len(req.RoomSelectors) > 500 {
 			badRequest(w, "invalid scope")
 			return
+		}
+		a := req.AnalyticsAccess
+		current, err := p.store.AnalyticsAccess(school, username)
+		if err != nil {
+			writeJSONError(w, 500, "scope unavailable")
+			return
+		}
+		if a.StudentIDs == nil {
+			a.StudentIDs = current.StudentIDs
+		}
+		if a.ClassIDs == nil {
+			a.ClassIDs = current.ClassIDs
+		}
+		if req.RoomSelectors != nil {
+			if a.RoomIDs != nil {
+				badRequest(w, "use room names or IDs in roomSelectors, or numeric roomIds")
+				return
+			}
+			a.RoomIDs = make([]int64, 0, len(req.RoomSelectors))
+			for _, selector := range req.RoomSelectors {
+				id, err := p.analyticsRoomID(school, selector)
+				if err != nil {
+					badRequest(w, err.Error())
+					return
+				}
+				a.RoomIDs = append(a.RoomIDs, id)
+			}
+		} else if a.RoomIDs == nil {
+			a.RoomIDs = current.RoomIDs
 		}
 		if err := p.store.SetAnalyticsAccess(school, username, a); err != nil {
 			badRequest(w, err.Error())

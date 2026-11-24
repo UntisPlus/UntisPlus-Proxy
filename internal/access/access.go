@@ -110,6 +110,7 @@ const (
 	CapAnalyticsPersonal            Capability = "analytics.personal.view"
 	CapAnalyticsHistory             Capability = "analytics.personal.history"
 	CapAnalyticsTeacher             Capability = "analytics.teacher.view"
+	CapAnalyticsStudent             Capability = "analytics.student.view"
 	CapAnalyticsClassHistory        Capability = "analytics.class_history.view"
 	CapAnalyticsExport              Capability = "analytics.export"
 )
@@ -154,7 +155,7 @@ var AllCapabilities = []Capability{
 	CapEventsTechnikManage,
 	CapEventsTechnikCreate, CapEventsTechnikEdit, CapEventsTechnikDelete,
 	CapEventsTechnikImport, CapEventsTechnikAttendanceRead, CapEventsTechnikAttendanceWrite,
-	CapAnalyticsPersonal, CapAnalyticsHistory, CapAnalyticsTeacher, CapAnalyticsClassHistory, CapAnalyticsExport,
+	CapAnalyticsPersonal, CapAnalyticsHistory, CapAnalyticsTeacher, CapAnalyticsStudent, CapAnalyticsClassHistory, CapAnalyticsExport,
 }
 
 // Role is an admin-defined/login-type label used for default group assignment.

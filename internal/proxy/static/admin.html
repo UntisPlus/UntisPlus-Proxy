@@ -433,6 +433,9 @@ input:not([type=checkbox]):not([type=radio]),select{min-height:38px}.help-icon{w
 <div id="featureControlMessage" role="status" class="small mt"></div>
 <details class="mt"><summary>Analytics data scope configuration</summary><p class="small">Choose a person below first. These settings approve targets; they do not grant analytics permissions or enable the master switch.</p>
 <label class="field">Approved teacher IDs (comma separated)<input id="analyticsTeacherIds"></label>
+<label class="field">Approved rooms for this admin (comma-separated names or IDs)<input id="analyticsRoomSelectors" placeholder="14-05"></label>
+<label class="field">Approved student IDs (comma separated)<input id="analyticsStudentIds"></label>
+<label class="field">Approved class IDs (comma separated)<input id="analyticsClassIds"></label>
 <label class="field">Class-history profiles (JSON array)<textarea id="analyticsProfiles" rows="5" placeholder='[{"id":"my-history","segments":[{"classId":123,"from":"2024-08-01","to":"2025-07-31"}]}]'></textarea></label>
 <button class="secondary" onclick="loadAnalyticsScope()">Load selected person's scope</button><button onclick="saveAnalyticsScope()">Save selected person's scope</button>
 <label class="field mt">School years (JSON array, exact upstream dates)<textarea id="analyticsYears" rows="4" placeholder='[{"name":"2024/25","from":"2024-08-01","to":"2025-07-31"}]'></textarea></label><button class="secondary" onclick="loadAnalyticsYears()">Load saved school years</button><button class="secondary" onclick="previewUpstreamAnalyticsYears()">Load dates from upstream</button><button onclick="saveAnalyticsYears()">Save school years</button></details>
@@ -1097,6 +1100,7 @@ permissionSections.push(['Cancellation analytics',[
  ['analytics.personal.view','Analyse my own timetable','Read cancellation counts only from your own upstream timetable.'],
  ['analytics.personal.history','Analyse full personal history','Permit dates older than the last 366 days, subject to upstream retention.'],
  ['analytics.teacher.view','Analyse approved teachers','Read approved teacher targets using an authorized saved teacher source.'],
+ ['analytics.student.view','Analyse approved students','Read only approved student timetables using an eligible saved teacher account.'],
  ['analytics.class_history.view','Analyse approved class history','Combine only the classes and dates approved for your account.'],
  ['analytics.export','Export cancellation statistics','Download JSON and CSV reports within the same permitted data scope.']
 ]]);
@@ -1125,8 +1129,27 @@ async function loadFeatureControls(){try{
 async function saveFeatureSwitch(feature,enabled){try{const d=await api('PUT','access/features?school='+encodeURIComponent(controlsScope()),{feature,enabled});if(d.error)throw new Error(d.error);$('featureControlMessage').textContent='Feature setting saved.';await loadFeatureControls();}catch(e){$('featureControlMessage').textContent=e.message;}}
 async function saveAdmissionControls(){const blockedRoles=Array.from(document.querySelectorAll('[data-admission-role]:checked')).map(e=>e.dataset.admissionRole);if(!confirm('Apply login restrictions? They affect existing sessions too. Blocking upstream administrators requires verified upstream metadata and may block your own account.'))return;try{const d=await api('PUT','access/admission?school='+encodeURIComponent(controlsScope()),{blockedRoles});if(d.error)throw new Error(d.error);$('featureControlMessage').textContent='Login rules saved.';}catch(e){$('featureControlMessage').textContent=e.message;}}
 function analyticsScopePath(){const user=$('simpleAccessUser').value;if(!user)throw new Error('Choose a person first.');return 'access/analytics-access?school='+encodeURIComponent(simpleAccessSchool())+'&user='+encodeURIComponent(user);}
-async function loadAnalyticsScope(){try{const d=await api('GET',analyticsScopePath());if(d.error)throw new Error(d.error);$('analyticsTeacherIds').value=(d.teacherIds||[]).join(', ');$('analyticsProfiles').value=JSON.stringify(d.profiles||[],null,2);}catch(e){$('featureControlMessage').textContent=e.message;}}
-async function saveAnalyticsScope(){try{const teacherIds=$('analyticsTeacherIds').value.split(',').map(s=>s.trim()).filter(Boolean).map(Number),profiles=JSON.parse($('analyticsProfiles').value||'[]');const d=await api('PUT',analyticsScopePath(),{teacherIds,profiles});if(d.error)throw new Error(d.error);$('featureControlMessage').textContent='Analytics scope saved.';}catch(e){$('featureControlMessage').textContent=e.message;}}
+async function loadAnalyticsScope(){
+ try{
+  const d=await api('GET',analyticsScopePath());
+  if(d.error)throw new Error(d.error);
+  for(const [id,key] of [['analyticsTeacherIds','teacherIds'],['analyticsRoomSelectors','roomIds'],['analyticsStudentIds','studentIds'],['analyticsClassIds','classIds']]){
+   $(id).value=(d[key]||[]).join(', ');
+  }
+  $('analyticsProfiles').value=JSON.stringify(d.profiles||[],null,2);
+ }catch(e){$('featureControlMessage').textContent=e.message;}
+}
+async function saveAnalyticsScope(){
+ try{
+  const entries=id=>$(id).value.split(',').map(s=>s.trim()).filter(Boolean);
+  const scope={teacherIds:entries('analyticsTeacherIds').map(Number),roomSelectors:entries('analyticsRoomSelectors'),
+   studentIds:entries('analyticsStudentIds').map(Number),classIds:entries('analyticsClassIds').map(Number),
+   profiles:JSON.parse($('analyticsProfiles').value||'[]')};
+  const d=await api('PUT',analyticsScopePath(),scope);
+  if(d.error)throw new Error(d.error);
+  $('featureControlMessage').textContent='Analytics scope saved.';
+ }catch(e){$('featureControlMessage').textContent=e.message;}
+}
 async function loadAnalyticsYears(){try{const d=await api('GET','access/analytics-years?school='+encodeURIComponent(simpleAccessSchool()));if(d.error)throw new Error(d.error);$('analyticsYears').value=JSON.stringify(d.years||[],null,2);}catch(e){$('featureControlMessage').textContent=e.message;}}
 async function previewUpstreamAnalyticsYears(){
  const message=$('featureControlMessage');

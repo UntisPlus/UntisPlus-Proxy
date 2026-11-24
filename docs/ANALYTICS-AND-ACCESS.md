@@ -32,7 +32,8 @@ server gates also treat global denies as hard ceilings.
 | --- | --- |
 | `analytics.personal.view` | Analyse the caller's own upstream timetable |
 | `analytics.personal.history` | Permit personal dates older than the last 366 days; personal.view is still required |
-| `analytics.teacher.view` | Analyse approved teacher IDs through a saved teacher source, or analyse rooms using your own saved teacher credential |
+| `analytics.teacher.view` | Analyse approved teachers, approved rooms as a dashboard administrator, or rooms available through your own saved teacher credential |
+| `analytics.student.view` | Analyse explicitly approved student timetables through an eligible saved teacher |
 | `analytics.class_history.view` | Analyse an explicitly approved class-history profile |
 | `analytics.export` | Download JSON or CSV ZIP within the same data permissions |
 
@@ -74,6 +75,12 @@ importer.
 
 ## JSON endpoint
 
+`GET /api/analytics/options?school=NAME` lists the signed-in account's
+permitted targets and sources and the school's configured year names and
+dates. It reads configuration without fetching timetables. Use each target's
+`mode` and ID or room name to build a report request. The report endpoint
+rechecks access independently of discovery.
+
 `POST /api/analytics/teacher-cancellations?school=NAME` requires a proxy
 `JSESSIONID` session for an admitted account of that school. The body accepts:
 
@@ -88,13 +95,21 @@ importer.
 }
 ```
 
-- `mode`: `personal` (default), `teacher`, `room`, or `class-history`.
+- `mode`: `personal` (default), `teacher`, `student`, `class`, `room`, or `class-history`.
 - `teacherId`: required and approved for teacher mode; optional as a filter of
   teachers appearing in personal/class-history data. It never widens that scope.
 - `room`: required in room mode. Use the exact upstream room name or numeric
-  room ID. Only a signed-in teacher with `analytics.teacher.view`, own upstream
-  timetable access, and a saved credential can request a room report. The
-  proxy uses that account's own upstream rights for the read.
+  room ID. A teacher with `analytics.teacher.view` can use their own saved
+  account and upstream access. A dashboard administrator with the same grant
+  can use an eligible saved teacher in the same school for approved rooms.
+- `studentId`: required for student mode. The target needs individual approval
+  and the caller needs the student analytics grant.
+- `classId`: required for class mode. Select your accessible class or a class
+  approved for your account. Class mode requires the class-history analytics grant.
+- `dataSource`: optional. Use one of the values returned by discovery, such as
+  `personal`, `saved-teacher`, `own-teacher`, `shared-class`, or
+  `reconstruction`. Reconstruction uses only accessible shared classes and
+  applies to permitted teachers or rooms. The response names the source used.
 - `profileId`: required for class-history mode; ignored profiles cannot be
   supplied in personal/teacher mode.
 - `schoolYear`: optional configured year name; fills omitted from/to and rejects
@@ -274,6 +289,26 @@ example, to save room 14-05 over an explicit date range:
 You can use `--school-year` instead of the date flags once the school year
 has been saved. Use a numeric room ID if the room name is ambiguous.
 Room reports describe cancellations on the room's upstream timetable.
+
+To run both reports from a dashboard administrator account, select that
+account under **Permissions → Analytics data scope configuration**. Approve
+the teacher ID and add the room under **Approved rooms for this admin**. The
+admin needs `analytics.teacher.view` and the school needs a saved teacher
+account eligible to share. The admin's one-time code signs into the proxy.
+The proxy uses the saved teacher's identity for timetable reads.
+
+```bash
+python3 scripts/test-teacher-cancellations.py YOUR_ADMIN_USERNAME \
+  --teacher-id 42 --room 'R101' --from 2026-08-01 --to 2026-11-23 \
+  --json --show-names
+```
+
+The output contains one report per target under `reports`.
+
+Run `python3 scripts/test-teacher-cancellations.py YOUR_USERNAME --options`
+to list targets and school years. Use `--student-id`, `--class-id`,
+`--teacher-id`, or `--room` to select a target. For a slice of one school
+year, use `--school-year` and supply `--from` or `--to` within its dates.
 
 ### Compare teachers and school years
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -25,7 +26,10 @@ type analyticsRequest struct {
 	From             string   `json:"from"`
 	To               string   `json:"to"`
 	TeacherID        int64    `json:"teacherId"`
+	StudentID        int64    `json:"studentId"`
+	ClassID          int64    `json:"classId"`
 	Room             string   `json:"room"`
+	DataSource       string   `json:"dataSource"`
 	ProfileID        string   `json:"profileId"`
 	SchoolYear       string   `json:"schoolYear"`
 	MinLessons       int      `json:"minLessons"`
@@ -46,6 +50,7 @@ type analyticsResponse struct {
 	Version          string            `json:"version"`
 	ReportID         string            `json:"reportId"`
 	Source           string            `json:"source"`
+	DataSource       string            `json:"dataSource"`
 	Room             string            `json:"room,omitempty"`
 	From             string            `json:"from"`
 	To               string            `json:"to"`
@@ -61,13 +66,31 @@ type analyticsResponse struct {
 	analytics.Report
 }
 type analyticsTarget struct {
-	Kind     string
-	ID       int64
-	From, To string
-	Owner    *store.User
+	Kind       string
+	ID         int64
+	From, To   string
+	Owner      *store.User
+	FilterKind string
+	FilterID   int64
+	DataSource string
 }
 
 const analyticsPersonalWindowDays = 7
+
+func analyticsCapability(mode string) access.Capability {
+	switch mode {
+	case "personal":
+		return access.CapAnalyticsPersonal
+	case "teacher", "room":
+		return access.CapAnalyticsTeacher
+	case "student":
+		return access.CapAnalyticsStudent
+	case "class", "class-history":
+		return access.CapAnalyticsClassHistory
+	default:
+		return ""
+	}
+}
 
 func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -104,14 +127,8 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 		badRequest(w, "format must be json, export-json or csv-zip")
 		return
 	}
-	cap := access.CapAnalyticsPersonal
-	switch q.Mode {
-	case "personal":
-	case "teacher", "room":
-		cap = access.CapAnalyticsTeacher
-	case "class-history":
-		cap = access.CapAnalyticsClassHistory
-	default:
+	cap := analyticsCapability(q.Mode)
+	if cap == "" {
 		badRequest(w, "invalid source mode")
 		return
 	}
@@ -123,6 +140,15 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 	if (q.Room != "") != (q.Mode == "room") || len(q.Room) > 120 ||
 		(q.Mode == "room" && (q.TeacherID != 0 || q.ProfileID != "")) {
 		badRequest(w, "room mode requires a room name or ID and no teacher or profile target")
+		return
+	}
+	if (q.StudentID > 0) != (q.Mode == "student") || (q.ClassID > 0) != (q.Mode == "class") ||
+		q.StudentID < 0 || q.ClassID < 0 || ((q.Mode == "student" || q.Mode == "class") && (q.TeacherID != 0 || q.ProfileID != "")) {
+		badRequest(w, "student and class modes require their own positive target ID")
+		return
+	}
+	if !analyticsSourceSupported(q.Mode, q.DataSource) {
+		badRequest(w, "unsupported data source for this target")
 		return
 	}
 	// Administrator status deliberately does not bypass analytics scope grants.
@@ -278,6 +304,10 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 	} else if q.Mode == "room" {
 		result.Room = q.Room
 	}
+	result.DataSource = targets[0].DataSource
+	if result.DataSource == "reconstruction" {
+		result.Warnings = append(result.Warnings, "Reconstructed from accessible shared classes only. Coverage does not include other classes.")
+	}
 	options := analytics.Options{MinLessons: q.MinLessons, Anonymise: q.Anonymise, IncludeIrregular: q.IncludeIrregular, ExcludePrefixes: q.ExcludePrefixes, DetectClashes: q.Mode == "personal"}
 	if q.TeacherID > 0 {
 		options.TeacherID = strconv.FormatInt(q.TeacherID, 10)
@@ -312,6 +342,9 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 	p.writeJSON(w, result)
 }
 func (p *Proxy) analyticsTargets(u *store.User, school string, q analyticsRequest) ([]analyticsTarget, error) {
+	if q.DataSource == "reconstruction" {
+		return p.analyticsReconTargets(u, school, q)
+	}
 	if q.Mode == "room" {
 		return p.analyticsRoomTarget(u, school, q)
 	}
@@ -331,11 +364,14 @@ func (p *Proxy) analyticsTargets(u *store.User, school string, q analyticsReques
 		if u.PersonID <= 0 {
 			return nil, fmt.Errorf("personal timetable identity unavailable")
 		}
-		return []analyticsTarget{{kind, u.PersonID, q.From, q.To, u}}, nil
+		return []analyticsTarget{{Kind: kind, ID: u.PersonID, From: q.From, To: q.To, Owner: u, DataSource: "personal"}}, nil
 	}
 	allowed, err := p.store.AnalyticsAccess(school, u.Username)
 	if err != nil {
 		return nil, fmt.Errorf("analytics scope unavailable")
+	}
+	if q.Mode == "student" || q.Mode == "class" {
+		return p.analyticsApprovedTarget(u, school, q, allowed)
 	}
 	targets := []analyticsTarget{}
 	if q.Mode == "teacher" {
@@ -371,50 +407,86 @@ func (p *Proxy) analyticsTargets(u *store.User, school string, q analyticsReques
 			return nil, fmt.Errorf("no approved history segments in range")
 		}
 	}
-	sources, err := p.store.BoostedSourceAccounts(school)
-	if err != nil || len(sources) == 0 {
+	owner := p.analyticsSharedTeacher(school)
+	if owner == nil {
 		return nil, fmt.Errorf("no authorized saved teacher source")
 	}
 	for i := range targets {
-		targets[i].Owner = sources[0]
+		targets[i].Owner = owner
+		targets[i].DataSource = "saved-teacher"
 	}
 	return targets, nil
 }
 
-// Room analytics uses the signed-in teacher’s own upstream permissions. A
-// student or another caller can never borrow a teacher source for this mode.
+// Teachers read through their own upstream identity. A dashboard administrator
+// can delegate explicitly approved rooms to an eligible same-school teacher.
 func (p *Proxy) analyticsRoomTarget(u *store.User, school string, q analyticsRequest) ([]analyticsTarget, error) {
-	if u.School != school || (u.PersonType != 1 && u.PersonType != 2) || u.PersonID <= 0 || u.Password == "" ||
-		!p.store.UserAdmissionAllowed(school, u) {
-		return nil, fmt.Errorf("room analytics requires a teacher with a saved credential for this school")
+	own := u.School == school && (u.PersonType == 1 || u.PersonType == 2) && u.PersonID > 0 && u.Password != ""
+	if u.School != school || (!own && !u.Admin) || !p.store.UserAdmissionAllowed(school, u) {
+		return nil, fmt.Errorf("room analytics requires a saved teacher account or a dashboard administrator with approved rooms")
+	}
+	id, err := p.analyticsRoomID(school, q.Room)
+	if err != nil {
+		return nil, err
+	}
+	owner := u
+	if own {
+		if !p.analyticsRoomSourceAllowed(school, u) {
+			return nil, fmt.Errorf("own upstream timetable access is disabled")
+		}
+	} else {
+		allowed, err := p.store.AnalyticsAccess(school, u.Username)
+		if err != nil || !slices.Contains(allowed.RoomIDs, id) {
+			return nil, fmt.Errorf("room not approved for this account")
+		}
+		owner = p.analyticsSharedTeacher(school)
+		if owner == nil {
+			return nil, fmt.Errorf("no eligible saved teacher source for this school")
+		}
+	}
+	source := "saved-teacher"
+	if own {
+		source = "own-teacher"
+	}
+	if q.DataSource != "" && q.DataSource != source {
+		return nil, fmt.Errorf("selected room source is unavailable")
+	}
+	return []analyticsTarget{{Kind: "ROOM", ID: id, From: q.From, To: q.To, Owner: owner, DataSource: source}}, nil
+}
+
+func (p *Proxy) analyticsRoomSourceAllowed(school string, u *store.User) bool {
+	if u.School != school || u.PersonID <= 0 || !p.store.UserAdmissionAllowed(school, u) {
+		return false
 	}
 	resolved, err := p.store.ResolveEffective(school, u)
 	if err != nil {
-		return nil, fmt.Errorf("room timetable access unavailable")
+		return false
 	}
 	decision := resolved.Decisions[access.CapTimetableUpstreamView]
-	if !decision.Effective && !(decision.ServerEnabled && decision.Source == access.SourceImplicit) {
-		return nil, fmt.Errorf("own upstream timetable access is disabled")
-	}
-	id, err := strconv.ParseInt(q.Room, 10, 64)
+	return decision.Effective || (decision.ServerEnabled && decision.Source == access.SourceImplicit)
+}
+
+func (p *Proxy) analyticsRoomID(school, selector string) (int64, error) {
+	selector = strings.TrimSpace(selector)
+	id, err := strconv.ParseInt(selector, 10, 64)
 	if err != nil {
 		elements, err := p.store.ListElementsWithNames(school)
 		if err != nil {
-			return nil, fmt.Errorf("room catalog unavailable")
+			return 0, fmt.Errorf("room catalog unavailable")
 		}
 		for candidate, name := range elements["ROOM"] {
-			if strings.EqualFold(strings.TrimSpace(name), q.Room) {
+			if strings.EqualFold(strings.TrimSpace(name), selector) {
 				if id != 0 {
-					return nil, fmt.Errorf("room name is ambiguous; use its numeric ID")
+					return 0, fmt.Errorf("room name is ambiguous; use its numeric ID")
 				}
 				id = candidate
 			}
 		}
 	}
 	if id <= 0 {
-		return nil, fmt.Errorf("room not found; use its exact upstream name or numeric ID")
+		return 0, fmt.Errorf("room not found; use its exact upstream name or numeric ID")
 	}
-	return []analyticsTarget{{Kind: "ROOM", ID: id, From: q.From, To: q.To, Owner: u}}, nil
+	return id, nil
 }
 
 func validAnalyticsOTP(otp string) bool {
@@ -489,7 +561,7 @@ func (p *Proxy) readAnalyticsWindow(school string, window analyticsTarget, reque
 	case status != http.StatusOK:
 		observed.Reason = "upstream_http_error"
 	default:
-		lessons, err := p.parseAnalyticsLessons(school, data, window.From, window.To)
+		lessons, err := p.parseScopedAnalyticsLessons(school, data, window.From, window.To, window.FilterKind, window.FilterID)
 		if err == nil {
 			observed.Status = "observed"
 			return lessons, observed
@@ -520,6 +592,10 @@ func analyticsUpstreamCode(raw []byte) *int32 {
 var errAnalyticsUpstreamRejected = errors.New("upstream rejected timetable request")
 
 func (p *Proxy) parseAnalyticsLessons(school string, raw []byte, from, to string) ([]analytics.Lesson, error) {
+	return p.parseScopedAnalyticsLessons(school, raw, from, to, "", 0)
+}
+
+func (p *Proxy) parseScopedAnalyticsLessons(school string, raw []byte, from, to, kind string, targetID int64) ([]analytics.Lesson, error) {
 	var envelope struct {
 		Result *struct {
 			Timetable struct {
@@ -603,6 +679,9 @@ func (p *Proxy) parseAnalyticsLessons(school string, raw []byte, from, to string
 		l := analytics.Lesson{Key: hex.EncodeToString(sum[:]), Date: date,
 			Start: analyticsClock(start), End: analyticsClock(end), Code: analyticsPeriodCode(period)}
 		l.Teachers, l.Covers = analyticsPeriodTeachers(period, lookupName)
+		if !analyticsPeriodMatches(period, l, kind, targetID) {
+			continue
+		}
 		l.Subjects = analyticsPeriodSubjects(period, lookupName)
 		lessons = append(lessons, l)
 	}
@@ -863,7 +942,7 @@ func (p *Proxy) writeAnalyticsCSV(w http.ResponseWriter, result analyticsRespons
 func analyticsTargetKey(targets []analyticsTarget) string {
 	var b strings.Builder
 	for _, t := range targets {
-		fmt.Fprintf(&b, "%s/%d/%s/%s;", t.Kind, t.ID, t.From, t.To)
+		fmt.Fprintf(&b, "%s/%d/%s/%s/%d/%s/%s/%d;", t.Kind, t.ID, t.From, t.To, t.Owner.ID, t.DataSource, t.FilterKind, t.FilterID)
 	}
 	return b.String()
 }
