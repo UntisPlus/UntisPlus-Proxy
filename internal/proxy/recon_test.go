@@ -488,6 +488,11 @@ func TestReconPartialSweepMergesSkippedClasses(t *testing.T) {
 		scan, _ := st.ReconScan("testschool")
 		return scan[4420] != "" && scan[4420] != stale
 	}, "the stale class to be re-scanned")
+	// The class progress marker is saved before the merged snapshot.
+	waitFor(t, 10*time.Second, func() bool {
+		elems, err := st.LoadReconElements("testschool")
+		return err == nil && containsID(elems["TEACHER"], 5009)
+	}, "the merged recon snapshot to be persisted")
 
 	elems, err := st.LoadReconElements("testschool")
 	if err != nil {
