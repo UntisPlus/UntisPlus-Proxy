@@ -32,7 +32,7 @@ server gates also treat global denies as hard ceilings.
 | --- | --- |
 | `analytics.personal.view` | Analyse the caller's own upstream timetable |
 | `analytics.personal.history` | Permit personal dates older than the last 366 days; personal.view is still required |
-| `analytics.teacher.view` | Analyse explicitly approved teacher IDs through a saved teacher source |
+| `analytics.teacher.view` | Analyse approved teacher IDs through a saved teacher source, or analyse rooms using your own saved teacher credential |
 | `analytics.class_history.view` | Analyse an explicitly approved class-history profile |
 | `analytics.export` | Download JSON or CSV ZIP within the same data permissions |
 
@@ -88,9 +88,13 @@ importer.
 }
 ```
 
-- `mode`: `personal` (default), `teacher`, or `class-history`.
+- `mode`: `personal` (default), `teacher`, `room`, or `class-history`.
 - `teacherId`: required and approved for teacher mode; optional as a filter of
   teachers appearing in personal/class-history data. It never widens that scope.
+- `room`: required in room mode. Use the exact upstream room name or numeric
+  room ID. Only a signed-in teacher with `analytics.teacher.view`, own upstream
+  timetable access, and a saved credential can request a room report. The
+  proxy uses that account's own upstream rights for the read.
 - `profileId`: required for class-history mode; ignored profiles cannot be
   supplied in personal/teacher mode.
 - `schoolYear`: optional configured year name; fills omitted from/to and rejects
@@ -251,6 +255,25 @@ The explicit date range works without configured analytics years. Until the
 school's year boundaries are configured, lessons can appear in the `unmapped`
 year bucket and still count in the totals. This command uses ordinary JSON
 report access. The dedicated export formats require the separate export grant.
+
+### Save a room report
+
+Use your enrolled teacher account to read cancellations for one room. For
+example, to save room 14-05 over an explicit date range:
+
+```bash
+(
+  umask 077
+  set -o pipefail
+  python3 scripts/test-teacher-cancellations.py YOUR_TEACHER_USERNAME \
+    --room '14-05' --from 2026-08-01 --to 2026-11-23 --json --show-names \
+    | tee /tmp/untisplus-room-14-05-2026-27.json
+)
+```
+
+You can use `--school-year` instead of the date flags once the school year
+has been saved. Use a numeric room ID if the room name is ambiguous.
+Room reports describe cancellations on the room's upstream timetable.
 
 ### Compare teachers and school years
 

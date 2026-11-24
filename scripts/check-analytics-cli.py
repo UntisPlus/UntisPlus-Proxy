@@ -18,6 +18,25 @@ spec.loader.exec_module(cli)
 
 
 class AnalyticsCLITest(unittest.TestCase):
+    def test_room_uses_saved_teacher_source_even_for_a_short_range(self):
+        argv = ["analytics", "teacher", "--room", "14-05", "--from", "2026-09-21",
+                "--to", "2026-09-27", "--json", "--show-names"]
+        report = {"source": "room", "complete": True, "uniqueLessons": 2,
+                  "teacherAssignmentTotals": {"scheduled": 2, "cancelled": 1}}
+        output = io.StringIO()
+        with patch.object(cli.sys, "argv", argv), patch.object(cli.sys.stdin, "isatty", return_value=True), \
+                patch.object(cli, "getpass", return_value="123456"), \
+                patch.object(cli, "CookieJar", return_value=[SimpleNamespace(name="JSESSIONID")]), \
+                patch.object(cli, "post", side_effect=[{"result": {}}, report]) as post, \
+                contextlib.redirect_stdout(output):
+            self.assertEqual(cli.main(), 0)
+
+        self.assertEqual(post.call_args.args[2], {
+            "mode": "room", "room": "14-05", "from": "2026-09-21", "to": "2026-09-27",
+            "anonymise": False, "format": "json",
+        })
+        self.assertEqual(json.loads(output.getvalue()), report)
+
     def test_multiple_years_and_teachers_keep_individual_coverage(self):
         argv = ["analytics", "caller", "--teacher-id", "42", "--teacher-id", "43",
                 "--school-year", "2024/2025", "--school-year", "2025/2026", "--json"]

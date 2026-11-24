@@ -50,6 +50,7 @@ def main():
     parser.add_argument("--to", dest="end", type=date.fromisoformat)
     parser.add_argument("--school-year", action="append", help="select an imported school year, repeat to compare years")
     parser.add_argument("--teacher-id", type=int, action="append", help="select an approved teacher ID, repeat to compare teachers")
+    parser.add_argument("--room", help="export a room by exact name or ID using your own saved teacher account")
     parser.add_argument("--json", action="store_true", help="print the full report")
     parser.add_argument("--show-names", action="store_true", help="include teacher and subject names in the report")
     parser.add_argument("--saved-source", action="store_true",
@@ -71,6 +72,8 @@ def main():
             parser.error("choose a date range of up to 366 days ending today or earlier")
     if any(teacher is not None and teacher <= 0 for teacher in teachers):
         parser.error("--teacher-id must be positive")
+    if args.room is not None and (not args.room.strip() or args.teacher_id):
+        parser.error("--room requires a non-empty room name or ID and cannot be combined with --teacher-id")
     if len(years) * len(teachers) > 6:
         parser.error("select at most six teacher and school year combinations")
 
@@ -101,13 +104,15 @@ def main():
             for year in years:
                 payload = {"mode": "personal" if teacher is None else "teacher",
                            "anonymise": not args.show_names, "format": "json"}
+                if args.room is not None:
+                    payload.update({"mode": "room", "room": args.room.strip()})
                 if year is not None:
                     payload["schoolYear"] = year
                 else:
                     payload.update({"from": args.start.isoformat(), "to": args.end.isoformat()})
                 if teacher is not None:
                     payload["teacherId"] = teacher
-                elif year is None and not args.saved_source and (args.end - args.start).days < 31:
+                elif args.room is None and year is None and not args.saved_source and (args.end - args.start).days < 31:
                     payload["personalOtp"] = code
                 entry = {"schoolYear": year}
                 if teacher is not None:
@@ -128,7 +133,13 @@ def main():
             return 1
         print(f"{stage} returned HTTP {error.code}.", file=sys.stderr)
         if stage == "Analytics" and error.code == 403:
-            print("Check the analytics feature switch, your permission group, and any approved teacher ID.",
+            try:
+                error_body = json.loads(detail)
+            except (ValueError, UnicodeError):
+                error_body = {}
+            reason = error_body.get("error") if isinstance(error_body, dict) else None
+            print(reason if isinstance(reason, str) and reason != "forbidden" else
+                  "Check the analytics switch, your permission group, and the selected teacher or room.",
                   file=sys.stderr)
         return 1
     except (URLError, OSError, ValueError):
@@ -141,7 +152,7 @@ def main():
             print(json.dumps({"complete": complete, "reports": reports}, indent=2, ensure_ascii=False))
         else:
             for entry in reports:
-                label = f"Teacher {entry.get('teacherId', entry.get('teacherSelection'))}" if args.teacher_id else "Personal"
+                label = f"Teacher {entry.get('teacherId', entry.get('teacherSelection'))}" if args.teacher_id else "Room" if args.room else "Personal"
                 report = entry.get("report")
                 date_label = entry["schoolYear"] or f"{args.start} to {args.end}"
                 if report is None:

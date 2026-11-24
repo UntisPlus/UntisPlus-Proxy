@@ -25,6 +25,7 @@ type analyticsRequest struct {
 	From             string   `json:"from"`
 	To               string   `json:"to"`
 	TeacherID        int64    `json:"teacherId"`
+	Room             string   `json:"room"`
 	ProfileID        string   `json:"profileId"`
 	SchoolYear       string   `json:"schoolYear"`
 	MinLessons       int      `json:"minLessons"`
@@ -45,6 +46,7 @@ type analyticsResponse struct {
 	Version          string            `json:"version"`
 	ReportID         string            `json:"reportId"`
 	Source           string            `json:"source"`
+	Room             string            `json:"room,omitempty"`
 	From             string            `json:"from"`
 	To               string            `json:"to"`
 	GeneratedAt      string            `json:"generatedAt"`
@@ -105,7 +107,7 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 	cap := access.CapAnalyticsPersonal
 	switch q.Mode {
 	case "personal":
-	case "teacher":
+	case "teacher", "room":
 		cap = access.CapAnalyticsTeacher
 	case "class-history":
 		cap = access.CapAnalyticsClassHistory
@@ -115,6 +117,12 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 	}
 	if q.PersonalOTP != "" && (q.Mode != "personal" || !validAnalyticsOTP(q.PersonalOTP)) {
 		badRequest(w, "personalOtp requires personal mode and a six-digit code")
+		return
+	}
+	q.Room = strings.TrimSpace(q.Room)
+	if (q.Room != "") != (q.Mode == "room") || len(q.Room) > 120 ||
+		(q.Mode == "room" && (q.TeacherID != 0 || q.ProfileID != "")) {
+		badRequest(w, "room mode requires a room name or ID and no teacher or profile target")
 		return
 	}
 	// Administrator status deliberately does not bypass analytics scope grants.
@@ -267,6 +275,8 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 	}
 	if q.Anonymise {
 		result.ExcludePrefixes = nil
+	} else if q.Mode == "room" {
+		result.Room = q.Room
 	}
 	options := analytics.Options{MinLessons: q.MinLessons, Anonymise: q.Anonymise, IncludeIrregular: q.IncludeIrregular, ExcludePrefixes: q.ExcludePrefixes, DetectClashes: q.Mode == "personal"}
 	if q.TeacherID > 0 {
@@ -283,8 +293,12 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 	}
 	// Recheck all grants immediately before returning/exporting a long-running report.
 	fresh := p.sessionUser(r)
-	currentTargets, targetErr := p.analyticsTargets(u, school, q)
-	if fresh == nil || fresh.PersonID != u.PersonID || fresh.PersonType != u.PersonType || targetErr != nil || analyticsTargetKey(currentTargets) != analyticsTargetKey(targets) || !p.effective(fresh, school, cap) || !p.store.UserAdmissionAllowed(school, fresh) || (q.Format != "json" && !p.effective(fresh, school, access.CapAnalyticsExport)) {
+	if fresh == nil || fresh.ID != u.ID || p.userSchool(fresh, p.opts.School) != school || fresh.PersonID != u.PersonID || fresh.PersonType != u.PersonType || !p.effective(fresh, school, cap) || !p.store.FeatureEnabled(school, "analytics") || !p.store.UserAdmissionAllowed(school, fresh) || (q.Format != "json" && !p.effective(fresh, school, access.CapAnalyticsExport)) {
+		p.forbidden(w)
+		return
+	}
+	currentTargets, targetErr := p.analyticsTargets(fresh, school, q)
+	if targetErr != nil || analyticsTargetKey(currentTargets) != analyticsTargetKey(targets) {
 		p.forbidden(w)
 		return
 	}
@@ -298,6 +312,9 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 	p.writeJSON(w, result)
 }
 func (p *Proxy) analyticsTargets(u *store.User, school string, q analyticsRequest) ([]analyticsTarget, error) {
+	if q.Mode == "room" {
+		return p.analyticsRoomTarget(u, school, q)
+	}
 	if q.Mode == "personal" {
 		if q.ProfileID != "" {
 			return nil, fmt.Errorf("profileId requires class-history mode")
@@ -362,6 +379,42 @@ func (p *Proxy) analyticsTargets(u *store.User, school string, q analyticsReques
 		targets[i].Owner = sources[0]
 	}
 	return targets, nil
+}
+
+// Room analytics uses the signed-in teacher’s own upstream permissions. A
+// student or another caller can never borrow a teacher source for this mode.
+func (p *Proxy) analyticsRoomTarget(u *store.User, school string, q analyticsRequest) ([]analyticsTarget, error) {
+	if u.School != school || (u.PersonType != 1 && u.PersonType != 2) || u.PersonID <= 0 || u.Password == "" ||
+		!p.store.UserAdmissionAllowed(school, u) {
+		return nil, fmt.Errorf("room analytics requires a teacher with a saved credential for this school")
+	}
+	resolved, err := p.store.ResolveEffective(school, u)
+	if err != nil {
+		return nil, fmt.Errorf("room timetable access unavailable")
+	}
+	decision := resolved.Decisions[access.CapTimetableUpstreamView]
+	if !decision.Effective && !(decision.ServerEnabled && decision.Source == access.SourceImplicit) {
+		return nil, fmt.Errorf("own upstream timetable access is disabled")
+	}
+	id, err := strconv.ParseInt(q.Room, 10, 64)
+	if err != nil {
+		elements, err := p.store.ListElementsWithNames(school)
+		if err != nil {
+			return nil, fmt.Errorf("room catalog unavailable")
+		}
+		for candidate, name := range elements["ROOM"] {
+			if strings.EqualFold(strings.TrimSpace(name), q.Room) {
+				if id != 0 {
+					return nil, fmt.Errorf("room name is ambiguous; use its numeric ID")
+				}
+				id = candidate
+			}
+		}
+	}
+	if id <= 0 {
+		return nil, fmt.Errorf("room not found; use its exact upstream name or numeric ID")
+	}
+	return []analyticsTarget{{Kind: "ROOM", ID: id, From: q.From, To: q.To, Owner: u}}, nil
 }
 
 func validAnalyticsOTP(otp string) bool {

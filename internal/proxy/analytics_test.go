@@ -438,6 +438,44 @@ func TestAnalyticsDoesNotRetryUpstreamAuthRejection(t *testing.T) {
 	}
 }
 
+func TestAnalyticsRoomUsesOnlySignedInTeacher(t *testing.T) {
+	p, st, f := analyticsFixture(t)
+	seedTeacherSource(t, st, "room-caller", 77)
+	if err := st.SetUserCapGrant("testschool", "room-caller", string(access.CapAnalyticsTeacher), 1); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertElementNames("testschool", "ROOM", map[int64]string{169: "14-05"}); err != nil {
+		t.Fatal(err)
+	}
+	body := `{"mode":"room","room":"14-05","from":"2026-09-21","to":"2026-09-28"}`
+	if w := analyticsReq(t, p, "student", body); w.Code != http.StatusForbidden || f.TimetableCalls() != 0 {
+		t.Fatal("student could borrow a teacher source for room analytics")
+	}
+	w := analyticsReq(t, p, "room-caller", body)
+	var report analyticsResponse
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &report) != nil ||
+		report.Source != "room" || report.Room != "14-05" || !report.Complete || report.CancelledLessons != 1 || len(report.Windows) != 2 {
+		t.Fatalf("unexpected room analytics: HTTP %d %s", w.Code, w.Body.String())
+	}
+	calls := f.Forwards()
+	if len(calls) != 2 {
+		t.Fatalf("expected two weekly room reads, got %d", len(calls))
+	}
+	for _, call := range calls {
+		got := string(call.Body)
+		if !strings.Contains(got, `"user":"room-caller"`) || !strings.Contains(got, `"type":"ROOM"`) ||
+			!strings.Contains(got, `"id":169`) || strings.Contains(got, `"user":"source"`) {
+			t.Fatal("room analytics did not read upstream as the signed-in teacher")
+		}
+	}
+	if err := st.SetUserCapGrant("testschool", "room-caller", string(access.CapTimetableUpstreamView), -1); err != nil {
+		t.Fatal(err)
+	}
+	if w := analyticsReq(t, p, "room-caller", body); w.Code != http.StatusForbidden || f.TimetableCalls() != 2 {
+		t.Fatal("room analytics ignored upstream timetable deny")
+	}
+}
+
 func TestAnalyticsPersonalOTPUsesCallerIdentityWithoutSavedKey(t *testing.T) {
 	p, st, f := analyticsFixture(t)
 	u, err := st.GetUser("student")
