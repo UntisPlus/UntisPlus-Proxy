@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -187,24 +188,15 @@ func (p *Proxy) adminBaselineControls(w http.ResponseWriter, r *http.Request, pa
 					}
 					data, status, _, fetchErr := p.untis.RawIntern(school, cookie, "getTimetable2017", body)
 					if fetchErr == nil && status == 200 {
-						var response struct {
-							Result *struct {
-								Periods []json.RawMessage `json:"periods"`
-							} `json:"result"`
-							Error json.RawMessage `json:"error"`
-						}
-						if json.Unmarshal(data, &response) == nil {
-							if len(response.Error) > 0 && string(response.Error) != "null" {
-								report.Status = "upstream_rejected"
-							} else if response.Result != nil && response.Result.Periods != nil {
-								if lessons, parseErr := p.parseAnalyticsLessons(school, data, req.From, req.To); parseErr == nil {
-									report.PeriodCount = len(lessons)
-									report.Status = "observed_nonempty"
-									if report.PeriodCount == 0 {
-										report.Status = "empty_or_unavailable"
-									}
-								}
-							}
+						lessons, parseErr := p.parseAnalyticsLessons(school, data, req.From, req.To)
+						switch {
+						case errors.Is(parseErr, errAnalyticsUpstreamRejected):
+							report.Status = "upstream_rejected"
+						case parseErr == nil && len(lessons) > 0:
+							report.PeriodCount = len(lessons)
+							report.Status = "observed_nonempty"
+						case parseErr == nil:
+							report.Status = "empty_or_unavailable"
 						}
 					}
 				} else {

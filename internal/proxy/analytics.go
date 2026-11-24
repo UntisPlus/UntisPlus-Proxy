@@ -222,7 +222,7 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 			p.forbidden(w)
 			return
 		}
-		raw, _ := json.Marshal(map[string]any{"id": "analytics", "jsonrpc": "2.0", "method": "getTimetable2017", "params": []any{map[string]any{"id": window.ID, "type": window.Kind, "startDate": window.From, "endDate": window.To, "auth": map[string]any{}}}})
+		raw, _ := json.Marshal(map[string]any{"id": "analytics", "jsonrpc": "2.0", "method": "getTimetable2017", "params": []any{map[string]any{"id": window.ID, "type": window.Kind, "startDate": window.From, "endDate": window.To, "masterDataTimestamp": 0, "timetableTimestamp": 0, "timetableTimestamps": [7]int{}, "auth": map[string]any{}}}})
 		body, rewriteErr := p.rewriteAuthForOwner(school, raw, window.Owner)
 		observed := analyticsWindow{From: window.From, To: window.To, Status: "unavailable"}
 		if rewriteErr != nil {
@@ -377,7 +377,11 @@ var errAnalyticsUpstreamRejected = errors.New("upstream rejected timetable reque
 func (p *Proxy) parseAnalyticsLessons(school string, raw []byte, from, to string) ([]analytics.Lesson, error) {
 	var envelope struct {
 		Result *struct {
+			Timetable struct {
+				Periods []map[string]any `json:"periods"`
+			} `json:"timetable"`
 			Periods []map[string]any `json:"periods"`
+			TTData  []map[string]any `json:"ttData"`
 		} `json:"result"`
 		Error json.RawMessage `json:"error"`
 	}
@@ -389,11 +393,21 @@ func (p *Proxy) parseAnalyticsLessons(school string, raw []byte, from, to string
 	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
 		return nil, errAnalyticsUpstreamRejected
 	}
-	if envelope.Result == nil || envelope.Result.Periods == nil {
+	if envelope.Result == nil {
 		return nil, fmt.Errorf("invalid timetable response")
 	}
-	lessons := []analytics.Lesson{}
-	for _, period := range envelope.Result.Periods {
+	periods := envelope.Result.Timetable.Periods
+	if periods == nil {
+		periods = envelope.Result.Periods
+	}
+	if periods == nil {
+		periods = envelope.Result.TTData
+	}
+	if periods == nil {
+		return nil, fmt.Errorf("invalid timetable response")
+	}
+	lessons := make([]analytics.Lesson, 0, len(periods))
+	for _, period := range periods {
 		date := fmt.Sprint(period["date"])
 		if v, ok := period["startDateTime"].(string); ok && len(v) >= 10 {
 			date = v[:10]
@@ -413,33 +427,71 @@ func (p *Proxy) parseAnalyticsLessons(school string, raw []byte, from, to string
 		if parsedID, err := strconv.ParseInt(id, 10, 64); err != nil || parsedID <= 0 {
 			return nil, fmt.Errorf("lesson id missing")
 		}
-		sum := sha256.Sum256([]byte(id + "/" + date + "/" + fmt.Sprint(period["startDateTime"]) + "/" + fmt.Sprint(period["endDateTime"])))
-		l := analytics.Lesson{Key: hex.EncodeToString(sum[:]), Date: date}
-		l.Code, _ = period["code"].(string)
-		if teachers, ok := period["teachers"].([]any); ok {
-			for _, item := range teachers {
-				if t, ok := item.(map[string]any); ok {
-					id := fmt.Sprint(t["id"])
-					if n, err := strconv.ParseInt(id, 10, 64); err == nil && n > 0 {
-						name, _ := t["longName"].(string)
-						if name == "" {
-							name, _ = t["name"].(string)
-						}
-						if name == "" {
-							name = p.store.ElementName(school, "TEACHER", n)
-						}
-						if name == "" {
-							name = "Teacher " + id
-						}
-						l.Teachers = append(l.Teachers, analytics.TeacherRef{ID: id, Name: name})
-					}
-				}
-			}
+		start, end := period["startDateTime"], period["endDateTime"]
+		if start == nil {
+			start = period["startTime"]
 		}
+		if end == nil {
+			end = period["endTime"]
+		}
+		sum := sha256.Sum256([]byte(id + "/" + date + "/" + fmt.Sprint(start) + "/" + fmt.Sprint(end)))
+		l := analytics.Lesson{Key: hex.EncodeToString(sum[:]), Date: date}
+		if code, ok := period["code"].(string); ok {
+			l.Code = strings.ToLower(strings.TrimSpace(code))
+		}
+		l.Teachers = p.analyticsPeriodTeachers(school, period)
 		lessons = append(lessons, l)
 	}
 	return lessons, nil
 }
+
+// Modern responses commonly carry teacher element references, while older
+// mobile responses embed teacher objects in te. Prefer explicit names if a
+// response includes both representations.
+func (p *Proxy) analyticsPeriodTeachers(school string, period map[string]any) []analytics.TeacherRef {
+	var teachers []analytics.TeacherRef
+	seen := map[string]bool{}
+	for _, key := range []string{"teachers", "te", "elements"} {
+		items, _ := period[key].([]any)
+		for _, item := range items {
+			entry, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if key == "elements" {
+				kind, _ := entry["type"].(string)
+				if !strings.EqualFold(kind, "TEACHER") {
+					continue
+				}
+			}
+			n, err := strconv.ParseInt(fmt.Sprint(entry["id"]), 10, 64)
+			if err != nil || n <= 0 {
+				continue
+			}
+			id := strconv.FormatInt(n, 10)
+			if seen[id] {
+				continue
+			}
+			name, _ := entry["longName"].(string)
+			if name == "" {
+				name, _ = entry["longname"].(string)
+			}
+			if name == "" {
+				name, _ = entry["name"].(string)
+			}
+			if name == "" {
+				name = p.store.ElementName(school, "TEACHER", n)
+			}
+			if name == "" {
+				name = "Teacher " + id
+			}
+			seen[id] = true
+			teachers = append(teachers, analytics.TeacherRef{ID: id, Name: name})
+		}
+	}
+	return teachers
+}
+
 func analyticsCSVSafe(s string) string {
 	if len(s) > 0 && strings.ContainsAny(s[:1], "=+-@\t\r\n") {
 		return "'" + s

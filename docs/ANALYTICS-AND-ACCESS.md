@@ -120,6 +120,11 @@ Reports recheck grants, admission, targets and master enablement before returnin
 
 ## Report data and definitions
 
+The reader supports WebUntis responses using nested `timetable.periods`,
+flat `periods`, or mobile `ttData`. It resolves teachers from typed timetable
+elements or embedded teacher lists.
+
+
 The JSON includes `version`, a report-local `reportId`, source mode, dates,
 `generatedAt`, requested filters, warnings, and observed/unavailable windows.
 `complete` means all requested approved windows were read and the class-history

@@ -286,3 +286,30 @@ func TestAnalyticsUnavailableWindowReasons(t *testing.T) {
 		})
 	}
 }
+
+func TestAnalyticsReadsUpstreamTimetableShapes(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"nested timetable with teacher elements", `{"result":{"timetable":{"periods":[
+			{"id":1,"startDateTime":"2026-09-21T08:00:00","endDateTime":"2026-09-21T08:45:00","code":"CANCELLED","elements":[{"id":42,"type":"TEACHER"},{"id":18,"type":"ROOM"}]}
+		]}}}`},
+		{"mobile ttData with te", `{"result":{"ttData":[
+			{"id":1,"date":20260921,"startTime":800,"endTime":845,"code":"cancelled","te":[{"id":42,"longname":"Example Teacher"}]}
+		],"masterDataTimestamp":0,"timetableTimestamp":0}}`},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			p, _, f := analyticsFixture(t)
+			f.setTimetableBody(tt.body)
+			w := analyticsReq(t, p, "student", `{"from":"2026-09-21","to":"2026-09-21","anonymise":true}`)
+			var report analyticsResponse
+			if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &report) != nil ||
+				!report.Complete || report.UniqueLessons != 1 || report.Totals.Scheduled != 1 ||
+				report.Totals.Cancelled != 1 || len(report.Teachers) != 1 {
+				t.Fatalf("timetable shape was not counted: HTTP %d %s", w.Code, w.Body.String())
+			}
+		})
+	}
+}
