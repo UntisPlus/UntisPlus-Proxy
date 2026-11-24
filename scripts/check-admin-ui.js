@@ -233,10 +233,14 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
   must(accountAuthenticationLabel({credentialStatusKnown:true,hasSharedSecret:true})==='Token/shared secret only','token-only label incorrect');
   must(accountAuthenticationLabel({credentialStatusKnown:true,hasPassword:true})==='Password only','password-only label incorrect');
   must(accountAuthenticationLabel({credentialStatusKnown:true})==='None saved','missing credentials incorrectly labelled');
+  must(accountAuthenticationLabel({credentialStatusKnown:true,method:'key'})==='No reusable key saved','key sign-in confused with a saved credential');
   must(accountAuthenticationLabel({})==='Not checked','unknown credential state incorrectly labelled');
   const ready={username:'ready',school:'schuldorf',personId:5,personType:5,classId:10,replayable:true};
   must(accountRegistrationWarnings(ready).length===0,'complete student incorrectly flagged');
   must(accountRegistrationWarnings({...ready,replayable:false}).some(i=>i.code==='credential'),'missing reusable credential not flagged');
+  const teacherNoKey={...ready,personType:2,method:'key',classId:0,replayable:false};
+  const teacherWarnings=accountRegistrationWarnings(teacherNoKey);
+  must(teacherWarnings.length===1&&teacherWarnings[0].title==='Background fetching unavailable'&&teacherWarnings[0].next.includes('App sign-in can work'),'app sign-in treated as a failed enrolment');
   const parentIssues=accountRegistrationWarnings({...ready,classId:-1});
   must(parentIssues.length===1&&parentIssues[0].code==='class','parent-like class warning incorrect');
   const guardian={...ready,classId:-1,personType:0,accountLinks:{guardian:true,persons:[{id:10,type:5,displayName:'<child>'},{id:20,type:5},{id:30,type:5}]}};

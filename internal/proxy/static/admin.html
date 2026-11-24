@@ -631,7 +631,7 @@ input:not([type=checkbox]):not([type=radio]),select{min-height:38px}.help-icon{w
           <div class="table-wrap"><table><thead><tr><th>Account</th><th>What needs attention</th><th>What to do next</th></tr></thead><tbody id="accountWarningRows"></tbody></table></div>
         </div>
         <div class="panel mt"><div class="panel-header"><div><h3>Authentication methods — all accounts</h3><p class="desc">Shows whether this proxy has a saved token/shared secret, a saved upstream password, both, or neither. Token here means the reusable app shared secret, not a one-time authenticator code. Stored does not mean recently tested.</p></div></div><div class="table-wrap"><table><thead><tr><th>Account</th><th>School</th><th>Linked people</th><th>Saved authentication</th><th>Background fetching</th></tr></thead><tbody id="accountAuthenticationRows"></tbody></table></div></div>
-        <div class="panel mt"><div class="panel-header"><div><h3>Why can login work but timetable fetching fail?</h3><p class="desc">A one-time code proves the person can sign in now. Background fetching needs a reusable password or shared secret, which some app login flows do not send.</p></div></div><p class="small">Ask the person to complete the app’s normal account setup through this proxy, including the QR/shared-secret enrolment step. Then refresh this page. Do not paste passwords, authenticator codes or shared secrets into support messages.</p><p class="small">A missing class or unclear person type may be normal for a parent or an account without a linked school person. Review upstream identity before changing its permissions; do not assume it is a student or teacher.</p></div>
+        <div class="panel mt"><div class="panel-header"><div><h3>App sign-in and background fetching</h3><p class="desc">An app can keep the shared secret on the device and send only a one-time code. That supports app sign-in and live timetable reads. Background fetching needs a reusable credential saved on this server.</p></div></div><p class="small">Set up a saved credential only if the account needs background features. Use an enrolment flow that explicitly sends a reusable credential to this proxy. Keep passwords, authenticator codes and shared secrets out of support messages.</p><p class="small">A missing class or unclear person type may be normal for a parent or an account without a linked school person. Review upstream identity before changing its permissions.</p></div>
       </section>
 
       <!-- SCHOOLS & ANONYMOUS -->
@@ -1470,12 +1470,13 @@ function accountAuthenticationLabel(u){
  if(u.hasSharedSecret&&u.hasPassword)return 'Both — token/shared secret and password';
  if(u.hasSharedSecret)return 'Token/shared secret only';
  if(u.hasPassword)return 'Password only';
+ if(u.method==='key')return 'No reusable key saved';
  return 'None saved';
 }
 function accountTypeLabel(u){return u.accountLinks?.guardian?'Guardian · '+(u.accountLinks.persons||[]).length+' linked children':Number(u.personType)===5?'Student':([1,2].includes(Number(u.personType))?'Teacher':'Unclassified');}
 function accountRegistrationWarnings(u){
  const issues=[];
- if(u.replayable===false)issues.push({code:'credential',title:(u.hasSharedSecret||u.hasPassword?'Background-fetch credential not ready':'No reusable credential saved'),next:'Complete app account setup through this proxy with its QR/shared-secret enrolment flow. An OTP-only login is not enough for background fetching.'});
+ if(u.replayable===false)issues.push({code:'credential',title:'Background fetching unavailable',next:u.hasSharedSecret||u.hasPassword?'A reusable credential is recorded, but this account is not ready for background fetching. Check its enrolment.':'App sign-in can work with a one-time code. The server needs a reusable key or password only for background features.'});
  if(!u.school)issues.push({code:'school',title:'No school saved on this account',next:'Sign in through this proxy with the correct school selected so the account is linked to it.'});
  if(Number(u.personId||0)<=0)issues.push({code:'person',title:'No linked person identity saved',next:'Check the linked person in upstream and sign in again. Some administrator or generic accounts may not have a school person.'});
  if(!u.accountLinks?.guardian&&![1,2,5].includes(Number(u.personType||0)))issues.push({code:'type',title:'Account type needs review',next:'Verify the account type reported by upstream before choosing its default groups. Parent accounts cannot always be classified from the linked person.'});
@@ -1489,7 +1490,7 @@ function renderAccountWarnings(){
  const rows=flagged.filter(({user:u})=>[u.username,u.displayName,u.school].join(' ').toLowerCase().includes(search));
  const summary=$('accountWarningSummary');if(summary)summary.textContent=flagged.length?(flagged.length+' of '+users.length+' accounts need review. Showing '+rows.length+'. Based on saved details; upstream credentials have not been tested here.'):'No registration warnings in saved details. Saved credentials have not been tested against upstream here.';
  const methods=$('accountAuthenticationRows');
- if(methods)methods.innerHTML=users.filter(u=>[u.username,u.displayName,u.school].join(' ').toLowerCase().includes(search)).map(u=>'<tr><td><strong>'+esc(u.username)+'</strong><div class="small muted">'+esc(u.displayName||'')+'</div></td><td>'+esc(u.school||'Not recorded')+'</td><td>'+esc(accountTypeLabel(u))+((u.accountLinks?.persons||[]).length?'<ul class="list-plain">'+u.accountLinks.persons.map(p=>'<li>'+esc(p.displayName||('Person '+p.id))+'</li>').join('')+'</ul>':'')+'</td><td>'+esc(accountAuthenticationLabel(u))+'</td><td>'+esc(u.replayable===true?'Credential enrolled — not live tested':u.replayable===false?'App enrolment needed':'Not checked')+'</td></tr>').join('')||'<tr><td colspan="5" class="empty">No accounts match.</td></tr>';
+ if(methods)methods.innerHTML=users.filter(u=>[u.username,u.displayName,u.school].join(' ').toLowerCase().includes(search)).map(u=>'<tr><td><strong>'+esc(u.username)+'</strong><div class="small muted">'+esc(u.displayName||'')+'</div></td><td>'+esc(u.school||'Not recorded')+'</td><td>'+esc(accountTypeLabel(u))+((u.accountLinks?.persons||[]).length?'<ul class="list-plain">'+u.accountLinks.persons.map(p=>'<li>'+esc(p.displayName||('Person '+p.id))+'</li>').join('')+'</ul>':'')+'</td><td>'+esc(accountAuthenticationLabel(u))+'</td><td>'+esc(u.replayable===true?'Credential enrolled — not live tested':u.replayable===false?'Unavailable':'Not checked')+'</td></tr>').join('')||'<tr><td colspan="5" class="empty">No accounts match.</td></tr>';
  const body=$('accountWarningRows');if(!body)return;
  body.innerHTML=rows.map(({user:u,issues})=>'<tr><td><strong>'+esc(u.username)+'</strong><div class="small muted">'+esc(u.displayName||'')+'</div><div class="small muted">'+esc(u.school||'School not recorded')+'</div><div class="small muted">Last seen: '+esc(fmtTime(u.lastSeen)||'Not recorded')+'</div></td><td>'+issues.map(i=>'<p class="small warn">'+esc(i.title)+'</p>').join('')+'</td><td>'+issues.map(i=>'<p class="small"><strong>'+esc(i.title)+':</strong> '+esc(i.next)+'</p>').join('')+'</td></tr>').join('')||'<tr><td colspan="3" class="empty">'+(flagged.length?'No warnings match your search.':'No accounts currently need registration review.')+'</td></tr>';
 }
@@ -1509,7 +1510,7 @@ async function loadUsers(refreshAccess=true){
     const un = jsq(u.username);
     const accountType=accountTypeLabel(u);
     tr.innerHTML =
-      '<td>'+esc(u.username)+(u.displayName?'<div class="small muted">'+esc(u.displayName)+'</div>':'')+(u.replayable===false?'<div class="small warn">App setup needed for background timetable fetching</div>':'')+'</td>'+
+      '<td>'+esc(u.username)+(u.displayName?'<div class="small muted">'+esc(u.displayName)+'</div>':'')+(u.replayable===false?'<div class="small muted">Background timetable fetching unavailable</div>':'')+'</td>'+
       '<td>'+esc(u.className||'')+(u.classId?' <span class="small muted">('+esc(u.classId)+')</span>':'')+'</td>'+
       '<td>'+esc(u.school||'')+'</td><td>'+accountType+'</td>'+
       '<td><button class="mini '+(u.admin?'danger':'secondary')+'" onclick="setAdmin('+un+','+(!u.admin)+')">'+(u.admin?'Administrator':'Standard')+'</button></td>'+
