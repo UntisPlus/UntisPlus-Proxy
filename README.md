@@ -264,6 +264,13 @@ fetching requires an enrolled credential. For app key sign-in, JSON-RPC error
 `-8526` indicates a proxy account-type login denial. Check the school and
 server-wide rules in **Permissions → Feature switches & login rules**.
 
+For a client that explicitly offers key enrolment, use the proxy's
+`getUserData2017` login with the current numeric `auth.otp` and a matching
+reusable `auth.key`. The proxy keeps the key local and saves it after upstream
+accepts the code and the school admits the account. Login with `auth.otp`
+alone does not enrol a key. The Android shared-secret login currently sends
+only the generated code, including after clearing its cache.
+
 Explicit per-account absence/lesson write denials also protect that account
 when another person uses it as a saved teacher source. Timetable reads remain
 available. Accounts with unknown or unrelated person types are excluded from

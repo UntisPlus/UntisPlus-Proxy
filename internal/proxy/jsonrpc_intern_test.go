@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -223,9 +224,6 @@ func TestKeyLoginLiveOTPUnchanged(t *testing.T) {
 	}
 }
 
-// TestGetAppSharedSecretStoresKeyAndPassword covers the app setup flow: upstream
-// is handed the account's real password and returns the TOTP replay key. The
-// proxy must keep both — the key so it can replay, the password for later use.
 func TestAndroidKeyLoginPreservesNumericOTP(t *testing.T) {
 	f := &fakeUntis{}
 	p, st, _ := newFakeProxy(t, f)
@@ -245,6 +243,53 @@ func TestAndroidKeyLoginPreservesNumericOTP(t *testing.T) {
 	if key, password, err := st.SchoolCredential("testschool", "android-user"); err != nil || key != "" || password != "" {
 		t.Fatal("a one-time code registered reusable credentials")
 	}
+}
+
+func TestAppLoginWithExplicitKeyEnrolsReusableCredential(t *testing.T) {
+	const user = "app-enrollment-test"
+	const secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+	f := &fakeUntis{}
+	p, st, _ := newFakeProxy(t, f)
+	login := func(key string) {
+		t.Helper()
+		now := time.Now()
+		code, err := strconv.Atoi(untis.TOTPAt(secret, now))
+		if err != nil {
+			t.Fatal("could not generate a synthetic test code")
+		}
+		auth := map[string]any{"user": user, "otp": code, "clientTime": now.UnixMilli()}
+		if key != "" {
+			auth["key"] = key
+		}
+		rec := internReq(t, p, "getUserData2017", "", internBody("getUserData2017", map[string]any{"auth": auth}))
+		if findCookie(rec, "JSESSIONID") == "" {
+			t.Fatalf("expected a login session: %s", rec.Body.String())
+		}
+		f.mu.Lock()
+		_, leaked := f.loginAuth["key"]
+		f.mu.Unlock()
+		if leaked {
+			t.Fatal("the reusable key was forwarded upstream")
+		}
+	}
+	assertStatus := func(want string) {
+		t.Helper()
+		key, password, err := st.SchoolCredential("testschool", user)
+		if err != nil || key != want || password != "" {
+			t.Fatal("unexpected saved credential status")
+		}
+		u, err := st.GetUserInSchool("testschool", user)
+		if err != nil || u == nil || u.Method != "key" || (u.Password != "") != (want != "") {
+			t.Fatal("account row does not agree with enrolled credential")
+		}
+	}
+
+	login("")
+	assertStatus("")
+	login(secret)
+	assertStatus(secret)
+	login("")
+	assertStatus(secret)
 }
 
 func TestGetAppSharedSecretStoresKeyAndPassword(t *testing.T) {
