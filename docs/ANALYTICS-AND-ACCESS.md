@@ -130,7 +130,6 @@ The reader supports WebUntis responses using nested `timetable.periods`,
 flat `periods`, or mobile `ttData`. It resolves teachers from typed timetable
 elements or embedded teacher lists.
 
-
 The JSON includes `version`, a report-local `reportId`, source mode, dates,
 `generatedAt`, requested filters, warnings, and observed/unavailable windows.
 `complete` means all requested approved windows were read and the class-history
@@ -222,6 +221,32 @@ The script labels errors by stage. Use the stage to decide what to check:
 A one-time-code-only sign-in can establish a session even when no reusable
 credential is saved. Use **Account warnings** to check the account's credential
 status. Administrator status alone does not grant access to reports.
+
+### Save a school-year-to-date report
+
+Run from the UntisPlus Proxy checkout. The example starts on 1 August 2026,
+the proxy's default school-year boundary, and ends yesterday in Europe/Berlin.
+Replace the start date with the school's actual upstream boundary if it differs.
+Enter a fresh WebUntis code at the prompt. The timetable reads use the saved
+account credential for this multi-month query.
+
+```bash
+(
+  umask 077
+  set -o pipefail
+  python3 scripts/test-teacher-cancellations.py YOUR_USERNAME \
+    --from 2026-08-01 --to "$(TZ=Europe/Berlin date -d yesterday +%F)" \
+    --saved-source --json | tee /tmp/untisplus-analytics-2026-27.json
+)
+```
+
+The file contains JSON only. Names use report-local labels unless you add
+`--show-names`. Check `complete` and `windows` before interpreting totals.
+Exit status 2 can leave a valid partial or empty JSON report in the file.
+The explicit date range works without configured analytics years. Until the
+school's year boundaries are configured, lessons can appear in the `unmapped`
+year bucket and still count in the totals. This command uses ordinary JSON
+report access. The dedicated export formats require the separate export grant.
 
 ## Exports
 
