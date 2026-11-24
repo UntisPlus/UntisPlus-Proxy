@@ -512,6 +512,9 @@ func TestAnalyticsAdminRoomRequiresApprovalAndEligibleTeacher(t *testing.T) {
 		strings.Contains(string(calls[0].Body), admin) {
 		t.Fatal("room read did not use the teacher's upstream identity")
 	}
+	if err := st.SetUserCapGrant("testschool", admin, string(access.CapTimetableRoomReconstructedView), -1); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.SetUserCapGrant("testschool", "source", string(access.CapPoolTimetableShare), -1); err != nil {
 		t.Fatal(err)
 	}

@@ -63,7 +63,7 @@ func (p *Proxy) handleAnalyticsOptions(w http.ResponseWriter, r *http.Request) {
 			key := [2]string{request.Mode, source}
 			available, cached := availableSources[key]
 			if !cached {
-				if targets, err := p.analyticsTargets(u, school, request); err == nil && len(targets) > 0 {
+				if targets, err := p.analyticsTargetsForSource(u, school, request); err == nil && len(targets) > 0 {
 					available = targets[0].DataSource
 				}
 				switch request.Mode {

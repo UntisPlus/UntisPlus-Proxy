@@ -49,7 +49,7 @@ func TestAnalyticsOptionsAndReportsRecheckTargetScopes(t *testing.T) {
 	}
 	for _, cap := range []access.Capability{access.CapAnalyticsPersonal, access.CapAnalyticsTeacher,
 		access.CapAnalyticsStudent, access.CapAnalyticsClassHistory, access.CapTimetableClassPooledView,
-		access.CapTimetableTeacherReconstructedView} {
+		access.CapTimetableTeacherReconstructedView, access.CapTimetableRoomReconstructedView} {
 		if err := st.SetUserCapGrant("testschool", caller, string(cap), 1); err != nil {
 			t.Fatal(err)
 		}
@@ -77,6 +77,7 @@ func TestAnalyticsOptionsAndReportsRecheckTargetScopes(t *testing.T) {
 		{`{"mode":"student","studentId":73,"schoolYear":"2026/2027","from":"2026-09-21","to":"2026-09-27"}`, "saved-teacher", `"type":"STUDENT"`},
 		{`{"mode":"class","classId":6000,"dataSource":"shared-class","from":"2026-09-21","to":"2026-09-27"}`, "shared-class", `"id":6000`},
 		{`{"mode":"teacher","teacherId":42,"dataSource":"reconstruction","from":"2026-09-21","to":"2026-09-27"}`, "reconstruction", `"type":"CLASS"`},
+		{`{"mode":"teacher","teacherId":42,"from":"2026-09-21","to":"2026-09-27"}`, "saved-teacher", `"type":"TEACHER"`},
 		{`{"mode":"room","room":"161","from":"2026-09-21","to":"2026-09-27"}`, "saved-teacher", `"type":"ROOM"`},
 	} {
 		before := len(upstream.Forwards())
@@ -87,11 +88,28 @@ func TestAnalyticsOptionsAndReportsRecheckTargetScopes(t *testing.T) {
 			t.Fatalf("wrong source for %s: HTTP %d %s", test.body, report.Code, report.Body.String())
 		}
 	}
+	p.analyticsLimiter.reset(loginLimitKey("testschool", caller))
+	if err := st.SetUserCapGrant("testschool", "source", string(access.CapPoolTimetableShare), -1); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{
+		`{"mode":"teacher","teacherId":42,"from":"2026-09-21","to":"2026-09-27"}`,
+		`{"mode":"room","room":"161","from":"2026-09-21","to":"2026-09-27"}`,
+	} {
+		w := analyticsReq(t, p, caller, body)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"dataSource":"reconstruction"`) {
+			t.Fatalf("expected automatic reconstruction: HTTP %d %s", w.Code, w.Body.String())
+		}
+	}
+	before := upstream.TimetableCalls()
+	if w := analyticsReq(t, p, caller, `{"mode":"teacher","teacherId":42,"dataSource":"saved-teacher","from":"2026-09-21","to":"2026-09-27"}`); w.Code != http.StatusForbidden || upstream.TimetableCalls() != before {
+		t.Fatalf("explicit source must not fall back: HTTP %d %s", w.Code, w.Body.String())
+	}
 	scope.StudentIDs = nil
 	if err := st.SetAnalyticsAccess("testschool", caller, scope); err != nil {
 		t.Fatal(err)
 	}
-	before := upstream.TimetableCalls()
+	before = upstream.TimetableCalls()
 	for _, body := range []string{
 		`{"mode":"student","studentId":73,"from":"2026-09-21","to":"2026-09-27"}`,
 		`{"mode":"class","classId":6001,"from":"2026-09-21","to":"2026-09-27"}`,

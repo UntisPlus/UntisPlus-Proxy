@@ -17,6 +17,14 @@ from urllib.request import (
     build_opener,
 )
 
+DATA_SOURCES = {
+    "personal": "Your upstream timetable",
+    "own-teacher": "Your upstream teacher account",
+    "saved-teacher": "Shared teacher account (upstream)",
+    "shared-class": "Shared class timetable",
+    "reconstruction": "Reconstruction from shared class timetables",
+}
+
 
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
@@ -44,6 +52,37 @@ def read_json(opener, request):
     return result
 
 
+def select_data_source(options, mode, target):
+    for option in options:
+        if option["mode"] != mode:
+            continue
+        if mode == "room":
+            if target.casefold() != option["name"].casefold() and target != str(option.get("id")):
+                continue
+        elif target != option.get("id"):
+            continue
+        sources = option["dataSources"]
+        if len(sources) <= 1:
+            return None
+
+        print(f"Choose a data source for {option['name']}:", file=sys.stderr)
+        for number, source in enumerate(sources, start=1):
+            print(f"  {number}. {DATA_SOURCES.get(source, source)}", file=sys.stderr)
+        while True:
+            print("Enter a number, or press Enter to let the server choose: ", end="", file=sys.stderr, flush=True)
+            choice = input().strip()
+            if not choice:
+                return None
+            if choice in {str(number) for number in range(1, len(sources) + 1)}:
+                return sources[int(choice) - 1]
+    return None
+
+
+def source_label(report):
+    source = report.get("dataSource")
+    return DATA_SOURCES.get(source, source or "Unknown")
+
+
 def main():
     yesterday = date.today() - timedelta(days=1)
     parser = argparse.ArgumentParser(description=__doc__)
@@ -57,7 +96,8 @@ def main():
     parser.add_argument("--student-id", type=int, action="append", help="select an approved student ID")
     parser.add_argument("--class-id", type=int, action="append", help="select your class or an approved class ID")
     parser.add_argument("--room", help="export a room by exact name or ID")
-    parser.add_argument("--data-source", choices=("personal", "own-teacher", "saved-teacher", "shared-class", "reconstruction"))
+    parser.add_argument("--data-source", choices=DATA_SOURCES,
+                        help="choose an allowed source without a prompt (optional)")
     parser.add_argument("--options", action="store_true", help="list accessible targets, sources and school years")
     parser.add_argument("--json", action="store_true", help="print the full report")
     parser.add_argument("--show-names", action="store_true", help="include teacher and subject names in the report")
@@ -119,15 +159,18 @@ def main():
             return 1
 
         stage = "Analytics"
-        if args.options:
+        options = {}
+        if args.options or (args.data_source is None and any(mode in ("teacher", "room", "class") for mode, _ in targets)):
             url = origin + "/api/analytics/options" + query
             options = read_json(opener, Request(url, headers={
                 "Accept": "application/json", "User-Agent": "UntisPlus-Analytics-Smoke/1.0",
             }))
+        if args.options:
             print(json.dumps(options, indent=2, ensure_ascii=False))
             return 0
         reports = []
         for index, (mode, target) in enumerate(targets, start=1):
+            source = args.data_source or select_data_source(options.get("targets", []), mode, target)
             for year in years:
                 payload = {"mode": mode,
                            "anonymise": not args.show_names, "format": "json"}
@@ -139,8 +182,8 @@ def main():
                         payload["to"] = args.end.isoformat()
                 else:
                     payload.update({"from": args.start.isoformat(), "to": args.end.isoformat()})
-                if args.data_source is not None:
-                    payload["dataSource"] = args.data_source
+                if source is not None:
+                    payload["dataSource"] = source
                 if mode in ("teacher", "student", "class"):
                     payload[f"{mode}Id"] = target
                 elif mode == "room":
@@ -180,6 +223,9 @@ def main():
     except (URLError, OSError, ValueError):
         print(f"{stage} failed. Check the server URL, network, and response format.", file=sys.stderr)
         return 1
+    except (EOFError, KeyboardInterrupt):
+        print("\nAnalytics cancelled.", file=sys.stderr)
+        return 1
 
     if len(reports) > 1:
         complete = all(entry.get("report", {}).get("complete") is True for entry in reports)
@@ -204,7 +250,8 @@ def main():
                 else:
                     totals = report.get("teacherAssignmentTotals") or {}
                     coverage = "complete" if report.get("complete") else "partial"
-                    print(f"{label} | {date_label} | {totals.get('cancelled', '?')} cancelled / {totals.get('scheduled', '?')} scheduled | {coverage}")
+                    print(f"{label} | {date_label} | {source_label(report)} | "
+                          f"{totals.get('cancelled', '?')} cancelled / {totals.get('scheduled', '?')} scheduled | {coverage}")
         return 0 if complete else 2
 
     report = reports[0]["report"]
@@ -216,6 +263,7 @@ def main():
         print(json.dumps(report, indent=2, ensure_ascii=False))
     else:
         print(f"{report['source']} | {report['from']} to {report['to']}")
+        print(f"Data source: {source_label(report)}")
         print(f"{totals['cancelled']} cancelled / {totals['scheduled']} scheduled teacher assignments")
         print(f"{report['uniqueLessons']} unique lessons | {len(report.get('teachers') or [])} teachers")
         if "lessonChanges" in report:
@@ -236,7 +284,7 @@ def main():
             print("The live-code report is partial or empty. Use --saved-source to compare the saved credential.",
                   file=sys.stderr)
         else:
-            print("The saved-source report is partial or empty. Check account enrolment and the requested dates.",
+            print(f"The report from {source_label(report)} is partial or empty. Check the coverage and requested dates.",
                   file=sys.stderr)
         return 2
     return 0

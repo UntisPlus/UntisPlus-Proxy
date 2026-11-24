@@ -90,7 +90,7 @@ func (p *Proxy) analyticsReconTargets(u *store.User, school string, q analyticsR
 			return nil, err
 		}
 	}
-	if !p.canViewElementRecon(u, school, kind) ||
+	if q.ProfileID != "" || !p.canViewElementRecon(u, school, kind) ||
 		(kind == "TEACHER" && !slices.Contains(scope.TeacherIDs, id)) ||
 		(kind == "ROOM" && !slices.Contains(scope.RoomIDs, id)) {
 		return nil, fmt.Errorf("reconstruction is not approved for this target")

@@ -342,6 +342,16 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 	p.writeJSON(w, result)
 }
 func (p *Proxy) analyticsTargets(u *store.User, school string, q analyticsRequest) ([]analyticsTarget, error) {
+	targets, err := p.analyticsTargetsForSource(u, school, q)
+	if err != nil && q.DataSource == "" && analyticsSourceSupported(q.Mode, "reconstruction") {
+		if reconstructed, reconErr := p.analyticsReconTargets(u, school, q); reconErr == nil {
+			return reconstructed, nil
+		}
+	}
+	return targets, err
+}
+
+func (p *Proxy) analyticsTargetsForSource(u *store.User, school string, q analyticsRequest) ([]analyticsTarget, error) {
 	if q.DataSource == "reconstruction" {
 		return p.analyticsReconTargets(u, school, q)
 	}

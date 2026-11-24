@@ -113,10 +113,15 @@ rechecks access independently of discovery.
   and the caller needs the student analytics grant.
 - `classId`: required for class mode. Select your accessible class or a class
   approved for your account. Class mode requires the class-history analytics grant.
-- `dataSource`: optional. Use one of the values returned by discovery, such as
-  `personal`, `saved-teacher`, `own-teacher`, `shared-class`, or
-  `reconstruction`. Reconstruction uses only accessible shared classes and
-  applies to permitted teachers or rooms. The response names the source used.
+- `dataSource` is optional. Omit it to let the proxy select a permitted source.
+  For teachers and rooms, the proxy prefers an eligible direct upstream
+  timetable and uses reconstruction if direct access is unavailable and
+  reconstruction is permitted. For classes, it tries your own timetable
+  access, a shared class timetable, then an eligible saved teacher.
+  Reconstruction uses only accessible shared classes.
+  To select a specific source, send a value from the target's `dataSources`
+  list. If that source is unavailable, the request is denied. The report's
+  `dataSource` identifies the source actually used.
 - `profileId`: required for class-history mode.
 - `schoolYear`: optional configured year name; fills omitted from/to and rejects
   explicit dates outside that year.
@@ -302,9 +307,10 @@ Room reports describe cancellations on the room's upstream timetable.
 To run both reports from a dashboard administrator account, select that
 account under **Permissions → Analytics data scope configuration**. Approve
 the teacher ID and add the room under **Approved rooms for this admin**. The
-admin needs `analytics.teacher.view` and the school needs a saved teacher
-account eligible to share. The admin's one-time code signs into the proxy.
-The proxy uses the saved teacher's identity for timetable reads.
+admin needs `analytics.teacher.view`. The admin's one-time code signs into the
+proxy. Direct timetable reads use an eligible saved teacher. Reconstruction
+requires permission to use shared class timetables and reconstruct the
+selected teacher or room.
 
 ```bash
 python3 scripts/test-teacher-cancellations.py YOUR_ADMIN_USERNAME \
@@ -312,7 +318,12 @@ python3 scripts/test-teacher-cancellations.py YOUR_ADMIN_USERNAME \
   --json --show-names
 ```
 
-The output contains one report per target under `reports`.
+The command checks your available sources and asks once per target when you
+can choose between multiple sources. Press Enter to let the proxy choose.
+Use `--data-source` to select a specific source without a prompt. Prompts go
+to the terminal so `--json` can be piped straight to a file. The JSON output
+contains one report per target under `reports`, each with its own
+`dataSource` field. Text output names the source as well.
 
 Run `python3 scripts/test-teacher-cancellations.py YOUR_USERNAME --options`
 to list targets and school years. Use `--student-id`, `--class-id`,

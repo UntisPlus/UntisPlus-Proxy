@@ -24,15 +24,26 @@ class AnalyticsCLITest(unittest.TestCase):
         outcomes = [{"result": {}}, {"complete": True, "source": "teacher"},
                     {"complete": True, "source": "room"}]
         output = io.StringIO()
+        menus = io.StringIO()
+        options = {"targets": [{"mode": "teacher", "id": 42, "name": "Test teacher",
+                                "dataSources": ["saved-teacher", "reconstruction"]}]}
         with patch.object(cli.sys, "argv", argv), patch.object(cli.sys.stdin, "isatty", return_value=True), \
                 patch.object(cli, "getpass", return_value="123456") as prompt, \
                 patch.object(cli, "CookieJar", return_value=[SimpleNamespace(name="JSESSIONID")]), \
-                patch.object(cli, "post", side_effect=outcomes) as post, contextlib.redirect_stdout(output):
+                patch.object(cli, "read_json", return_value=options) as discovery, \
+                patch("builtins.input", return_value="2") as choose, \
+                patch.object(cli, "post", side_effect=outcomes) as post, \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(menus):
             self.assertEqual(cli.main(), 0)
         self.assertEqual(prompt.call_count, 1)
+        discovery.assert_called_once()
+        choose.assert_called_once()
+        self.assertIn("Reconstruction from shared class timetables", menus.getvalue())
         teacher, room = [call.args[2] for call in post.call_args_list[1:]]
         self.assertEqual((teacher["mode"], teacher["teacherId"]), ("teacher", 42))
+        self.assertEqual(teacher["dataSource"], "reconstruction")
         self.assertEqual((room["mode"], room["room"]), ("room", "14-05"))
+        self.assertNotIn("dataSource", room)
         self.assertTrue(all("personalOtp" not in request for request in (teacher, room)))
         self.assertEqual(json.loads(output.getvalue())["reports"][1]["room"], "14-05")
 
@@ -42,9 +53,13 @@ class AnalyticsCLITest(unittest.TestCase):
         report = {"source": "room", "complete": True, "uniqueLessons": 2,
                   "teacherAssignmentTotals": {"scheduled": 2, "cancelled": 1}}
         output = io.StringIO()
+        options = {"targets": [{"mode": "room", "id": 161, "name": "14-05",
+                                "dataSources": ["saved-teacher"]}]}
         with patch.object(cli.sys, "argv", argv), patch.object(cli.sys.stdin, "isatty", return_value=True), \
                 patch.object(cli, "getpass", return_value="123456"), \
                 patch.object(cli, "CookieJar", return_value=[SimpleNamespace(name="JSESSIONID")]), \
+                patch.object(cli, "read_json", return_value=options), \
+                patch("builtins.input", side_effect=AssertionError("single source prompted")), \
                 patch.object(cli, "post", side_effect=[{"result": {}}, report]) as post, \
                 contextlib.redirect_stdout(output):
             self.assertEqual(cli.main(), 0)
@@ -64,6 +79,7 @@ class AnalyticsCLITest(unittest.TestCase):
         with patch.object(cli.sys, "argv", argv), patch.object(cli.sys.stdin, "isatty", return_value=True), \
                 patch.object(cli, "getpass", return_value="123456"), \
                 patch.object(cli, "CookieJar", return_value=[SimpleNamespace(name="JSESSIONID")]), \
+                patch.object(cli, "read_json", return_value={"targets": []}), \
                 patch.object(cli, "post", side_effect=[{"result": {}}, stub, stub, forbidden, stub]) as post, \
                 contextlib.redirect_stdout(output):
             self.assertEqual(cli.main(), 2)
