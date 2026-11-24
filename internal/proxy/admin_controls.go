@@ -3,6 +3,7 @@ package proxy
 import (
 	"net/http"
 	"sort"
+	"time"
 	"untis-proxy/internal/store"
 )
 
@@ -123,6 +124,28 @@ func (p *Proxy) adminControls(w http.ResponseWriter, r *http.Request, part strin
 		p.audit(r, school, "analytics.scope.set", username, "")
 		p.writeJSON(w, map[string]any{"ok": true})
 	case "analytics-years":
+		if r.Method == http.MethodPost {
+			u := p.sessionUser(r)
+			if u == nil || school == "" {
+				badRequest(w, "choose a school to load upstream dates")
+				return
+			}
+			now := time.Now()
+			key := "school-years:" + loginLimitKey(school, u.Username)
+			if locked, _ := p.analyticsLimiter.locked(key, now); locked {
+				w.Header().Set("Retry-After", "60")
+				writeJSONError(w, http.StatusTooManyRequests, "analytics request limit reached")
+				return
+			}
+			p.analyticsLimiter.fail(key, now)
+			years, err := p.upstreamAnalyticsYears(school)
+			if err != nil {
+				writeJSONError(w, http.StatusBadGateway, err.Error())
+				return
+			}
+			p.writeJSON(w, map[string]any{"years": years})
+			return
+		}
 		if r.Method == http.MethodGet {
 			years, err := p.store.AnalyticsYears(school)
 			if err != nil {

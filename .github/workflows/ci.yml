@@ -54,6 +54,9 @@ jobs:
       - name: Admin UI runtime check
         run: node scripts/check-admin-ui.js
 
+      - name: Analytics CLI comparison check
+        run: python3 -B scripts/check-analytics-cli.py
+
   race:
     name: Race detector
     runs-on: ubuntu-latest

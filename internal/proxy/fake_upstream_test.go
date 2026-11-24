@@ -61,6 +61,7 @@ type fakeUpstream struct {
 	// answer (used to drive password-login failure paths). By default the fake
 	// accepts every password login and returns real-ish auth data.
 	authenticateBody string
+	schoolYearsBody  string
 	// userDataBody, when set, is served for the intern getUserData2017 (key
 	// login) request, e.g. a login answer carrying a full masterData block.
 	userDataBody string
@@ -154,6 +155,7 @@ func (f *fakeUpstream) handler() http.Handler {
 			}
 			_ = json.Unmarshal(body, &req)
 			authBody := f.authenticateBody
+			schoolYearsBody := f.schoolYearsBody
 			f.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			if req.Method == "authenticate" && authBody != "" {
@@ -166,6 +168,10 @@ func (f *fakeUpstream) handler() http.Handler {
 			}
 			if req.Method == "logout" {
 				_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"upstream","result":{}}`))
+				return
+			}
+			if req.Method == "getSchoolyears" && schoolYearsBody != "" {
+				_, _ = w.Write([]byte(schoolYearsBody))
 				return
 			}
 			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":"upstream","error":{"code":-32601,"message":"method not found"}}`))

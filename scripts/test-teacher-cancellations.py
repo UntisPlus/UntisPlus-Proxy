@@ -46,10 +46,10 @@ def main():
     parser.add_argument("username", help="UntisPlus account username")
     parser.add_argument("--url", default="https://beta-untis.deelabs.tech")
     parser.add_argument("--school", help="school name if different from the proxy default")
-    parser.add_argument("--from", dest="start", type=date.fromisoformat,
-                        default=yesterday - timedelta(days=6))
-    parser.add_argument("--to", dest="end", type=date.fromisoformat, default=yesterday)
-    parser.add_argument("--teacher-id", type=int, help="use an explicitly approved teacher source and target")
+    parser.add_argument("--from", dest="start", type=date.fromisoformat)
+    parser.add_argument("--to", dest="end", type=date.fromisoformat)
+    parser.add_argument("--school-year", action="append", help="select an imported school year, repeat to compare years")
+    parser.add_argument("--teacher-id", type=int, action="append", help="select an approved teacher ID, repeat to compare teachers")
     parser.add_argument("--json", action="store_true", help="print the full report")
     parser.add_argument("--show-names", action="store_true", help="include teacher and subject names in the report")
     parser.add_argument("--saved-source", action="store_true",
@@ -59,10 +59,20 @@ def main():
     url = urlsplit(args.url)
     if url.scheme != "https" or not url.hostname or url.username is not None or url.path not in ("", "/") or url.query or url.fragment:
         parser.error("--url must be the HTTPS origin of your UntisPlus server")
-    if not 0 <= (args.end - args.start).days < 366 or args.end > date.today():
-        parser.error("choose a date range of up to 366 days ending today or earlier")
-    if args.teacher_id is not None and args.teacher_id <= 0:
+    years = list(dict.fromkeys(args.school_year or [None]))
+    teachers = list(dict.fromkeys(args.teacher_id or [None]))
+    if args.school_year:
+        if args.start is not None or args.end is not None:
+            parser.error("select school years or explicit dates")
+    else:
+        args.end = args.end or yesterday
+        args.start = args.start or (yesterday - timedelta(days=6))
+        if not 0 <= (args.end - args.start).days < 366 or args.end > date.today():
+            parser.error("choose a date range of up to 366 days ending today or earlier")
+    if any(teacher is not None and teacher <= 0 for teacher in teachers):
         parser.error("--teacher-id must be positive")
+    if len(years) * len(teachers) > 6:
+        parser.error("select at most six teacher and school year combinations")
 
     origin = args.url.rstrip("/")
     query = "?" + urlencode({"school": args.school}) if args.school else ""
@@ -86,16 +96,30 @@ def main():
             return 1
 
         stage = "Analytics"
-        payload = {
-            "mode": "personal" if args.teacher_id is None else "teacher",
-            "from": args.start.isoformat(), "to": args.end.isoformat(),
-            "anonymise": not args.show_names, "format": "json",
-        }
-        if args.teacher_id is not None:
-            payload["teacherId"] = args.teacher_id
-        elif not args.saved_source and (args.end - args.start).days < 31:
-            payload["personalOtp"] = code
-        report = post(opener, origin + "/api/analytics/teacher-cancellations" + query, payload)
+        reports = []
+        for index, teacher in enumerate(teachers, start=1):
+            for year in years:
+                payload = {"mode": "personal" if teacher is None else "teacher",
+                           "anonymise": not args.show_names, "format": "json"}
+                if year is not None:
+                    payload["schoolYear"] = year
+                else:
+                    payload.update({"from": args.start.isoformat(), "to": args.end.isoformat()})
+                if teacher is not None:
+                    payload["teacherId"] = teacher
+                elif year is None and not args.saved_source and (args.end - args.start).days < 31:
+                    payload["personalOtp"] = code
+                entry = {"schoolYear": year}
+                if teacher is not None:
+                    entry["teacherId" if args.show_names else "teacherSelection"] = teacher if args.show_names else index
+                try:
+                    entry["report"] = post(opener, origin + "/api/analytics/teacher-cancellations" + query, payload)
+                except HTTPError as error:
+                    if len(teachers) * len(years) == 1:
+                        raise
+                    entry["httpStatus"] = error.code
+                    error.close()
+                reports.append(entry)
     except HTTPError as error:
         detail = error.read(4096)
         if error.code == 403 and (b"Error 1010" in detail or b"error code: 1010" in detail):
@@ -111,6 +135,24 @@ def main():
         print(f"{stage} failed. Check the server URL, network, and response format.", file=sys.stderr)
         return 1
 
+    if len(reports) > 1:
+        complete = all(entry.get("report", {}).get("complete") is True for entry in reports)
+        if args.json:
+            print(json.dumps({"complete": complete, "reports": reports}, indent=2, ensure_ascii=False))
+        else:
+            for entry in reports:
+                label = f"Teacher {entry.get('teacherId', entry.get('teacherSelection'))}" if args.teacher_id else "Personal"
+                report = entry.get("report")
+                date_label = entry["schoolYear"] or f"{args.start} to {args.end}"
+                if report is None:
+                    print(f"{label} | {date_label} | HTTP {entry['httpStatus']}")
+                else:
+                    totals = report.get("teacherAssignmentTotals") or {}
+                    coverage = "complete" if report.get("complete") else "partial"
+                    print(f"{label} | {date_label} | {totals.get('cancelled', '?')} cancelled / {totals.get('scheduled', '?')} scheduled | {coverage}")
+        return 0 if complete else 2
+
+    report = reports[0]["report"]
     totals = report.get("teacherAssignmentTotals")
     if not isinstance(totals, dict):
         print("Analytics response was missing report totals.", file=sys.stderr)

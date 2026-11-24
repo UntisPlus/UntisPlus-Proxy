@@ -109,10 +109,10 @@ importer.
   apply. Omit it to use saved source credentials.
 
 Dates are inclusive. The current-day and future cutoff uses UTC. A request
-covers at most 366 days. Personal reports use up to 53 upstream windows of
+covers at most 366 days. Personal and teacher reports use up to 53 upstream windows of
 at most seven days each. For reports of at least a week, a short final window
 uses a full week within the requested range. Only its assigned dates are
-counted. Teacher and class-history reports use up to 32
+counted. Class-history reports use up to 32
 upstream windows of at most 31 days each. A one-day personal query
 reads up to seven nearby dates from the same timetable in a single upstream
 request and reports only the requested date. Personal history has no
@@ -251,6 +251,32 @@ The explicit date range works without configured analytics years. Until the
 school's year boundaries are configured, lessons can appear in the `unmapped`
 year bucket and still count in the totals. This command uses ordinary JSON
 report access. The dedicated export formats require the separate export grant.
+
+### Compare teachers and school years
+
+In **Permissions → Analytics data scope configuration**, choose the school
+and select **Load dates from upstream**. The proxy first requests
+`getSchoolyears` and falls back to `getCurrentSchoolyear` if the school
+doesn't supply a list. Review the returned names and inclusive dates, then
+select **Save school years**. Loading is a preview. If upstream only returns
+the current year, add any earlier date ranges separately after confirming
+them with the school.
+
+Approve each teacher ID for the signed-in account and grant
+`analytics.teacher.view`. Use the exact year names in the saved list.
+
+```bash
+python3 scripts/test-teacher-cancellations.py YOUR_USERNAME \
+  --teacher-id 42 --teacher-id 43 \
+  --school-year '2024/2025' --school-year '2025/2026' --json
+```
+
+The script signs in once and requests a separate JSON report for each selected
+teacher and year, up to six combinations. Its `reports` array lets the same
+chart show one series per teacher and one category per year. Compare
+`teacherAssignmentTotals` per entry. Check each report's `windows` and
+`complete` fields before comparing rates. An HTTP error is recorded against
+its own selection. Omit `--show-names` to use report-local labels.
 
 ### Example chart dashboard
 

@@ -78,8 +78,22 @@ func (s *Store) AnalyticsYears(school string) ([]AnalyticsYear, error) {
 	return years, err
 }
 func (s *Store) SetAnalyticsYears(school string, years []AnalyticsYear) error {
-	if school == "" || len(years) > 100 {
+	if school == "" {
 		return fmt.Errorf("invalid school/year count")
+	}
+	if err := ValidateAnalyticsYears(years); err != nil {
+		return err
+	}
+	b, err := json.Marshal(years)
+	if err != nil {
+		return err
+	}
+	return s.SetSetting(controlKey("analytics-years", school), string(b))
+}
+
+func ValidateAnalyticsYears(years []AnalyticsYear) error {
+	if len(years) > 100 {
+		return fmt.Errorf("too many school years")
 	}
 	names := map[string]bool{}
 	for i, y := range years {
@@ -93,9 +107,5 @@ func (s *Store) SetAnalyticsYears(school string, years []AnalyticsYear) error {
 			}
 		}
 	}
-	b, err := json.Marshal(years)
-	if err != nil {
-		return err
-	}
-	return s.SetSetting(controlKey("analytics-years", school), string(b))
+	return nil
 }

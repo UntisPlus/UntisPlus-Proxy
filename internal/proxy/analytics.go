@@ -186,7 +186,7 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 	}
 	// Validate and authorize every target before issuing the first upstream call.
 	windowDays, maxWindows := 31, 32
-	if q.Mode == "personal" {
+	if q.Mode != "class-history" {
 		windowDays, maxWindows = analyticsPersonalWindowDays, 53
 	}
 	windows := []analyticsTarget{}
@@ -238,7 +238,7 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 			p.forbidden(w)
 			return
 		}
-		parsed, observed := p.fetchAnalyticsWindow(school, window, from, today, q.Mode == "personal", q.PersonalOTP)
+		parsed, observed := p.fetchAnalyticsWindow(school, window, from, today, q.Mode, q.PersonalOTP)
 		lessons = append(lessons, parsed...)
 		result.Windows = append(result.Windows, observed)
 		if observed.Status != "observed" {
@@ -379,16 +379,16 @@ func validAnalyticsOTP(otp string) bool {
 // fetchAnalyticsWindow uses a full mobile week for short personal report
 // windows when it fits within the report range. The parser only includes
 // dates assigned to this window, even when upstream requests overlap.
-func (p *Proxy) fetchAnalyticsWindow(school string, window analyticsTarget, reportFrom time.Time, today string, personal bool, otp string) ([]analytics.Lesson, analyticsWindow) {
+func (p *Proxy) fetchAnalyticsWindow(school string, window analyticsTarget, reportFrom time.Time, today, mode, otp string) ([]analytics.Lesson, analyticsWindow) {
 	start, end := window.From, window.To
-	if personal {
+	if mode != "class-history" {
 		lastDay, _ := time.Parse(time.DateOnly, end)
 		weekStart := lastDay.AddDate(0, 0, 1-analyticsPersonalWindowDays)
 		if !weekStart.Before(reportFrom) {
 			return p.readAnalyticsWindow(school, window, weekStart.Format(time.DateOnly), end, otp)
 		}
 	}
-	if personal && start == end {
+	if mode == "personal" && start == end {
 		day, err := time.Parse(time.DateOnly, start)
 		if err == nil {
 			end = day.AddDate(0, 0, analyticsPersonalWindowDays-1).Format(time.DateOnly)

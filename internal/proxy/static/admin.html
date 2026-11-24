@@ -435,7 +435,7 @@ input:not([type=checkbox]):not([type=radio]),select{min-height:38px}.help-icon{w
 <label class="field">Approved teacher IDs (comma separated)<input id="analyticsTeacherIds"></label>
 <label class="field">Class-history profiles (JSON array)<textarea id="analyticsProfiles" rows="5" placeholder='[{"id":"my-history","segments":[{"classId":123,"from":"2024-08-01","to":"2025-07-31"}]}]'></textarea></label>
 <button class="secondary" onclick="loadAnalyticsScope()">Load selected person's scope</button><button onclick="saveAnalyticsScope()">Save selected person's scope</button>
-<label class="field mt">School years (JSON array, exact upstream dates)<textarea id="analyticsYears" rows="4" placeholder='[{"name":"2024/25","from":"2024-08-01","to":"2025-07-31"}]'></textarea></label><button class="secondary" onclick="loadAnalyticsYears()">Load school years</button><button onclick="saveAnalyticsYears()">Save school years</button></details>
+<label class="field mt">School years (JSON array, exact upstream dates)<textarea id="analyticsYears" rows="4" placeholder='[{"name":"2024/25","from":"2024-08-01","to":"2025-07-31"}]'></textarea></label><button class="secondary" onclick="loadAnalyticsYears()">Load saved school years</button><button class="secondary" onclick="previewUpstreamAnalyticsYears()">Load dates from upstream</button><button onclick="saveAnalyticsYears()">Save school years</button></details>
 </div></div>
 <div id="groupEditor">
               <input type="hidden" id="permissionGroupId" value="0">
@@ -1128,6 +1128,16 @@ function analyticsScopePath(){const user=$('simpleAccessUser').value;if(!user)th
 async function loadAnalyticsScope(){try{const d=await api('GET',analyticsScopePath());if(d.error)throw new Error(d.error);$('analyticsTeacherIds').value=(d.teacherIds||[]).join(', ');$('analyticsProfiles').value=JSON.stringify(d.profiles||[],null,2);}catch(e){$('featureControlMessage').textContent=e.message;}}
 async function saveAnalyticsScope(){try{const teacherIds=$('analyticsTeacherIds').value.split(',').map(s=>s.trim()).filter(Boolean).map(Number),profiles=JSON.parse($('analyticsProfiles').value||'[]');const d=await api('PUT',analyticsScopePath(),{teacherIds,profiles});if(d.error)throw new Error(d.error);$('featureControlMessage').textContent='Analytics scope saved.';}catch(e){$('featureControlMessage').textContent=e.message;}}
 async function loadAnalyticsYears(){try{const d=await api('GET','access/analytics-years?school='+encodeURIComponent(simpleAccessSchool()));if(d.error)throw new Error(d.error);$('analyticsYears').value=JSON.stringify(d.years||[],null,2);}catch(e){$('featureControlMessage').textContent=e.message;}}
+async function previewUpstreamAnalyticsYears(){
+ const message=$('featureControlMessage');
+ try{
+  const school=simpleAccessSchool(),d=await api('POST','access/analytics-years?school='+encodeURIComponent(school),{});
+  if(d.error)throw new Error(d.error);
+  if(school!==simpleAccessSchool())return;
+  $('analyticsYears').value=JSON.stringify(d.years,null,2);
+  message.textContent='Review the upstream dates, then save school years.';
+ }catch(e){message.textContent=e.message;}
+}
 async function saveAnalyticsYears(){try{const years=JSON.parse($('analyticsYears').value||'[]'),d=await api('PUT','access/analytics-years?school='+encodeURIComponent(simpleAccessSchool()),{years});if(d.error)throw new Error(d.error);$('featureControlMessage').textContent='School years saved.';}catch(e){$('featureControlMessage').textContent=e.message;}}
 
 permissionSections.push(['Upstream baseline and personal extras',[
