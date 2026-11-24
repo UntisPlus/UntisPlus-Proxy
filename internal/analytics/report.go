@@ -12,10 +12,13 @@ import (
 type Lesson struct {
 	Key, Date, Code string
 	Teachers        []TeacherRef
+	Start, End      string
+	Subjects        []SubjectRef
+	Covers          []Cover
 }
 type TeacherRef struct {
-	ID   string
-	Name string
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name"`
 }
 type Year struct{ Name, From, To string }
 type Counts struct {
@@ -40,6 +43,7 @@ type Teacher struct {
 	WorstWeekdays []string `json:"worstWeekdays"`
 }
 type Report struct {
+	LessonChanges
 	Teachers                    []Teacher `json:"teachers"`
 	Totals                      Counts    `json:"teacherAssignmentTotals"`
 	UniqueLessons               int       `json:"uniqueLessons"`
@@ -57,6 +61,7 @@ type Options struct {
 	TeacherID        string
 	Anonymise        bool
 	IncludeIrregular bool
+	DetectClashes    bool
 	ExcludePrefixes  []string
 	Years            []Year
 }
@@ -202,6 +207,7 @@ func Build(lessons []Lesson, options Options) Report {
 		return a.ID < b.ID
 	})
 	allowed := map[string]bool{}
+	labels := map[string]string{}
 	mean := 0.0
 	for i := range report.Teachers {
 		t := &report.Teachers[i]
@@ -209,8 +215,9 @@ func Build(lessons []Lesson, options Options) Report {
 		t.Rank = i + 1
 		mean += *t.NotCancelledRate
 		if options.Anonymise {
+			labels[t.ID] = fmt.Sprintf("Teacher %d", i+1)
+			t.Name = labels[t.ID]
 			t.ID = ""
-			t.Name = fmt.Sprintf("Teacher %d", i+1)
 		}
 	}
 	for _, l := range lessons {
@@ -232,5 +239,6 @@ func Build(lessons []Lesson, options Options) Report {
 	report.ByWeekday = buckets(days)
 	report.ByWeek = buckets(weeks)
 	report.BySchoolYear = buckets(years)
+	report.LessonChanges = buildLessonChanges(lessons, options, allowed, labels)
 	return report
 }

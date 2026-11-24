@@ -135,7 +135,7 @@ func TestAnalyticsPersonalStatsAndAnonymisedExports(t *testing.T) {
 				t.Fatal(err)
 			}
 			contents = nil
-			if len(z.File) != 5 {
+			if len(z.File) != 10 {
 				t.Fatalf("missing export tables: %d", len(z.File))
 			}
 			for _, file := range z.File {
@@ -311,5 +311,46 @@ func TestAnalyticsReadsUpstreamTimetableShapes(t *testing.T) {
 				t.Fatalf("timetable shape was not counted: HTTP %d %s", w.Code, w.Body.String())
 			}
 		})
+	}
+}
+
+// The modern mobile response marks cancellations in is and ties cover
+// teachers to scheduled staff through the original element ID.
+func TestAnalyticsCountsModernCancellationsAndCover(t *testing.T) {
+	raw := `{"result":{"masterData":{"teachers":[{"id":42,"name":"Original Name"},{"id":43,"name":"Cover Name"}],
+ "subjects":[{"id":18,"longName":"Maths"}]},"timetable":{"periods":[
+ {"id":1,"startDateTime":"2026-09-21T08:00:00","endDateTime":"2026-09-21T08:45:00","is":["CANCELLED","IRREGULAR"],"elements":[{"type":"TEACHER","id":0,"orgId":42},{"type":"SUBJECT","id":18}]},
+ {"id":2,"startDateTime":"2026-09-21T09:00:00","endDateTime":"2026-09-21T09:45:00","is":["CANCELLED"],"elements":[{"type":"TEACHER","id":42},{"type":"SUBJECT","id":18}]},
+ {"id":3,"startDateTime":"2026-09-21T10:00:00","endDateTime":"2026-09-21T10:45:00","is":["CANCELLED"],"elements":[{"type":"TEACHER","id":42},{"type":"SUBJECT","id":18}]},
+ {"id":4,"startDateTime":"2026-09-21T10:15:00","endDateTime":"2026-09-21T11:00:00","is":["IRREGULAR"],"elements":[{"type":"TEACHER","id":43,"orgId":42},{"type":"SUBJECT","id":18}],"teachers":[{"id":43,"name":"Cover Name"}]},
+ {"id":5,"startDateTime":"2026-09-21T08:45:00","endDateTime":"2026-09-21T09:00:00","elements":[{"type":"TEACHER","id":42}]}
+ ]}}}`
+	p, _, f := analyticsFixture(t)
+	f.setTimetableBody(raw)
+	for _, anonymous := range []bool{false, true} {
+		body := fmt.Sprintf(`{"from":"2026-09-21","to":"2026-09-21","anonymise":%t}`, anonymous)
+		w := analyticsReq(t, p, "student", body)
+		var report analyticsResponse
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &report) != nil || !report.Complete ||
+			report.Totals.Cancelled != 3 || report.CancelledLessons != 3 || report.CoveredLessons != 1 || report.ClashingLessons != 1 ||
+			len(report.MissedTeachers) != 1 || len(report.MissedSubjects) != 1 || len(report.CoverTeachers) != 1 || len(report.Changes) != 4 {
+			t.Fatalf("incorrect lesson-change report: HTTP %d %s", w.Code, w.Body.String())
+		}
+		if report.MissedTeachers[0].Lessons != 4 || report.MissedSubjects[0].Cancelled != 3 || report.CoverTeachers[0].Lessons != 1 ||
+			report.Changes[0].Clash != "no_overlap_observed" || report.Changes[2].Clash != "overlap_observed" ||
+			len(report.Changes[3].Covers) != 1 || report.Changes[3].Covers[0].Teacher.Name != report.CoverTeachers[0].Name ||
+			report.Changes[3].Covers[0].Original.Name != report.MissedTeachers[0].Name {
+			t.Fatalf("incorrect attribution or overlap: %s", w.Body.String())
+		}
+		if anonymous {
+			if strings.Contains(w.Body.String(), "Original Name") || strings.Contains(w.Body.String(), "Cover Name") ||
+				strings.Contains(w.Body.String(), "Maths") || report.Changes[3].Covers[0].Teacher.ID != "" ||
+				report.Changes[3].Covers[0].Original.ID != "" || report.MissedSubjects[0].ID != "" {
+				t.Fatal("anonymous lesson changes leaked names or identifiers")
+			}
+		} else if report.MissedTeachers[0].Name != "Original Name" || report.MissedSubjects[0].Name != "Maths" ||
+			report.CoverTeachers[0].Name != "Cover Name" {
+			t.Fatal("master-data names were not resolved")
+		}
 	}
 }

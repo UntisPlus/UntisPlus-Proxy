@@ -278,7 +278,7 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 	if q.Anonymise {
 		result.ExcludePrefixes = nil
 	}
-	options := analytics.Options{MinLessons: q.MinLessons, Anonymise: q.Anonymise, IncludeIrregular: q.IncludeIrregular, ExcludePrefixes: q.ExcludePrefixes}
+	options := analytics.Options{MinLessons: q.MinLessons, Anonymise: q.Anonymise, IncludeIrregular: q.IncludeIrregular, ExcludePrefixes: q.ExcludePrefixes, DetectClashes: q.Mode == "personal"}
 	if q.TeacherID > 0 {
 		options.TeacherID = strconv.FormatInt(q.TeacherID, 10)
 	}
@@ -286,6 +286,8 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 		options.Years = append(options.Years, analytics.Year{Name: y.Name, From: y.From, To: y.To})
 	}
 	result.Report = analytics.Build(lessons, options)
+	result.Definitions["clash"] = "overlap with another non-cancelled lesson on the personal timetable; does not establish why a lesson was cancelled"
+	result.Definitions["cover"] = "an upstream teacher assignment with a different original teacher id"
 	if result.UnmappedSchoolYearLessons > 0 {
 		result.Warnings = append(result.Warnings, "Some observed lessons are outside configured school years and are grouped as unmapped.")
 	}
@@ -406,6 +408,26 @@ func (p *Proxy) parseAnalyticsLessons(school string, raw []byte, from, to string
 	if periods == nil {
 		return nil, fmt.Errorf("invalid timetable response")
 	}
+	masterData := parseMasterDataCache(raw)
+	cachedNames := map[string]map[int64]string{"TEACHER": {}, "SUBJECT": {}}
+	lookupName := func(kind string, id int64) string {
+		if name, found := cachedNames[kind][id]; found {
+			return name
+		}
+		name := elementName(masterData, kind, id)
+		if name == "" {
+			name = p.store.ElementName(school, kind, id)
+		}
+		if name == "" {
+			prefix := "Teacher"
+			if kind == "SUBJECT" {
+				prefix = "Subject"
+			}
+			name = fmt.Sprintf("%s %d", prefix, id)
+		}
+		cachedNames[kind][id] = name
+		return name
+	}
 	lessons := make([]analytics.Lesson, 0, len(periods))
 	for _, period := range periods {
 		date := fmt.Sprint(period["date"])
@@ -435,61 +457,147 @@ func (p *Proxy) parseAnalyticsLessons(school string, raw []byte, from, to string
 			end = period["endTime"]
 		}
 		sum := sha256.Sum256([]byte(id + "/" + date + "/" + fmt.Sprint(start) + "/" + fmt.Sprint(end)))
-		l := analytics.Lesson{Key: hex.EncodeToString(sum[:]), Date: date}
-		if code, ok := period["code"].(string); ok {
-			l.Code = strings.ToLower(strings.TrimSpace(code))
-		}
-		l.Teachers = p.analyticsPeriodTeachers(school, period)
+		l := analytics.Lesson{Key: hex.EncodeToString(sum[:]), Date: date,
+			Start: analyticsClock(start), End: analyticsClock(end), Code: analyticsPeriodCode(period)}
+		l.Teachers, l.Covers = analyticsPeriodTeachers(period, lookupName)
+		l.Subjects = analyticsPeriodSubjects(period, lookupName)
 		lessons = append(lessons, l)
 	}
 	return lessons, nil
 }
 
-// Modern responses commonly carry teacher element references, while older
-// mobile responses embed teacher objects in te. Prefer explicit names if a
-// response includes both representations.
-func (p *Proxy) analyticsPeriodTeachers(school string, period map[string]any) []analytics.TeacherRef {
-	var teachers []analytics.TeacherRef
-	seen := map[string]bool{}
-	for _, key := range []string{"teachers", "te", "elements"} {
-		items, _ := period[key].([]any)
-		for _, item := range items {
-			entry, ok := item.(map[string]any)
-			if !ok {
-				continue
-			}
-			if key == "elements" {
-				kind, _ := entry["type"].(string)
-				if !strings.EqualFold(kind, "TEACHER") {
-					continue
-				}
-			}
-			n, err := strconv.ParseInt(fmt.Sprint(entry["id"]), 10, 64)
-			if err != nil || n <= 0 {
-				continue
-			}
-			id := strconv.FormatInt(n, 10)
-			if seen[id] {
-				continue
-			}
-			name, _ := entry["longName"].(string)
-			if name == "" {
-				name, _ = entry["longname"].(string)
-			}
-			if name == "" {
-				name, _ = entry["name"].(string)
-			}
-			if name == "" {
-				name = p.store.ElementName(school, "TEACHER", n)
-			}
-			if name == "" {
-				name = "Teacher " + id
-			}
-			seen[id] = true
-			teachers = append(teachers, analytics.TeacherRef{ID: id, Name: name})
+func analyticsPeriodCode(period map[string]any) string {
+	code := strings.ToLower(strings.TrimSpace(rawString(period, "code")))
+	if code == "cancelled" || periodHasFlag(period, "CANCELLED") ||
+		strings.EqualFold(rawString(period, "status"), "CANCELLED") ||
+		strings.EqualFold(rawString(period, "cellState"), "CANCELLED") {
+		return "cancelled"
+	}
+	if periodHasFlag(period, "IRREGULAR") {
+		return "irregular"
+	}
+	return code
+}
+
+// analyticsClock records source wall-clock time, in HH:MM, for same-day
+// comparisons within a single personal timetable.
+func analyticsClock(value any) string {
+	raw := fmt.Sprint(value)
+	if len(raw) >= 16 && (raw[10] == 'T' || raw[10] == ' ') {
+		raw = raw[11:16]
+	}
+	if v, err := time.Parse("15:04", raw); err == nil {
+		return v.Format("15:04")
+	}
+	if n, err := strconv.Atoi(raw); err == nil && n >= 0 && n/100 < 24 && n%100 < 60 {
+		return fmt.Sprintf("%02d:%02d", n/100, n%100)
+	}
+	return ""
+}
+
+func analyticsEntryID(entry map[string]any, key string) int64 {
+	id, _ := strconv.ParseInt(fmt.Sprint(entry[key]), 10, 64)
+	return id
+}
+
+func analyticsOriginalID(entry map[string]any) int64 {
+	id := analyticsEntryID(entry, "orgId")
+	if id <= 0 {
+		id = analyticsEntryID(entry, "orgid")
+	}
+	return id
+}
+
+func analyticsEntryName(entry map[string]any) string {
+	for _, key := range []string{"longName", "longname", "name"} {
+		if name := strings.TrimSpace(rawString(entry, key)); name != "" {
+			return name
 		}
 	}
-	return teachers
+	return ""
+}
+
+func analyticsEntries(period map[string]any, key, kind string) []map[string]any {
+	items, _ := period[key].([]any)
+	var out []map[string]any
+	for _, item := range items {
+		entry, ok := item.(map[string]any)
+		if ok && (key != "elements" || strings.EqualFold(rawString(entry, "type"), kind)) {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+func analyticsPeriodTeachers(period map[string]any, lookup func(string, int64) string) ([]analytics.TeacherRef, []analytics.Cover) {
+	entries := append(analyticsEntries(period, "elements", "TEACHER"), analyticsEntries(period, "teachers", "TEACHER")...)
+	entries = append(entries, analyticsEntries(period, "te", "TEACHER")...)
+	names := map[int64]string{}
+	for _, entry := range entries {
+		if id, name := analyticsEntryID(entry, "id"), analyticsEntryName(entry); id > 0 && name != "" {
+			names[id] = name
+		}
+	}
+	ref := func(id int64) analytics.TeacherRef {
+		name := names[id]
+		if name == "" {
+			name = lookup("TEACHER", id)
+		}
+		return analytics.TeacherRef{ID: strconv.FormatInt(id, 10), Name: name}
+	}
+	coveredIDs := map[int64]bool{}
+	pairs := map[[2]int64]bool{}
+	var covers []analytics.Cover
+	for _, entry := range entries {
+		id, original := analyticsEntryID(entry, "id"), analyticsOriginalID(entry)
+		if id <= 0 || original <= 0 || id == original {
+			continue
+		}
+		pair := [2]int64{original, id}
+		if !pairs[pair] {
+			pairs[pair] = true
+			coveredIDs[id] = true
+			covers = append(covers, analytics.Cover{Original: ref(original), Teacher: ref(id)})
+		}
+	}
+	var teachers []analytics.TeacherRef
+	seen := map[int64]bool{}
+	for _, entry := range entries {
+		id, original := analyticsEntryID(entry, "id"), analyticsOriginalID(entry)
+		if original > 0 {
+			id = original
+		} else if coveredIDs[id] {
+			continue // An unpaired duplicate must not count a cover teacher as scheduled.
+		}
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			teachers = append(teachers, ref(id))
+		}
+	}
+	return teachers, covers
+}
+
+func analyticsPeriodSubjects(period map[string]any, lookup func(string, int64) string) []analytics.SubjectRef {
+	var subjects []analytics.SubjectRef
+	seen := map[int64]bool{}
+	for _, key := range []string{"subjects", "su", "elements"} {
+		for _, entry := range analyticsEntries(period, key, "SUBJECT") {
+			id := analyticsEntryID(entry, "id")
+			name := analyticsEntryName(entry)
+			if original := analyticsOriginalID(entry); original > 0 && original != id {
+				id, name = original, ""
+			}
+			if id <= 0 || seen[id] {
+				continue
+			}
+			seen[id] = true
+			if name == "" {
+				name = lookup("SUBJECT", id)
+			}
+			subjects = append(subjects, analytics.SubjectRef{ID: strconv.FormatInt(id, 10), Name: name})
+		}
+	}
+	return subjects
 }
 
 func analyticsCSVSafe(s string) string {
@@ -562,6 +670,43 @@ func (p *Proxy) writeAnalyticsCSV(w http.ResponseWriter, result analyticsRespons
 			writeJSONError(w, 500, "export failed")
 			return
 		}
+	}
+	for _, table := range []struct {
+		name   string
+		counts []analytics.ChangeCount
+	}{
+		{"missed-teachers.csv", result.MissedTeachers},
+		{"missed-subjects.csv", result.MissedSubjects},
+		{"cover-teachers.csv", result.CoverTeachers},
+	} {
+		rows := [][]string{{"id", "name", "lessons", "cancelled", "covered"}}
+		for _, count := range table.counts {
+			rows = append(rows, []string{count.ID, count.Name, strconv.Itoa(count.Lessons), strconv.Itoa(count.Cancelled), strconv.Itoa(count.Covered)})
+		}
+		if write(table.name, rows) != nil {
+			writeJSONError(w, 500, "export failed")
+			return
+		}
+	}
+	changes := [][]string{{"date", "start", "end", "subjects", "cancelled", "clash", "missedTeachers"}}
+	covers := [][]string{{"date", "start", "end", "subjects", "originalTeacherId", "originalTeacher", "coverTeacherId", "coverTeacher"}}
+	for _, change := range result.Changes {
+		var subjectNames, teacherNames []string
+		for _, subject := range change.Subjects {
+			subjectNames = append(subjectNames, subject.Name)
+		}
+		subjects := strings.Join(subjectNames, ", ")
+		for _, teacher := range change.MissedTeachers {
+			teacherNames = append(teacherNames, teacher.Name)
+		}
+		changes = append(changes, []string{change.Date, change.Start, change.End, subjects, strconv.FormatBool(change.Cancelled), change.Clash, strings.Join(teacherNames, ", ")})
+		for _, cover := range change.Covers {
+			covers = append(covers, []string{change.Date, change.Start, change.End, subjects, cover.Original.ID, cover.Original.Name, cover.Teacher.ID, cover.Teacher.Name})
+		}
+	}
+	if write("lesson-changes.csv", changes) != nil || write("covers.csv", covers) != nil {
+		writeJSONError(w, 500, "export failed")
+		return
 	}
 	metadata, err := archive.Create("report.json")
 	if err != nil || json.NewEncoder(metadata).Encode(result) != nil || archive.Close() != nil {

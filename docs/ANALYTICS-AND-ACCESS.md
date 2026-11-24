@@ -138,6 +138,31 @@ include raw upstream errors or source credentials. Empty denominators have null 
 
 Statistics include:
 
+- `cancelledLessons` and `coveredLessons` count distinct periods. The existing
+  `teacherAssignmentTotals.cancelled` still counts teacher assignments, so a
+  team-taught cancellation can count once in the first field and twice in the
+  second. Cancellation markers include mobile `is: ["CANCELLED"]`, legacy
+  `code: "cancelled"`, and an explicit cancelled timetable status.
+- `lessonChanges` lists each observed cancellation or confirmed cover, with
+  date, time, original subjects and missed teachers where available. Each
+  `covers` pair names the original teacher and the cover teacher. A cover is
+  counted only when the upstream teacher element links two distinct IDs via
+  `orgId`. A cancelled period is counted as cancelled even if it also carries
+  an irregular flag. Cover details remain available for irregular periods
+  excluded from the ordinary cancellation rates.
+- `missedTeachers`, `missedSubjects`, and `coverTeachers` rank the affected
+  people or subjects by distinct periods, including separate cancelled and
+  covered counts. Teachers who were replaced are missed for that period even
+  though the lesson itself was covered. Missing metadata leaves the teacher or
+  subject list empty. The report still counts an unattributed cancellation
+  when no specific teacher or minimum-count filter is requested.
+- `clashingLessons` counts affected periods that overlap another non-cancelled
+  lesson on the same personal timetable. The per-row `clash` value is
+  `overlap_observed`, `no_overlap_observed`, or `unknown` for missing times or
+  other scope modes. Periods whose start and end merely touch do not overlap.
+  An overlap alone cannot establish the reason a period was cancelled.
+
+
 - Each teacher's scheduled/cancelled/not-cancelled counts, percentage rates,
   cancellation-count rank and all tied worst weekdays.
 - Teacher-assignment totals, unique lesson count, mean of teacher percentages,
@@ -154,7 +179,8 @@ that caller's timetable; an approved teacher-source report covers only what the
 saved source exposes. Rank is a numerical ordering, not a performance judgement.
 
 Anonymisation is report-local pseudonymisation: teacher names become `Teacher N`
-and teacher IDs are omitted. Exclusion prefixes are omitted from anonymous
+and teacher IDs are omitted. Subjects and cover teachers use report-local
+labels in all detailed and export fields. Exclusion prefixes are omitted from anonymous
 metadata. Dates and statistical patterns remain, so this is not a guarantee of
 irreversible anonymisation. No credentials, source-account identity, class IDs,
 profile IDs or raw lesson bodies are returned.
@@ -165,7 +191,8 @@ Run `python3 scripts/test-teacher-cancellations.py USERNAME` for the last seven
 completed days on beta. Enter the current WebUntis authenticator code when
 prompted. The script keeps the resulting proxy session in memory and prints
 pseudonymised totals. Use `--from YYYY-MM-DD --to YYYY-MM-DD` to choose dates or
-`--json` to see the full report.
+`--json` to see the full report. Add `--show-names` when you want actual teacher
+and subject names in your terminal output.
 
 Personal mode needs the analytics switch, `analytics.personal.view`, and saved
 replay credentials for the account. A one-time code signs the script in.
@@ -194,6 +221,9 @@ status. Administrator status alone does not grant access to reports.
 
 - `teachers.csv`: totals, rank and rates;
 - `weekday.csv`, `week.csv`, `school-year.csv`: aggregate and teacher breakdowns;
+- `missed-teachers.csv`, `missed-subjects.csv`, `cover-teachers.csv`: ranked
+  breakdowns by affected period;
+- `lesson-changes.csv` and `covers.csv`: period details and cover pairs;
 - `report.json`: complete report, filters, definitions, warnings and coverage.
 
 Exports require `analytics.export` in addition to the source capability and

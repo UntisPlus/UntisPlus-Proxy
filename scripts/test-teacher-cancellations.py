@@ -47,7 +47,8 @@ def main():
                         default=yesterday - timedelta(days=6))
     parser.add_argument("--to", dest="end", type=date.fromisoformat, default=yesterday)
     parser.add_argument("--teacher-id", type=int, help="use an explicitly approved teacher source and target")
-    parser.add_argument("--json", action="store_true", help="print the full pseudonymised report")
+    parser.add_argument("--json", action="store_true", help="print the full report")
+    parser.add_argument("--show-names", action="store_true", help="include teacher and subject names in the report")
     args = parser.parse_args()
 
     url = urlsplit(args.url)
@@ -83,7 +84,7 @@ def main():
         payload = {
             "mode": "personal" if args.teacher_id is None else "teacher",
             "from": args.start.isoformat(), "to": args.end.isoformat(),
-            "anonymise": True, "format": "json",
+            "anonymise": not args.show_names, "format": "json",
         }
         if args.teacher_id is not None:
             payload["teacherId"] = args.teacher_id
@@ -113,9 +114,20 @@ def main():
         print(f"{report['source']} | {report['from']} to {report['to']}")
         print(f"{totals['cancelled']} cancelled / {totals['scheduled']} scheduled teacher assignments")
         print(f"{report['uniqueLessons']} unique lessons | {len(report.get('teachers') or [])} teachers")
+        if "lessonChanges" in report:
+            print(f"{report['cancelledLessons']} cancelled lessons | "
+                  f"{report['coveredLessons']} covered lessons | "
+                  f"{report['clashingLessons']} observed overlaps")
+            for key, title in (("missedTeachers", "Most missed teacher"),
+                               ("missedSubjects", "Most missed subject"),
+                               ("coverTeachers", "Most frequent cover teacher")):
+                if rows := report.get(key):
+                    leader = rows[0]
+                    print(f"{title}: {leader['name']} ({leader['lessons']} lessons)")
         for warning in report.get("warnings") or []:
             print(f"Warning: {warning}")
-    if not report.get("complete") or not report.get("uniqueLessons"):
+    if not report.get("complete") or not any(report.get(key) for key in
+                                             ("uniqueLessons", "cancelledLessons", "coveredLessons")):
         print("The report is partial or empty. Check replay credentials and try a date range with lessons.",
               file=sys.stderr)
         return 2
