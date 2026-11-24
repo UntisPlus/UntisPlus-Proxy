@@ -105,7 +105,10 @@ importer.
 - `format`: `json`, `export-json` (attachment), or `csv-zip` (attachment).
 
 Dates are inclusive; the current-day/future cutoff uses UTC. A request covers at most 366 days and 32 source windows;
-upstream requests are split into at most 31-day chunks. Personal history has no
+upstream requests are split into at most 31-day chunks. If upstream rejects
+the date window of a one-day personal query, the proxy may retry once over up to
+seven nearby days on the same timetable. The report only includes the requested
+date. Known upstream authentication and access denials skip this retry. Personal history has no
 proxy retention cutoff back to practical historical dates (1900 or later), but
 requires the extra history grant for older dates. Request multiple ranges to
 cover multiple years. Upstream may not retain or expose old data. Future days
@@ -134,7 +137,8 @@ not successful zero-cancellation observations. Each unavailable window publishes
 a bounded `reason`: `source_auth_unavailable` (replay authentication could
 not be prepared), `upstream_rejected`, `upstream_unreachable`,
 `upstream_http_error`, or `invalid_timetable_response`. The report does not
-include raw upstream errors or source credentials. Empty denominators have null rates.
+include raw upstream errors or source credentials. A rejected JSON-RPC reply
+may include the numeric `upstreamCode` for diagnosis. Empty denominators have null rates.
 
 Statistics include:
 

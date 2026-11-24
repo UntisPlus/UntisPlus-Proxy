@@ -354,3 +354,38 @@ func TestAnalyticsCountsModernCancellationsAndCover(t *testing.T) {
 		}
 	}
 }
+
+func TestAnalyticsRetriesSingleDayWithoutCountingNeighbouringLessons(t *testing.T) {
+	p, _, f := analyticsFixture(t)
+	f.mu.Lock()
+	f.rejectSingleDayTimetable = true
+	f.timetable = `{"result":{"timetable":{"periods":[
+	  {"id":1,"date":20260921,"is":["CANCELLED"],"elements":[{"type":"TEACHER","id":42}]},
+	  {"id":2,"date":20260922,"is":["CANCELLED"],"elements":[{"type":"TEACHER","id":43}]}
+	]}}}`
+	f.mu.Unlock()
+	w := analyticsReq(t, p, "student", `{"from":"2026-09-21","to":"2026-09-21"}`)
+	var report analyticsResponse
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &report) != nil ||
+		!report.Complete || report.CancelledLessons != 1 || report.UniqueLessons != 1 || len(report.Teachers) != 1 ||
+		len(report.Changes) != 1 || report.Changes[0].Date != "2026-09-21" ||
+		len(report.Windows) != 1 || report.Windows[0].To != "2026-09-21" || report.Windows[0].UpstreamCode != nil {
+		t.Fatalf("unexpected single-day report: HTTP %d, %s", w.Code, w.Body.String())
+	}
+	if f.TimetableCalls() != 2 {
+		t.Fatalf("expected one bounded retry, got %d requests", f.TimetableCalls())
+	}
+}
+
+func TestAnalyticsDoesNotRetryUpstreamAuthRejection(t *testing.T) {
+	p, _, f := analyticsFixture(t)
+	f.setTimetableBody(`{"error":{"code":-8504,"message":"private sign-in detail"}}`)
+	w := analyticsReq(t, p, "student", `{"from":"2026-09-21","to":"2026-09-21"}`)
+	var report analyticsResponse
+	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &report) != nil ||
+		report.Complete || len(report.Windows) != 1 || report.Windows[0].UpstreamCode == nil ||
+		*report.Windows[0].UpstreamCode != -8504 || f.TimetableCalls() != 1 ||
+		strings.Contains(w.Body.String(), "private sign-in detail") {
+		t.Fatalf("unexpected rejection: HTTP %d, %s", w.Code, w.Body.String())
+	}
+}

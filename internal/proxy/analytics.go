@@ -3,6 +3,7 @@ package proxy
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/csv"
@@ -18,6 +19,7 @@ import (
 	"untis-proxy/internal/access"
 	"untis-proxy/internal/analytics"
 	"untis-proxy/internal/store"
+	"untis-proxy/internal/untis"
 )
 
 type analyticsRequest struct {
@@ -34,10 +36,11 @@ type analyticsRequest struct {
 	ExcludePrefixes  []string `json:"excludeTeacherPrefixes"`
 }
 type analyticsWindow struct {
-	From   string `json:"from"`
-	To     string `json:"to"`
-	Status string `json:"status"`
-	Reason string `json:"reason,omitempty"`
+	From         string `json:"from"`
+	To           string `json:"to"`
+	Status       string `json:"status"`
+	Reason       string `json:"reason,omitempty"`
+	UpstreamCode *int32 `json:"upstreamCode,omitempty"`
 }
 type analyticsResponse struct {
 	Version          string            `json:"version"`
@@ -222,34 +225,8 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 			p.forbidden(w)
 			return
 		}
-		raw, _ := json.Marshal(map[string]any{"id": "analytics", "jsonrpc": "2.0", "method": "getTimetable2017", "params": []any{map[string]any{"id": window.ID, "type": window.Kind, "startDate": window.From, "endDate": window.To, "masterDataTimestamp": 0, "timetableTimestamp": 0, "timetableTimestamps": [7]int{}, "auth": map[string]any{}}}})
-		body, rewriteErr := p.rewriteAuthForOwner(school, raw, window.Owner)
-		observed := analyticsWindow{From: window.From, To: window.To, Status: "unavailable"}
-		if rewriteErr != nil {
-			observed.Reason = "source_auth_unavailable"
-		} else {
-			// Match the upstream Basic timetable path's school routing cookie.
-			data, httpStatus, _, fetchErr := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
-			switch {
-			case fetchErr != nil:
-				observed.Reason = "upstream_unreachable"
-			case httpStatus == http.StatusUnauthorized || httpStatus == http.StatusForbidden:
-				observed.Reason = "upstream_rejected"
-			case httpStatus != http.StatusOK:
-				observed.Reason = "upstream_http_error"
-			default:
-				parsed, parseErr := p.parseAnalyticsLessons(school, data, window.From, window.To)
-				switch {
-				case errors.Is(parseErr, errAnalyticsUpstreamRejected):
-					observed.Reason = "upstream_rejected"
-				case parseErr != nil:
-					observed.Reason = "invalid_timetable_response"
-				default:
-					observed.Status = "observed"
-					lessons = append(lessons, parsed...)
-				}
-			}
-		}
+		parsed, observed := p.fetchAnalyticsWindow(r.Context(), school, window, today, q.Mode == "personal")
+		lessons = append(lessons, parsed...)
 		result.Windows = append(result.Windows, observed)
 		if observed.Status != "observed" {
 			result.Complete = false
@@ -372,6 +349,85 @@ func (p *Proxy) analyticsTargets(u *store.User, school string, q analyticsReques
 		targets[i].Owner = sources[0]
 	}
 	return targets, nil
+}
+
+// fetchAnalyticsWindow keeps the user-requested dates in the report even when
+// upstream needs a normal mobile-app window to serve a one-day personal query.
+func (p *Proxy) fetchAnalyticsWindow(ctx context.Context, school string, window analyticsTarget, today string, personal bool) ([]analytics.Lesson, analyticsWindow) {
+	parsed, observed, rangeRetry := p.readAnalyticsWindow(school, window, window.From, window.To)
+	if !rangeRetry || !personal || window.From != window.To || ctx.Err() != nil {
+		return parsed, observed
+	}
+	day, err := time.Parse(time.DateOnly, window.From)
+	if err != nil {
+		return parsed, observed
+	}
+	end := day.AddDate(0, 0, 6).Format(time.DateOnly)
+	start := window.From
+	if end > today {
+		end = today
+		if end == start {
+			// The preceding day is within the standard personal history allowance.
+			start = day.AddDate(0, 0, -1).Format(time.DateOnly)
+		}
+	}
+	parsed, retried, _ := p.readAnalyticsWindow(school, window, start, end)
+	if retried.Status == "observed" {
+		return parsed, retried
+	}
+	// Preserve the original upstream code if the alternate range also fails.
+	return nil, observed
+}
+
+func (p *Proxy) readAnalyticsWindow(school string, window analyticsTarget, requestFrom, requestTo string) ([]analytics.Lesson, analyticsWindow, bool) {
+	observed := analyticsWindow{From: window.From, To: window.To, Status: "unavailable"}
+	raw, _ := json.Marshal(map[string]any{"id": "analytics", "jsonrpc": "2.0", "method": "getTimetable2017", "params": []any{
+		map[string]any{"id": window.ID, "type": window.Kind, "startDate": requestFrom, "endDate": requestTo,
+			"masterDataTimestamp": 0, "timetableTimestamp": 0, "timetableTimestamps": [7]int{}, "auth": map[string]any{}},
+	}})
+	body, err := p.rewriteAuthForOwner(school, raw, window.Owner)
+	if err != nil {
+		observed.Reason = "source_auth_unavailable"
+		return nil, observed, false
+	}
+	data, status, _, err := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
+	switch {
+	case err != nil:
+		observed.Reason = "upstream_unreachable"
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		observed.Reason = "upstream_rejected"
+	case status != http.StatusOK:
+		observed.Reason = "upstream_http_error"
+	default:
+		lessons, err := p.parseAnalyticsLessons(school, data, window.From, window.To)
+		if err == nil {
+			observed.Status = "observed"
+			return lessons, observed, false
+		}
+		if !errors.Is(err, errAnalyticsUpstreamRejected) {
+			observed.Reason = "invalid_timetable_response"
+			break
+		}
+		observed.Reason = "upstream_rejected"
+		observed.UpstreamCode = analyticsUpstreamCode(data)
+		// Do not reissue requests when upstream denied authentication or access.
+		retry := !untis.IsAuthFailure(data) && (observed.UpstreamCode == nil || *observed.UpstreamCode != -8509)
+		return nil, observed, retry
+	}
+	return nil, observed, false
+}
+
+// Only a numeric protocol code is exposed, never upstream message text.
+func analyticsUpstreamCode(raw []byte) *int32 {
+	var env struct {
+		Error struct {
+			Code *int32 `json:"code"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(raw, &env) != nil {
+		return nil
+	}
+	return env.Error.Code
 }
 
 var errAnalyticsUpstreamRejected = errors.New("upstream rejected timetable request")

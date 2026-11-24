@@ -44,7 +44,8 @@ type fakeUpstream struct {
 	timetableCalls int
 	// timetableDelay holds a timetable answer back so a test can observe a burst
 	// of concurrent requests while the one upstream flight is still in progress.
-	timetableDelay time.Duration
+	timetableDelay           time.Duration
+	rejectSingleDayTimetable bool
 
 	// restBody / restStatus are the canned answer served for /WebUntis/api/*.
 	restBody   string
@@ -98,9 +99,19 @@ func (f *fakeUpstream) handler() http.Handler {
 			tm, tstat := f.timetable, f.timetableStatus
 			reply := f.internReply
 			delay := f.timetableDelay
+			rejectSingleDay := f.rejectSingleDayTimetable
 			f.mu.Unlock()
 			if req.Method == "getTimetable2017" && delay > 0 {
 				time.Sleep(delay)
+			}
+			if req.Method == "getTimetable2017" && rejectSingleDay {
+				var call struct {
+					Params []struct{ StartDate, EndDate string }
+				}
+				if json.Unmarshal(body, &call) == nil && len(call.Params) == 1 && call.Params[0].StartDate == call.Params[0].EndDate {
+					_, _ = w.Write([]byte(`{"error":{"code":-32602,"message":"date window rejected"}}`))
+					return
+				}
 			}
 			if req.Method == "getTimetable2017" && tstat != 0 {
 				w.WriteHeader(tstat)
