@@ -257,9 +257,12 @@ background credentials from a live upstream verification. Missing student
 classes and unclear identities are review items, not automatic deletion rules.
 
 The People list marks accounts that still need app enrolment before background
-fetching works. Signing in with an OTP creates a session but does not supply the
-shared secret needed to fetch later. Use the normal app setup flow to enrol a
-replayable account; do not send credentials through support messages.
+fetching works. Signing in with an OTP creates a session. When the app keeps the
+key on the device, it can still request the student's own upstream timetable
+and class with a fresh code and the corresponding permissions. Background
+fetching requires an enrolled credential. For app key sign-in, JSON-RPC error
+`-8526` indicates a proxy account-type login denial. Check the school and
+server-wide rules in **Permissions → Feature switches & login rules**.
 
 Explicit per-account absence/lesson write denials also protect that account
 when another person uses it as a saved teacher source. Timetable reads remain

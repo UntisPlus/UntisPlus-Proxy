@@ -226,6 +226,27 @@ func TestKeyLoginLiveOTPUnchanged(t *testing.T) {
 // TestGetAppSharedSecretStoresKeyAndPassword covers the app setup flow: upstream
 // is handed the account's real password and returns the TOTP replay key. The
 // proxy must keep both — the key so it can replay, the password for later use.
+func TestAndroidKeyLoginPreservesNumericOTP(t *testing.T) {
+	f := &fakeUntis{}
+	p, st, _ := newFakeProxy(t, f)
+	body := internBody("getUserData2017", map[string]any{"auth": map[string]any{
+		"user": "android-user", "otp": 12345,
+	}})
+	rec := internReq(t, p, "getUserData2017", "", body)
+	if findCookie(rec, "JSESSIONID") == "" {
+		t.Fatalf("Android key login failed: %s", rec.Body.String())
+	}
+	f.mu.Lock()
+	got := f.loginAuth["otp"]
+	f.mu.Unlock()
+	if got != float64(12345) {
+		t.Fatalf("expected a numeric upstream OTP, got %T", got)
+	}
+	if key, password, err := st.SchoolCredential("testschool", "android-user"); err != nil || key != "" || password != "" {
+		t.Fatal("a one-time code registered reusable credentials")
+	}
+}
+
 func TestGetAppSharedSecretStoresKeyAndPassword(t *testing.T) {
 	f := &fakeUntis{appSecret: "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"}
 	p, st, _ := newFakeProxy(t, f)

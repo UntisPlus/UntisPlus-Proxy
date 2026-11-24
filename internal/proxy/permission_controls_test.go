@@ -98,8 +98,8 @@ func TestKeyAdmissionDenialDoesNotPersistPastedSecret(t *testing.T) {
 	p, st, _ := newFakeProxy(t, &fakeUntis{})
 	st.SetAdmissionPolicy("testschool", store.AdmissionPolicy{BlockedRoles: []string{"student", "teacher", "unknown", "other", "parent", "staff"}})
 	rec := internReq(t, p, "getUserData2017", "", loginBody(t, "blocked", boostSourceSecret))
-	if errCode(t, rec) != -8504 {
-		t.Fatalf("blocked key login accepted %s", rec.Body.String())
+	if errCode(t, rec) != -8526 {
+		t.Fatalf("expected account-type denial for blocked key login: %s", rec.Body.String())
 	}
 	if secret, _ := st.GetSecret("blocked"); secret != "" {
 		t.Fatal("blocked login saved secret")

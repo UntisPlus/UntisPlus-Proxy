@@ -58,6 +58,53 @@ func TestBasicLocalFeaturesRequireExplicitGrants(t *testing.T) {
 		t.Fatal("explicit private feature grant ignored")
 	}
 }
+
+func TestStudentWithoutSavedKeyUsesLiveOTPOnlyForOwnUpstreamTimetable(t *testing.T) {
+	f := &fakeUpstream{timetable: `{"result":{"periods":[],"stock":true}}`}
+	p, st := newFakeProxyUpstream(t, f)
+	if err := st.UpsertUser(&store.User{Username: "student", School: "testschool", Method: "key", PersonType: 5, PersonID: 7, ClassID: 5000}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		kind string
+		id   int64
+	}{
+		{"STUDENT", 7},
+		{"CLASS", 5000},
+		{"STUDENT", 99},
+		{"CLASS", 6000},
+	} {
+		params := ttParam(tc.id, tc.kind, "2026-09-21", "2026-09-27", "student")
+		params["auth"] = map[string]any{"user": "student", "otp": 123456, "key": "do-not-forward"}
+		params["timetableTimestamps"] = []int64{42, 48}
+		body := internBody("getTimetable2017", params)
+		before := len(f.Forwards())
+		rec := internReq(t, p, "getTimetable2017", "", body)
+		calls := f.Forwards()[before:]
+		if tc.id != 7 && tc.id != 5000 {
+			if len(calls) != 0 || errCode(t, rec) != -8520 {
+				t.Fatalf("foreign target reached upstream: %s", rec.Body.String())
+			}
+			continue
+		}
+		if !strings.Contains(rec.Body.String(), `"stock":true`) || len(calls) != 1 ||
+			!strings.Contains(string(calls[0].Body), `"otp":123456`) ||
+			!strings.Contains(string(calls[0].Body), `"timetableTimestamps":[42,48]`) ||
+			strings.Contains(string(calls[0].Body), `"key"`) || !strings.HasPrefix(calls[0].Cookie, "schoolname=") ||
+			strings.Contains(calls[0].Cookie, "JSESSIONID") {
+			t.Fatalf("expected a self-authenticated read without reusable credentials: %s", rec.Body.String())
+		}
+	}
+	if err := st.SetUserCapGrant("testschool", "student", string(access.CapTimetableStudentPersonalUpstreamView), -1); err != nil {
+		t.Fatal(err)
+	}
+	body := internBody("getTimetable2017", ttParam(7, "STUDENT", "2026-09-21", "2026-09-27", "student"))
+	before := len(f.Forwards())
+	if rec := internReq(t, p, "getTimetable2017", "", body); errCode(t, rec) != -8509 || len(f.Forwards()) != before {
+		t.Fatalf("blocked personal timetable reached upstream: %s", rec.Body.String())
+	}
+}
+
 func TestCompatibilityRoutesAreBoundedPrivateAndDoNotWriteUpstream(t *testing.T) {
 	f := &fakeUpstream{timetable: `{"result":{"periods":[]}}`, restBody: `{"data":{"loginServiceConfig":{"user":{"personId":7,"persons":[{"id":7,"type":5}]}}}}`}
 	p, st := newFakeProxyUpstream(t, f)

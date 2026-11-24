@@ -1,11 +1,65 @@
 package proxy
 
 import (
+	"database/sql"
 	"encoding/json"
 	"net/http"
+
 	"untis-proxy/internal/access"
 	"untis-proxy/internal/store"
+	"untis-proxy/internal/untis"
 )
+
+// A mobile client can send a fresh code on each request without carrying the
+// proxy session or enrolling a replay key. Upstream can authenticate that
+// request for the student's own timetable. This path returns upstream bytes
+// directly and never serves pooled, cached or proxy-local data.
+func (p *Proxy) forwardOwnTimetableWithLiveOTP(w http.ResponseWriter, r *http.Request, school string, id json.RawMessage, pr timetableParams) bool {
+	if pr.Auth.User == "" || pr.ID <= 0 || normalizedOTP(pr.Auth.OTP) == "" ||
+		(pr.Type != "STUDENT" && pr.Type != "CLASS") || p.sessionUser(r) != nil {
+		return false
+	}
+	u, err := p.store.GetUserInSchool(school, pr.Auth.User)
+	if err != nil || u == nil || u.Password != "" || !p.ownsTimetable(u, pr) ||
+		!p.store.UserAdmissionAllowed(school, u) {
+		return false
+	}
+	links, err := p.store.AccountLinks(school, u.Username)
+	if (err != nil && err != sql.ErrNoRows) || links.Guardian {
+		return false
+	}
+	key, password, err := p.store.SchoolCredential(school, u.Username)
+	if err != nil || key != "" || password != "" {
+		return false
+	}
+	capability := access.CapTimetableStudentPersonalUpstreamView
+	if pr.Type == "CLASS" {
+		capability = access.CapTimetableClassUpstreamView
+	}
+	if !p.effective(u, school, capability) {
+		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
+		return true
+	}
+	if p.loginRateLimited(w, r, school, u.Username) {
+		p.writeJSONRPCError(w, id, "too many login attempts, try again later", -8504)
+		return true
+	}
+	// The typed params carry the live code and supported timetable fields.
+	// They cannot forward a reusable key supplied in an unrecognised field.
+	body, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": id, "method": "getTimetable2017", "params": []timetableParams{pr}})
+	raw, status, _, err := p.untis.RawIntern(school, p.untis.SchoolCookie(school), "getTimetable2017", body)
+	if err != nil {
+		p.writeJSONRPCError(w, id, "own upstream timetable unavailable", -8509)
+		return true
+	}
+	if status == http.StatusUnauthorized || untis.IsAuthFailure(raw) {
+		p.recordLoginFailure(r, school, u.Username)
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(raw)
+	return true
+}
 
 func (p *Proxy) prefersOwnUpstream(u *store.User, school, kind string, own bool) bool {
 	if u == nil || p.userSchool(u, p.opts.School) != school {

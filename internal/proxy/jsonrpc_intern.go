@@ -388,7 +388,13 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 		replayKey = auth.Key
 	}
 	// Upstream authenticates the one-time code. Keep replay keys local.
-	cookie, realBody, err := p.untis.KeyLogin(school, auth.User, loginOTP, time.Now().UnixMilli(), nil)
+	var upstreamAuth map[string]any
+	if normalizedOTP(auth.OTP) != "" && !strings.HasPrefix(strings.TrimSpace(string(auth.OTP)), "\"") {
+		// The Android client sends a number, including when the code starts
+		// with zero. Preserve that wire format for upstream authentication.
+		upstreamAuth = map[string]any{"otp": json.Number(loginOTP)}
+	}
+	cookie, realBody, err := p.untis.KeyLogin(school, auth.User, loginOTP, time.Now().UnixMilli(), upstreamAuth)
 	if err != nil {
 		if ue, ok := err.(*untis.UpstreamError); ok {
 			// Only an upstream rejection is a credential failure worth counting.
@@ -426,7 +432,7 @@ func (p *Proxy) keyLogin(w http.ResponseWriter, r *http.Request, school string, 
 	}
 	if !isAnon && !p.admitLogin(school, auth.User, info) {
 		go p.untis.Logout(school, cookie)
-		p.writeJSONRPCError(w, req.ID, "account type is not admitted", -8504)
+		p.writeJSONRPCError(w, req.ID, "account type is not admitted", -8526)
 		return
 	}
 	method := "key"
@@ -763,11 +769,14 @@ func normalizeTimetableDate(s string) string {
 // it lets getTimetable2017, serveElementTimetable and the boosted path all read
 // the same fields without repeating the anonymous struct.
 type timetableParams struct {
-	ID        int64  `json:"id"`
-	Type      string `json:"type"`
-	StartDate string `json:"startDate"`
-	EndDate   string `json:"endDate"`
-	Auth      struct {
+	ID                  int64   `json:"id"`
+	Type                string  `json:"type"`
+	StartDate           string  `json:"startDate"`
+	EndDate             string  `json:"endDate"`
+	MasterDataTimestamp int64   `json:"masterDataTimestamp"`
+	TimetableTimestamp  int64   `json:"timetableTimestamp"`
+	TimetableTimestamps []int64 `json:"timetableTimestamps,omitempty"`
+	Auth                struct {
 		User       string          `json:"user"`
 		OTP        json.RawMessage `json:"otp"`
 		ClientTime int64           `json:"clientTime"`
@@ -869,8 +878,7 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 	var req struct {
 		Params []timetableParams `json:"params"`
 	}
-	_ = json.Unmarshal(body, &req)
-	if len(req.Params) == 0 {
+	if err := json.Unmarshal(body, &req); err != nil || len(req.Params) == 0 {
 		p.writeJSONRPCError(w, id, "no username specified", -8502)
 		return
 	}
@@ -937,6 +945,9 @@ func (p *Proxy) getTimetable2017(w http.ResponseWriter, r *http.Request, school 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write(b)
+		return
+	}
+	if len(req.Params) == 1 && p.forwardOwnTimetableWithLiveOTP(w, r, school, id, pr) {
 		return
 	}
 	requester = p.authenticatedUpstreamRequester(r, school, requesterName, normalizedOTP(pr.Auth.OTP), pr.Auth.ClientTime)
