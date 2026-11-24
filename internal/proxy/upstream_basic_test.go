@@ -2,12 +2,66 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"untis-proxy/internal/access"
 	"untis-proxy/internal/store"
 )
+
+func TestBetterUntisKeyLoginThenPersonalTimetable(t *testing.T) {
+	for _, account := range []struct {
+		name, kind string
+		personType int
+	}{
+		{"student", "STUDENT", 5},
+		{"teacher", "TEACHER", 2},
+	} {
+		for _, sendCookie := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/cookie=%t", account.name, sendCookie), func(t *testing.T) {
+				f := &fakeUpstream{
+					restBody:  fmt.Sprintf(`{"data":{"klasseId":5000,"loginServiceConfig":{"user":{"personId":7,"isAdmin":false,"persons":[{"id":7,"type":%d}]}}}}`, account.personType),
+					timetable: `{"result":{"timetable":{"periods":[{"id":84,"date":20260921}]}}}`,
+				}
+				p, st := newFakeProxyUpstream(t, f)
+				handler := p.Handler()
+				post := func(method, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
+					r := httptest.NewRequest(http.MethodPost, "https://proxy.test/WebUntis/jsonrpc_intern.do?school=testschool&m="+method, strings.NewReader(body))
+					r.Header.Set("Content-Type", "application/json")
+					if cookie != nil {
+						r.AddCookie(cookie)
+					}
+					w := httptest.NewRecorder()
+					handler.ServeHTTP(w, r)
+					return w
+				}
+				auth := map[string]any{"user": account.name, "otp": 12345, "clientTime": 1790000000000}
+				login := post("getUserData2017", internBody("getUserData2017", map[string]any{"auth": auth}), nil)
+				sid := findCookie(login, "JSESSIONID")
+				u, err := st.GetUserInSchool("testschool", account.name)
+				if sid == "" || err != nil || u == nil || u.PersonType != int64(account.personType) || u.PersonID != 7 || u.Password != "" {
+					t.Fatalf("key login did not register the expected identity: %s", login.Body.String())
+				}
+				var cookie *http.Cookie
+				if sendCookie {
+					cookie = &http.Cookie{Name: "JSESSIONID", Value: sid}
+				}
+				params := ttParam(7, account.kind, "2026-09-21", "2026-09-27", "")
+				params["auth"] = auth
+				timetable := post("getTimetable2017", internBody("getTimetable2017", params), cookie)
+				if timetable.Code != http.StatusOK || !strings.Contains(timetable.Body.String(), `"id":84`) {
+					t.Fatalf("first personal timetable failed: HTTP %d %s", timetable.Code, timetable.Body.String())
+				}
+				calls := f.Forwards()
+				if len(calls) != 1 || !strings.Contains(string(calls[0].Body), `"otp":12345`) || strings.Contains(calls[0].Cookie, "JSESSIONID") {
+					t.Fatal("personal timetable did not use only the app's current upstream code")
+				}
+			})
+		}
+	}
+}
 
 func basicFixture(t *testing.T) (*Proxy, *store.Store, *fakeUpstream) {
 	t.Helper()

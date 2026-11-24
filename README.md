@@ -258,8 +258,8 @@ classes and unclear identities are review items, not automatic deletion rules.
 
 The People list marks accounts that still need app enrolment before background
 fetching works. Signing in with an OTP creates a session. When the app keeps the
-key on the device, it can still request the student's own upstream timetable
-and class with a fresh code and the corresponding permissions. Background
+key on the device, it can still request a student's own timetable or class, or
+a teacher's own timetable, with a fresh code and the corresponding permissions. Background
 fetching requires an enrolled credential. For app key sign-in, JSON-RPC error
 `-8526` indicates a proxy account-type login denial. Check the school and
 server-wide rules in **Permissions → Feature switches & login rules**.

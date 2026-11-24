@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strings"
 
 	"untis-proxy/internal/access"
 	"untis-proxy/internal/store"
@@ -12,16 +13,23 @@ import (
 
 // A mobile client can send a fresh code on each request without carrying the
 // proxy session or enrolling a replay key. Upstream can authenticate that
-// request for the student's own timetable. This path returns upstream bytes
+// request for the account's own timetable. This path returns upstream bytes
 // directly and never serves pooled, cached or proxy-local data.
 func (p *Proxy) forwardOwnTimetableWithLiveOTP(w http.ResponseWriter, r *http.Request, school string, id json.RawMessage, pr timetableParams) bool {
 	if pr.Auth.User == "" || pr.ID <= 0 || normalizedOTP(pr.Auth.OTP) == "" ||
-		(pr.Type != "STUDENT" && pr.Type != "CLASS") || p.sessionUser(r) != nil {
+		(pr.Type != "STUDENT" && pr.Type != "CLASS" && pr.Type != "TEACHER") {
+		return false
+	}
+	sessionUser := p.sessionUser(r)
+	if sessionUser != nil && (pr.Type != "TEACHER" || !strings.EqualFold(sessionUser.Username, pr.Auth.User) || p.userSchool(sessionUser, p.opts.School) != school) {
 		return false
 	}
 	u, err := p.store.GetUserInSchool(school, pr.Auth.User)
-	if err != nil || u == nil || u.Password != "" || !p.ownsTimetable(u, pr) ||
-		!p.store.UserAdmissionAllowed(school, u) {
+	if err != nil || u == nil || u.Password != "" || !p.store.UserAdmissionAllowed(school, u) {
+		return false
+	}
+	ownTeacher := pr.Type == "TEACHER" && u.PersonID == pr.ID && access.DefaultRoleForPersonType(u.PersonType) == access.RoleTeacher
+	if !ownTeacher && !p.ownsTimetable(u, pr) {
 		return false
 	}
 	links, err := p.store.AccountLinks(school, u.Username)
@@ -36,7 +44,18 @@ func (p *Proxy) forwardOwnTimetableWithLiveOTP(w http.ResponseWriter, r *http.Re
 	if pr.Type == "CLASS" {
 		capability = access.CapTimetableClassUpstreamView
 	}
-	if !p.effective(u, school, capability) {
+	allowed := p.effective(u, school, capability)
+	if ownTeacher {
+		// The existing stock teacher path allows an own read by default.
+		// Honour explicit policy and server gates for the live-code path.
+		if resolved, err := p.store.ResolveEffective(school, u); err == nil {
+			decision := resolved.Decisions[access.CapTimetableUpstreamView]
+			allowed = decision.Effective || (decision.ServerEnabled && decision.Source == access.SourceImplicit)
+		} else {
+			allowed = false
+		}
+	}
+	if !allowed {
 		p.writeJSONRPCError(w, id, "no right for timetable", -8509)
 		return true
 	}
