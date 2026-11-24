@@ -252,6 +252,67 @@ school's year boundaries are configured, lessons can appear in the `unmapped`
 year bucket and still count in the totals. This command uses ordinary JSON
 report access. The dedicated export formats require the separate export grant.
 
+### Example chart dashboard
+
+Use the saved personal report to build a dashboard with a timing view and
+separate tabs for teachers, subjects, and covers. Use the same rows for the
+bars and an expandable data table under each chart, so readers can see exact
+counts alongside the visual ranking.
+
+| Chart | Category | Measure and table details |
+| --- | --- | --- |
+| Cancellations by week | ISO year and week of `lessonChanges[].date` | Count rows with `cancelled: true`. Count `clash: "overlap_observed"` separately. |
+| Cancellations by weekday | Weekday of `lessonChanges[].date` | Count cancelled rows in weekday order. |
+| Cancellations by original teacher | `missedTeachers[].name` | Sort bars by `cancelled`. Include `covered` in the table to show how many lessons another teacher took. |
+| Cancellations by subject | `missedSubjects[].name` | Sort bars by `cancelled`. Include `covered` in the table. |
+| Most frequent cover teachers | `coverTeachers[].name` | Sort by `covered`. Read `lessonChanges[].covers` alongside `subjects` for the original teacher and subject. |
+
+Use `cancelledLessons` and `coveredLessons` for the summary totals. A lesson
+can count against multiple teachers or subjects in a ranking. For a chart of
+teacher-assignment rates instead, use the `scheduled`, `cancelled`, and
+`cancellationRate` fields in `byWeek` or `byWeekday`. Label that chart
+**Teacher assignments** so the denominator is clear.
+
+This example turns the saved export into rows for a weekly bar chart and its
+data table. Use `week` for the horizontal axis and `cancelled` for the bar
+height. Include `overlaps` in the tooltip and table.
+
+```bash
+python3 - /tmp/untisplus-analytics-2026-27.json <<'PY'
+import json
+import sys
+from collections import defaultdict
+from datetime import date, timedelta
+from pathlib import Path
+
+report = json.loads(Path(sys.argv[1]).read_text())
+if not report["complete"]:
+    raise SystemExit("Report is partial. Check unavailable windows before charting.")
+
+counts = defaultdict(lambda: {"cancelled": 0, "overlaps": 0})
+day = date.fromisoformat(report["from"])
+end = date.fromisoformat(report["to"])
+while day <= end:
+    year, week, _ = day.isocalendar()
+    counts[f"{year}-W{week:02}"]
+    day += timedelta(days=1)
+
+for lesson in report["lessonChanges"]:
+    if lesson["cancelled"]:
+        year, week, _ = date.fromisoformat(lesson["date"]).isocalendar()
+        row = counts[f"{year}-W{week:02}"]
+        row["cancelled"] += 1
+        row["overlaps"] += lesson["clash"] == "overlap_observed"
+
+print(json.dumps([{"week": week, **row} for week, row in counts.items()], indent=2))
+PY
+```
+
+For a dashboard that accepts partial reports, show unavailable windows next to
+the charts and leave incomplete weeks as gaps. An observed overlap shows
+concurrent timetable entries. Its presence gives no cancellation reason.
+Keep report-local labels in examples you intend to share.
+
 ## Exports
 
 `export-json` downloads the identical report as JSON.
