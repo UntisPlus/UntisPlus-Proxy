@@ -83,15 +83,24 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var response struct {
-			Result string          `json:"result"`
-			Error  json.RawMessage `json:"error"`
+			Result string `json:"result"`
+			Error  *struct {
+				Code int `json:"code"`
+			} `json:"error"`
 		}
-		valid := json.Unmarshal(b, &response) == nil && status >= 200 && status < 300 &&
-			(len(response.Error) == 0 || string(response.Error) == "null") && isBase32Secret(response.Result)
-		// Persist only credentials actually accepted by upstream. In particular,
-		// a pasted base32 value from a failed enrollment is not identity proof.
+		parsed := json.Unmarshal(b, &response) == nil
+		valid := parsed && status >= 200 && status < 300 && response.Error == nil && isBase32Secret(response.Result)
+		supplied := enrollment.Params[0].Password
+		// BetterUntis may put a reusable app key in this password field.
+		// Upstream rejects it as a password. Verify it with a separate app
+		// login before returning or persisting it as a reusable key.
+		if !valid && parsed && status >= 200 && status < 300 && response.Result == "" && response.Error != nil &&
+			(response.Error.Code == -8504 || response.Error.Code == -8998) &&
+			p.enrolAppKey(w, school, req.ID, username, supplied) {
+			return
+		}
 		if valid {
-			password := enrollment.Params[0].Password
+			password := supplied
 			if isBase32Secret(password) {
 				password = ""
 			}
@@ -234,6 +243,46 @@ func (p *Proxy) handleJSONRPCIntern(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(status)
 		_, _ = w.Write(b)
 	}
+}
+
+// enrolAppKey handles the password-field key convention without trusting
+// unverified keys, overwriting a working credential, or forwarding the key
+// in the upstream app login.
+func (p *Proxy) enrolAppKey(w http.ResponseWriter, school string, id json.RawMessage, username, supplied string) bool {
+	key := strings.ToUpper(strings.TrimSpace(supplied))
+	if username == "#anonymous#" || !isBase32Secret(key) {
+		return false
+	}
+	now := time.Now()
+	otp := untis.TOTPAt(key, now)
+	code, err := strconv.Atoi(otp)
+	if err != nil {
+		return false
+	}
+	cookie, raw, err := p.untis.KeyLogin(school, username, otp, now.UnixMilli(), map[string]any{"otp": code})
+	if err != nil {
+		return false
+	}
+	defer func() { go p.untis.Logout(school, cookie) }()
+	var login struct {
+		Result map[string]json.RawMessage `json:"result"`
+	}
+	if json.Unmarshal(raw, &login) != nil || login.Result == nil {
+		return false
+	}
+	info, err := p.untis.PersonInfo(school, cookie)
+	if err != nil || info == nil || !p.admitLogin(school, username, info) {
+		p.writeJSONRPCError(w, id, "account type is not admitted", -8526)
+		return true
+	}
+	if err := p.store.SaveLoginCredential(school, username, key, ""); err != nil {
+		p.writeJSONRPCError(w, id, "account unavailable", -8504)
+		return true
+	}
+	p.recordLoginSuccess(school, username)
+	w.Header().Set("Cache-Control", "no-store")
+	p.writeJSON(w, map[string]any{"id": id, "jsonrpc": "2.0", "result": key})
+	return true
 }
 
 // enrichPersonalResponse applies whichever proxy-local personal features apply to

@@ -188,7 +188,10 @@ func TestFailedEnrollmentCannotReplaceSavedCredentials(t *testing.T) {
 		`{"result":"BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB","error":{"code":-8998}}`,
 	} {
 		t.Run(reply, func(t *testing.T) {
-			f := &fakeUpstream{internReply: reply}
+			f := &fakeUpstream{
+				internReply:  reply,
+				userDataBody: `{"error":{"code":-8998,"message":"invalid app key"}}`,
+			}
 			p, st := newFakeProxyUpstream(t, f)
 			const original = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
 			if err := st.UpsertCredential("victim", original, "original-password"); err != nil {

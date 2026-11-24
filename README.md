@@ -267,9 +267,11 @@ server-wide rules in **Permissions → Feature switches & login rules**.
 For a client that explicitly offers key enrolment, use the proxy's
 `getUserData2017` login with the current numeric `auth.otp` and a matching
 reusable `auth.key`. The proxy keeps the key local and saves it after upstream
-accepts the code and the school admits the account. Login with `auth.otp`
-alone does not enrol a key. The Android shared-secret login currently sends
-only the generated code, including after clearing its cache.
+accepts the code and the school admits the account. BetterUntis also supports
+entering the key in the password field during manual account setup. If upstream
+rejects it as a password, the proxy enrols it only after a separate successful
+app login. Upstream requests for a second factor are preserved. A login that
+sends only `auth.otp` can use an existing enrolment, but cannot create one.
 
 Explicit per-account absence/lesson write denials also protect that account
 when another person uses it as a saved teacher source. Timetable reads remain

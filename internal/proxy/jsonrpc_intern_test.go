@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -19,10 +20,11 @@ import (
 // fakeUntis implements the handful of upstream endpoints the keyLogin path
 // touches so the login can be exercised without a real WebUntis server.
 type fakeUntis struct {
-	mu        sync.Mutex
-	loginAuth map[string]any // decoded auth block sent to getUserData2017
-	rejectKey string         // if set, logins presenting the OTP for this key fail
-	appSecret string         // result returned by getAppSharedSecret
+	mu             sync.Mutex
+	loginAuth      map[string]any // decoded auth block sent to getUserData2017
+	rejectKey      string         // if set, logins presenting the OTP for this key fail
+	appSecret      string         // result returned by getAppSharedSecret
+	appSecretError int            // optional upstream error returned by getAppSharedSecret
 }
 
 func (f *fakeUntis) handler() http.Handler {
@@ -50,6 +52,10 @@ func (f *fakeUntis) handler() http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Set-Cookie", "JSESSIONID=fakesid; Path=/")
 			if req.Method == "getAppSharedSecret" {
+				if f.appSecretError != 0 {
+					_, _ = fmt.Fprintf(w, `{"id":"upstream","error":{"code":%d}}`, f.appSecretError)
+					return
+				}
 				b, _ := json.Marshal(map[string]any{"id": "upstream", "jsonrpc": "2.0", "result": secret})
 				_, _ = w.Write(b)
 				return
@@ -59,7 +65,7 @@ func (f *fakeUntis) handler() http.Handler {
 				if len(req.Params) > 0 {
 					auth = req.Params[0].Auth
 				}
-				if got, _ := auth["otp"].(string); got == untis.TOTP(reject) {
+				if currentKeyMatches(reject, fmt.Sprint(auth["otp"])) {
 					_, _ = w.Write([]byte(`{"error":{"code":-8998,"message":"invalid secret"},"id":"upstream"}`))
 					return
 				}
@@ -311,6 +317,50 @@ func TestGetAppSharedSecretStoresKeyAndPassword(t *testing.T) {
 	}
 	if password != "correct horse battery" {
 		t.Errorf("stored password = %q, want the account password", password)
+	}
+}
+
+func TestBetterUntisEnrolsVerifiedKeyFromPasswordField(t *testing.T) {
+	const key = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP"
+	for _, tc := range []struct {
+		name, rejectKey string
+		upstreamError   int
+		wantKey         bool
+	}{
+		{name: "app key accepted", upstreamError: -8998, wantKey: true},
+		{name: "incorrect key", rejectKey: key, upstreamError: -8504},
+		{name: "second factor requested", upstreamError: -8519},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeUntis{appSecretError: tc.upstreamError, rejectKey: tc.rejectKey}
+			p, st, _ := newFakeProxy(t, f)
+			const username = "app-key-user"
+			body := internBody("getAppSharedSecret", map[string]any{"userName": username, "password": key})
+			rec := internReq(t, p, "getAppSharedSecret", "", body)
+			saved, password, err := st.SchoolCredential("testschool", username)
+			if err != nil || password != "" || (saved != "") != tc.wantKey {
+				t.Fatal("unexpected reusable credential status after enrollment")
+			}
+			if !tc.wantKey {
+				if errCode(t, rec) != tc.upstreamError {
+					t.Fatalf("lost the original upstream error: %s", rec.Body.String())
+				}
+				return
+			}
+			if saved != key || errCode(t, rec) != 0 || rec.Header().Get("Cache-Control") != "no-store" {
+				t.Fatal("verified app key was not returned and saved")
+			}
+			otp, err := strconv.Atoi(untis.TOTPAt(key, time.Now()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			auth := map[string]any{"user": username, "otp": otp}
+			login := internReq(t, p, "getUserData2017", "", internBody("getUserData2017", map[string]any{"auth": auth}))
+			u, err := st.GetUserInSchool("testschool", username)
+			if findCookie(login, "JSESSIONID") == "" || err != nil || u == nil || u.Method != "key" || u.Password != key {
+				t.Fatal("BetterUntis OTP login did not pick up the enrolled key")
+			}
+		})
 	}
 }
 
