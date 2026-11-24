@@ -65,6 +65,8 @@ type analyticsTarget struct {
 	Owner    *store.User
 }
 
+const analyticsPersonalWindowDays = 7
+
 func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	u := p.sessionUser(r)
@@ -185,7 +187,7 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 	// Validate and authorize every target before issuing the first upstream call.
 	windowDays, maxWindows := 31, 32
 	if q.Mode == "personal" {
-		windowDays, maxWindows = 7, 53
+		windowDays, maxWindows = analyticsPersonalWindowDays, 53
 	}
 	windows := []analyticsTarget{}
 	for _, target := range targets {
@@ -195,10 +197,6 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 			end := a.AddDate(0, 0, windowDays-1)
 			if end.After(b) {
 				end = b
-			} else if windowDays == 7 && end.AddDate(0, 0, 1).Equal(b) {
-				// Keep the final window at least two days so it stays inside
-				// the requested range without the single-day padding.
-				end = end.AddDate(0, 0, -1)
 			}
 			part := target
 			part.From = a.Format("2006-01-02")
@@ -240,7 +238,7 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 			p.forbidden(w)
 			return
 		}
-		parsed, observed := p.fetchAnalyticsWindow(school, window, today, q.Mode == "personal", q.PersonalOTP)
+		parsed, observed := p.fetchAnalyticsWindow(school, window, from, today, q.Mode == "personal", q.PersonalOTP)
 		lessons = append(lessons, parsed...)
 		result.Windows = append(result.Windows, observed)
 		if observed.Status != "observed" {
@@ -378,14 +376,22 @@ func validAnalyticsOTP(otp string) bool {
 	return true
 }
 
-// fetchAnalyticsWindow uses a mobile-sized upstream request for one-day
-// personal reports. Only the originally requested dates reach the report.
-func (p *Proxy) fetchAnalyticsWindow(school string, window analyticsTarget, today string, personal bool, otp string) ([]analytics.Lesson, analyticsWindow) {
+// fetchAnalyticsWindow uses a full mobile week for short personal report
+// windows when it fits within the report range. The parser only includes
+// dates assigned to this window, even when upstream requests overlap.
+func (p *Proxy) fetchAnalyticsWindow(school string, window analyticsTarget, reportFrom time.Time, today string, personal bool, otp string) ([]analytics.Lesson, analyticsWindow) {
 	start, end := window.From, window.To
+	if personal {
+		lastDay, _ := time.Parse(time.DateOnly, end)
+		weekStart := lastDay.AddDate(0, 0, 1-analyticsPersonalWindowDays)
+		if !weekStart.Before(reportFrom) {
+			return p.readAnalyticsWindow(school, window, weekStart.Format(time.DateOnly), end, otp)
+		}
+	}
 	if personal && start == end {
 		day, err := time.Parse(time.DateOnly, start)
 		if err == nil {
-			end = day.AddDate(0, 0, 6).Format(time.DateOnly)
+			end = day.AddDate(0, 0, analyticsPersonalWindowDays-1).Format(time.DateOnly)
 			if end > today {
 				end = today
 				if end == start {

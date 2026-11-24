@@ -34,7 +34,10 @@ def post(opener, url, payload):
         },
     )
     with opener.open(request, timeout=120) as response:
-        return json.load(response)
+        result = json.load(response)
+    if not isinstance(result, dict):
+        raise ValueError("expected a JSON object")
+    return result
 
 
 def main():

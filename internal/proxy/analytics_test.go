@@ -382,37 +382,44 @@ func TestAnalyticsFetchesSingleDayWithNormalMobileWindow(t *testing.T) {
 func TestAnalyticsPersonalWeeklyWindowsPreserveObservedLessons(t *testing.T) {
 	p, _, f := analyticsFixture(t)
 	f.mu.Lock()
-	f.rejectTimetableFrom = "2026-09-28"
+	f.rejectTimetableFrom = "2026-10-19"
 	f.rejectSingleDayTimetable = true
 	f.timetable = `{"result":{"periods":[
 	  {"id":1,"date":20260921,"code":"cancelled","teachers":[{"id":42}]},
 	  {"id":2,"date":20260928,"code":"cancelled","teachers":[{"id":42}]},
 	  {"id":3,"date":20261026,"code":"cancelled","teachers":[{"id":42}]},
-	  {"id":4,"date":20261027,"code":"cancelled","teachers":[{"id":42}]}
+	  {"id":4,"date":20261027,"code":"cancelled","teachers":[{"id":42}]},
+	  {"id":5,"date":20261025,"code":"cancelled","teachers":[{"id":42}]}
 	]}}`
 	f.mu.Unlock()
 	w := analyticsReq(t, p, "student", `{"from":"2026-09-21","to":"2026-10-26"}`)
 	var report analyticsResponse
 	if w.Code != http.StatusOK || json.Unmarshal(w.Body.Bytes(), &report) != nil ||
-		report.Complete || report.CancelledLessons != 2 || report.UniqueLessons != 2 || len(report.Windows) != 6 {
+		report.Complete || report.CancelledLessons != 3 || report.UniqueLessons != 3 || len(report.Changes) != 3 ||
+		report.Changes[1].Date != "2026-09-28" || report.Changes[2].Date != "2026-10-26" || len(report.Windows) != 6 {
 		t.Fatalf("unexpected partial report: HTTP %d, %s", w.Code, w.Body.String())
 	}
-	if gap := report.Windows[1]; gap.Status != "unavailable" || gap.UpstreamCode == nil || *gap.UpstreamCode != -8998 {
-		t.Fatalf("expected upstream rejection for second week, got %+v", gap)
+	const rejected = 4
+	if gap := report.Windows[rejected]; gap.Status != "unavailable" || gap.UpstreamCode == nil || *gap.UpstreamCode != -8998 {
+		t.Fatalf("expected upstream rejection for the preceding week, got %+v", gap)
 	}
 	calls := f.Forwards()
 	if len(calls) != 6 {
 		t.Fatalf("expected six upstream reads, got %d", len(calls))
 	}
-	wantStarts := []string{"2026-09-21", "2026-09-28", "2026-10-05", "2026-10-12", "2026-10-19", "2026-10-25"}
-	wantEnds := []string{"2026-09-27", "2026-10-04", "2026-10-11", "2026-10-18", "2026-10-24", "2026-10-26"}
+	wantStarts := []string{"2026-09-21", "2026-09-28", "2026-10-05", "2026-10-12", "2026-10-19", "2026-10-26"}
+	wantEnds := []string{"2026-09-27", "2026-10-04", "2026-10-11", "2026-10-18", "2026-10-25", "2026-10-26"}
 	for i, call := range calls {
-		if !strings.Contains(string(call.Body), `"startDate":"`+wantStarts[i]+`"`) ||
+		readStart := wantStarts[i]
+		if i == len(calls)-1 {
+			readStart = "2026-10-20"
+		}
+		if !strings.Contains(string(call.Body), `"startDate":"`+readStart+`"`) ||
 			!strings.Contains(string(call.Body), `"endDate":"`+wantEnds[i]+`"`) {
-			t.Fatalf("upstream read %d should span %s through %s", i, wantStarts[i], wantEnds[i])
+			t.Fatalf("upstream read %d should span %s through %s", i, readStart, wantEnds[i])
 		}
 		window := report.Windows[i]
-		if window.From != wantStarts[i] || window.To != wantEnds[i] || (i != 1 && window.Status != "observed") {
+		if window.From != wantStarts[i] || window.To != wantEnds[i] || (i != rejected && window.Status != "observed") {
 			t.Fatalf("unexpected report window %d: %+v", i, window)
 		}
 	}

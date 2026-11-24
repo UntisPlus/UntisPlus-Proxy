@@ -110,7 +110,9 @@ importer.
 
 Dates are inclusive. The current-day and future cutoff uses UTC. A request
 covers at most 366 days. Personal reports use up to 53 upstream windows of
-at most seven days each. Teacher and class-history reports use up to 32
+at most seven days each. For reports of at least a week, a short final window
+uses a full week within the requested range. Only its assigned dates are
+counted. Teacher and class-history reports use up to 32
 upstream windows of at most 31 days each. A one-day personal query
 reads up to seven nearby dates from the same timetable in a single upstream
 request and reports only the requested date. Personal history has no
