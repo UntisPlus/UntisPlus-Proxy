@@ -184,14 +184,18 @@ labels themselves.
 
 ## Building and pushing the image
 
+Use the [tagged GitHub workflow](#github-actions-cicd) for the canonical repository.
+For an independently hosted image, build a versioned tag in your own namespace:
+
 ```sh
-docker build -t <your-namespace>/untisplus-proxy:latest -t <your-namespace>/untisplus-proxy:<published tag> .
-docker push <your-namespace>/untisplus-proxy:latest
-docker push <your-namespace>/untisplus-proxy:<published tag>
+docker build --build-arg VERSION=<published-tag> -t <your-namespace>/untisplus-proxy:<published-tag> .
+docker push <your-namespace>/untisplus-proxy:<published-tag>
 ```
 
-Usually done for you by [GitHub Actions](#github-actions-cicd) when a version
-tag is pushed.
+A local build covers the local platform. Do not overwrite the canonical
+multi-platform `latest` with it.
+
+The canonical image is published by GitHub Actions when a version tag is pushed.
 
 ---
 

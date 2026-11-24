@@ -7,8 +7,12 @@ Reviewed: **2026-11-24**. Decision: **security fixes deployed to beta; productio
 The [24 November audit](AUDIT-2026-11-24.md) documents school-bound credentials,
 account-bound sessions, deletion cleanup, permission snapshots, smaller images
 and release gates. It also describes the one-time login required after upgrade.
-The dated deployment evidence below is historical; consult the current deployment
-report for the running beta revision. Production acceptance remains pending.
+The audit update is deployed to beta as `2.0.0-dev-audit` from `8dc9e4a`.
+CI, amd64/arm64 image checks and an isolated migration of the actual five-account
+beta backup passed. Health and unauthenticated admin protection passed after
+deployment. Existing real-account sessions require one new login. The dated
+evidence below is historical; the audit document records current image and
+recovery artifacts. Production acceptance remains pending.
 
 ## Basic and diagnostics follow-up
 
@@ -165,7 +169,7 @@ The tagged release workflow invokes CI before image publication.
   validation and connection. Dial-time protections were not verified; this is an
   audit gap, not a demonstrated exploit in this review.
 
-## Feature limits to communicate
+## Historical feature limits (original baseline)
 
 - Selected class/room/teacher allowlists and reliable upstream administrator
   account-type admission blocking are not complete.
