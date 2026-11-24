@@ -4014,8 +4014,40 @@ type NewStudentEvent struct {
 // CreateStudentEvent inserts an event for a student and returns it as stored,
 // including the id and revision the caller did not know.
 func (s *Store) CreateStudentEvent(school, username string, ev NewStudentEvent, createdBy string) (StudentEvent, error) {
+	return s.createStudentEvent(s.db, school, username, ev, createdBy)
+}
+
+// ImportStudentEvent checks for an occupied slot and inserts within one write
+// transaction, so concurrent imports cannot create the same event twice.
+func (s *Store) ImportStudentEvent(school, username string, ev NewStudentEvent, actor string) (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	// Older entries may have an unpadded hour.
+	var existing int
+	err = tx.QueryRow(`SELECT 1 FROM student_events WHERE school=? AND username=? AND date=?
+   AND start_time IN (?,?) AND end_time IN (?,?) LIMIT 1`, school, eventKey(username), ev.Date,
+		ev.StartTime, strings.TrimPrefix(ev.StartTime, "0"), ev.EndTime, strings.TrimPrefix(ev.EndTime, "0")).Scan(&existing)
+	if err == nil {
+		return false, nil
+	}
+	if err != sql.ErrNoRows {
+		return false, err
+	}
+	if _, err = s.createStudentEvent(tx, school, username, ev, actor); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Store) createStudentEvent(db outboxInserter, school, username string, ev NewStudentEvent, createdBy string) (StudentEvent, error) {
 	now := time.Now().Truncate(time.Second)
-	res, err := s.db.Exec(`INSERT INTO student_events
+	res, err := db.Exec(`INSERT INTO student_events
 		(school, username, date, start_time, end_time, title, subject, room, teacher,
 		 description, created_by, created_at, updated_at, revision)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1)`,
@@ -4025,7 +4057,7 @@ func (s *Store) CreateStudentEvent(school, username string, ev NewStudentEvent, 
 	if err != nil {
 		return StudentEvent{}, err
 	}
-	if err := s.BumpStudentEventVersion(school, username); err != nil {
+	if err := bumpStudentEventVersion(db, school, username); err != nil {
 		return StudentEvent{}, err
 	}
 	id, err := res.LastInsertId()
@@ -4163,7 +4195,11 @@ func (s *Store) DeleteStudentEvent(school string, id int64) (bool, error) {
 // value. Called on every admin edit so the student's connected clients can be told
 // to refresh.
 func (s *Store) BumpStudentEventVersion(school, username string) error {
-	_, err := s.db.Exec(`INSERT INTO student_event_versions (school, username, version)
+	return bumpStudentEventVersion(s.db, school, username)
+}
+
+func bumpStudentEventVersion(db outboxInserter, school, username string) error {
+	_, err := db.Exec(`INSERT INTO student_event_versions (school, username, version)
 		VALUES (?,?,1)
 		ON CONFLICT(school, username) DO UPDATE SET version=version+1`,
 		school, eventKey(username))

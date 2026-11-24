@@ -621,6 +621,15 @@ on `/api/timetable/changes` and as a `student-events` SSE frame, so the student
 is told to refetch; those signals deliberately bypass the shared webhook and ntfy
 topics, which the whole class can see.
 
+In **Events & Absences**, use the student and room dropdowns to select event
+targets or filter attendance. For a custom CSV, choose the separator, header
+record and first data record. Assign a column or fixed value to each destination
+field, preview the rows, then save. Each row targets one student. Event absence
+rows match that student's existing appointment by date and title, optionally
+narrowed by room/start time, or by date and appointment key. An omitted absence
+time uses the event time. Imports create proxy events and update local event
+registers. The Technik export button still supports the original export format.
+
 **Notes are private to the student, by construction.** They are stored per viewer
 and are only ever attached to an absence whose own `studentId` matches the
 session. `getStudentAbsences2017` is not a class-scoped method, so it is never

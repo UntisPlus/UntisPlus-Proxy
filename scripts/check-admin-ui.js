@@ -74,6 +74,7 @@ function _sel(id){
       get innerHTML(){ return this._html; },
       set innerHTML(v){ this._html=v; if(v===''){ this.children=[]; this.options=[]; this.value=''; } },
       appendChild(c){ this.children.push(c); if(c && c.tagName==='OPTION'){ this.options.push(c); if(!this.value) this.value=c.value; } return c; },
+      setAttribute(){}, focus(){},
       addEventListener(k,f){ this.listeners[k]=f; },
       insertAdjacentHTML(){}, querySelector(){ return _sel('__q'); },
     };
@@ -133,26 +134,28 @@ must(defaultSchool()==='schuldorf', 'defaultSchool() is not the running school')
 
   // The student picker offers students of the selected school only: no teacher
   // accounts (personType 2) and nobody from another school.
-  const kids = $('evStudentBox').children.map(c=>c.textContent);
+  const kids = $('evStudentBox').children.slice(1).map(c=>c.textContent);
   must(!kids.some(t=>t.indexOf('wils')>=0), 'a teacher account is offered as a student');
   must(!kids.some(t=>t.indexOf('other')>=0), 'a student of another school is offered');
   must(kids.length===2, 'expected 2 students, got '+kids.length);
-  must($('evRoomBox').children.length===3, 'expected 3 rooms');
+  must($('evRoomBox').children.length===4, 'expected 3 rooms and a placeholder');
 
   // Multi-select: two students and two rooms.
-  $('evStudentBox').children[0].onclick();
-  $('evStudentBox').children[1].onclick();
+  pickEventStudent('dee');
+  pickEventStudent('sam');
   must(evStudentPicks.length===2, 'multi-select did not take two students: '+JSON.stringify(evStudentPicks));
-  $('evRoomBox').children[0].onclick();
-  $('evRoomBox').children[1].onclick();
+  pickEventRoom('R12');
+  pickEventRoom('R13');
   must(evRoomPicks.length===2, 'multi-select did not take two rooms: '+JSON.stringify(evRoomPicks));
 
-  // Regression: narrowing the filter must not drop picks.
-  evStudentPicks=['dee','sam'];
+  pickEventStudent('dee');
+  must(evStudentPicks.length===2, 'duplicate student added');
+  $('evRoomSelected').children[0].onclick();
+  must(evRoomPicks.length===1 && evRoomPicks[0]==='R13', 'remove room did not update selection');
+  pickEventRoom('R12');
+  evRoomPicks.sort();
   $('evUser').value='sam'; renderStudentPicker();
-  must(evStudentPicks.length===2, 'the filter dropped a selection');
-  $('evUser').value='nomatch'; renderStudentPicker();
-  must(evStudentPicks.length===2, 'an empty filter dropped a selection');
+  must($('evUser').value==='sam' && evStudentPicks.length===2, 'reloading the roster lost selections');
   $('evUser').value='';
 
   // addEvent posts one usernames[] batch and joins the rooms, leaving times the

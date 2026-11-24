@@ -33,7 +33,11 @@ type EventAbsenceLogEntry struct {
 // write is unconditional: this is a log, and a failure to write a later entry
 // must never be mistaken for the change not having happened.
 func (s *Store) LogEventAbsenceChange(school, appointmentKey, date, username, action, detail, actor string) error {
-	_, err := s.db.Exec(`INSERT INTO event_absence_log
+	return logEventAbsenceChange(s.db, school, appointmentKey, date, username, action, detail, actor)
+}
+
+func logEventAbsenceChange(db outboxInserter, school, appointmentKey, date, username, action, detail, actor string) error {
+	_, err := db.Exec(`INSERT INTO event_absence_log
 		(school, appointment_key, date, username, action, detail, actor, created_at)
 		VALUES (?,?,?,?,?,?,?,?)`,
 		school, appointmentKey, date, eventKey(username), action, detail, norm(actor), time.Now().Truncate(time.Second).Unix())

@@ -754,8 +754,7 @@ input:not([type=checkbox]):not([type=radio]),select{min-height:38px}.help-icon{w
           <div class="panel-header"><div><h3>Student events</h3><p class="desc">Create, edit, and delete per-student events. Pick one or more students (for new events) and rooms from known lists to avoid typos.</p></div><button class="secondary mini" onclick="loadEventPickers()">Refresh pickers</button></div>
           <div class="row mb">
             <select id="evSchool"></select>
-            <input id="evUser" placeholder="filter students / load events for user" list="evStudents" style="min-width:14rem">
-            <datalist id="evStudents"></datalist>
+            <label class="field">View events for<select id="evUser"></select></label>
             <button class="secondary" onclick="loadEvents()">Load events</button>
           </div>
           <div class="row mb">
@@ -776,24 +775,25 @@ input:not([type=checkbox]):not([type=radio]),select{min-height:38px}.help-icon{w
           <div id="evEditHint" class="small muted mb"></div>
           <div class="grid two mb">
             <div>
-              <div class="help mb"><strong>Students</strong> (click to toggle; several for new events, one when editing)</div>
-              <div class="pickbox" id="evStudentBox"></div>
+              <label class="field">Students<select id="evStudentBox" onchange="pickEventStudent(this.value)"></select></label>
+              <div id="evStudentSelected" class="row mt"></div>
             </div>
             <div>
-              <div class="help mb"><strong>Rooms</strong> (click to toggle)</div>
-              <input id="evRoomFilter" placeholder="filter rooms" class="w-full mb" autocomplete="off" oninput="renderRoomPicker()">
-              <div class="pickbox" id="evRoomBox"></div>
+              <label class="field">Rooms<select id="evRoomBox" onchange="pickEventRoom(this.value)"></select></label>
+              <div id="evRoomSelected" class="row mt"></div>
               <input id="evRoomExtra" placeholder="or type a room not in the list" class="w-full mt">
             </div>
           </div>
           <div class="table-wrap"><table id="events"><thead><tr><th>Date</th><th>Time</th><th>Title</th><th>Subject</th><th>Room</th><th>Teacher</th><th>Rev</th><th>Actions</th></tr></thead><tbody></tbody></table></div>
+          <div id="csvEventsAnchor"></div>
           <div class="grid two mt">
             <div class="stack">
-              <div class="help"><strong>Import Technik calendar</strong> — paste export JSON or choose a file (.json/.csv/.txt). Slots a student already has are skipped.</div>
+              <div class="help"><strong>Import events or event absences</strong> — paste CSV or choose a file. Map columns to fields and review the rows before saving.</div>
               <textarea id="evImport" rows="6" class="mono" placeholder='{"techniker":[...],"veranstaltungen":[...]}'></textarea>
               <div class="row">
                 <input type="file" id="evImportFile" accept=".json,.csv,.txt">
-                <button onclick="importEvents()">Import</button>
+                <button onclick="openCSVImport('events')">Map CSV columns</button>
+                <button class="secondary" onclick="importEvents()">Import Technik export</button>
               </div>
             </div>
             <div class="stack">
@@ -810,6 +810,34 @@ input:not([type=checkbox]):not([type=radio]),select{min-height:38px}.help-icon{w
             <label class="field">From<input id="abFrom" type="date"></label>
             <label class="field">To<input id="abTo" type="date"></label>
             <button class="secondary" onclick="loadEventAbsences()">Load</button>
+          </div>
+          <div class="row mb">
+            <label class="field">Room<select id="abRoom" onchange="renderEventAbsences()"></select></label>
+            <label class="field">Student<select id="abStudent" onchange="renderEventAbsences()"></select></label>
+            <button class="secondary" onclick="openCSVImport('absences')">Import event absences from CSV</button>
+          </div>
+          <div id="csvAbsencesAnchor">
+          <div class="panel mt" id="csvImport" hidden>
+            <h4 id="csvTitle">CSV import</h4>
+            <label class="field">CSV text<textarea id="csvText" oninput="csvInvalidate()" rows="4" class="mono"></textarea></label>
+            <div class="row mb">
+              <label class="field">CSV file<input id="csvFile" onchange="csvInvalidate()" type="file" accept=".csv,.tsv,.txt"></label>
+              <label class="field">Separator<select id="csvDelimiter" onchange="csvInvalidate()"><option value=",">Comma</option><option value=";">Semicolon</option><option value="tab">Tab</option><option value="|">Pipe</option></select></label>
+              <label class="field">Header record<input id="csvHeader" oninput="csvInvalidate()" type="number" min="0" value="1"></label>
+              <label class="field">First data record<input id="csvFirst" oninput="csvInvalidate()" type="number" min="1" value="2"></label>
+              <label class="field">Date format<select id="csvDateFormat" onchange="csvInvalidate()"><option value="">ISO or dotted date</option><option value="2006-01-02">YYYY-MM-DD</option><option value="02.01.2006">DD.MM.YYYY</option><option value="2/1/2006">D/M/YYYY</option><option value="1/2/2006">M/D/YYYY</option><option value="20060102">YYYYMMDD</option></select></label>
+              <button onclick="inspectCSV()">Read columns</button>
+            </div>
+            <div class="help mb">Records start at 1. Use header record 0 for files without headings. Choose a column, enter a fixed value, or leave a field unmapped.</div>
+            <div id="csvMappings" class="grid two mb"></div>
+            <div class="row mb">
+              <button id="csvPreviewButton" onclick="previewCSV()" disabled>Preview rows</button>
+              <button id="csvApplyButton" onclick="applyCSV()" disabled>Save import</button>
+              <button class="secondary" onclick="closeCSVImport()">Close</button>
+            </div>
+            <div id="csvStatus" role="status" class="help mb"></div>
+            <div id="csvPreview" class="table-wrap"></div>
+          </div>
           </div>
           <div class="table-wrap"><table id="eventAbsences"><thead><tr><th>Date</th><th>Time</th><th>Event</th><th>Who was there</th><th>Checked</th><th></th></tr></thead><tbody></tbody></table></div>
           <div id="abEditRow" class="callout mt" style="display:none">
@@ -1351,15 +1379,10 @@ async function renderCards(){
   renderInstanceInfo();
   updateTopStatus();
 
-  if(!$('evUser').dataset.bound){
-    $('evUser').dataset.bound='1';
-    $('evUser').addEventListener('keydown', (ev)=>{ if(ev.key==='Enter') loadEvents(); });
-    $('evUser').addEventListener('input', renderStudentPicker);
-  }
   if(!$('poolSchool').dataset.bound){ $('poolSchool').dataset.bound='1'; $('poolSchool').addEventListener('change', loadPool); }
-  if(!$('evSchool').dataset.bound){ $('evSchool').dataset.bound='1'; $('evSchool').addEventListener('change', loadEventPickers); }
+  if(!$('evSchool').dataset.bound){ $('evSchool').dataset.bound='1'; $('evSchool').addEventListener('change', ()=>{ $('evUser').value=''; evRows={}; $('events').querySelector('tbody').innerHTML=''; resetEventForm(); loadEventPickers(); }); }
   if(!$('rmSchool').dataset.bound){ $('rmSchool').dataset.bound='1'; $('rmSchool').addEventListener('change', loadRoomMap); }
-  if($('abSchool') && !$('abSchool').dataset.bound){ $('abSchool').dataset.bound='1'; $('abSchool').addEventListener('change', loadEventAbsences); }
+  if($('abSchool') && !$('abSchool').dataset.bound){ $('abSchool').dataset.bound='1'; $('abSchool').addEventListener('change', ()=>{ abAppts=[]; fillEventSelect($('abRoom'),[],'All rooms'); fillEventSelect($('abStudent'),[],'All students'); renderEventAbsences(); loadEventAbsences(); }); }
   refreshDependentLists();
   try { renderOnboardingFlow(); } catch(e){}
 }
@@ -1832,71 +1855,67 @@ function evStudentsFor(){
   const sc = $('evSchool').value || defaultSchool();
   return (allUsers||[]).filter(function(u){ return u.personType === 5 && (!sc || u.school === sc); });
 }
-function renderStudentPicker(){
-  const box=$('evStudentBox'); if(!box) return;
-  const q = ($('evUser').value||'').trim().toLowerCase();
-  const all = evStudentsFor();
-  const known = {}; for(const u of all) known[u.username]=1;
-  evStudentPicks = evStudentPicks.filter(function(n){ return known[n]; });
-  const list = all.filter(function(u){
-    if(!q) return true;
-    return (u.username+' '+(u.displayName||'')+' '+(u.className||'')).toLowerCase().indexOf(q) >= 0;
-  });
-  box.innerHTML = '';
-  if(!list.length){ box.innerHTML = '<div class="pickitem muted">No students found for this school/filter.</div>'; }
-  for(const u of list){
-    const on = evStudentPicks.indexOf(u.username) >= 0;
-    const it = document.createElement('div');
-    it.className = 'pickitem' + (on ? ' sel' : '');
-    const cls = u.className ? (' · '+u.className) : '';
-    it.textContent = (on?'✓ ':'') + u.username + (u.displayName ? (' ('+u.displayName+')') : '') + cls;
-    it.onclick = function(){
-      if(evEditing){ evStudentPicks = [u.username]; renderStudentPicker(); return; }
-      const i = evStudentPicks.indexOf(u.username);
-      if(i >= 0) evStudentPicks.splice(i,1); else evStudentPicks.push(u.username);
-      renderStudentPicker();
-    };
-    box.appendChild(it);
+function fillEventSelect(select, choices, placeholder){
+  const selected = select.value;
+  select.innerHTML = '';
+  for(const [value, label] of [['',placeholder], ...choices]){
+    const option = document.createElement('option');
+    option.value = value; option.textContent = label; select.appendChild(option);
   }
-  const dl = $('evStudents');
-  if(dl){ dl.innerHTML=''; for(const u of list){ const o=document.createElement('option'); o.value=u.username; dl.appendChild(o); } }
+  select.value = choices.some(([value])=>value===selected) ? selected : '';
+}
+function showEventPicks(id,picks,remove){
+  const box=$(id); box.innerHTML='';
+  for(const name of picks){
+    const button=document.createElement('button');
+    button.type='button'; button.className='secondary mini';
+    button.textContent=name+' ×'; button.setAttribute('aria-label','Remove '+name);
+    button.onclick=()=>remove(name); box.appendChild(button);
+  }
+}
+function renderStudentPicker(){
+  const choices=evStudentsFor().map(u=>[u.username,[u.displayName||u.username,u.displayName?u.username:'',u.className].filter(Boolean).join(' · ')]);
+  fillEventSelect($('evUser'),choices,'Choose a student');
+  fillEventSelect($('evStudentBox'),choices,choices.length?'Add a student':'No students in this school');
+  $('evStudentBox').value='';
+  showEventPicks('evStudentSelected',evStudentPicks,name=>{
+    evStudentPicks=evStudentPicks.filter(value=>value!==name); renderStudentPicker();
+  });
+}
+function pickEventStudent(name){
+  if(!evStudentsFor().some(student=>student.username===name)) return;
+  evStudentPicks=evEditing?[name]:[...new Set([...evStudentPicks,name])];
+  renderStudentPicker();
 }
 function renderRoomPicker(){
-  const box=$('evRoomBox'); if(!box) return;
-  const q = ($('evRoomFilter').value||'').trim().toLowerCase();
-  const names = evRoomCatalog.filter(function(n){ return !q || n.toLowerCase().indexOf(q) >= 0; }).sort();
-  evRoomPicks = evRoomPicks.filter(function(n){ return evRoomCatalog.indexOf(n) >= 0; });
-  box.innerHTML = '';
-  if(!evRoomCatalog.length){ box.innerHTML = '<div class="pickitem muted">No rooms known yet for this school.</div>'; }
-  for(const n of names){
-    const on = evRoomPicks.indexOf(n) >= 0;
-    const it = document.createElement('div');
-    it.className = 'pickitem' + (on ? ' sel' : '');
-    it.textContent = (on?'✓ ':'') + n;
-    it.onclick = function(){
-      const i = evRoomPicks.indexOf(n);
-      if(i >= 0) evRoomPicks.splice(i,1); else evRoomPicks.push(n);
-      renderRoomPicker();
-    };
-    box.appendChild(it);
-  }
+  fillEventSelect($('evRoomBox'),evRoomCatalog.map(name=>[name,name]),evRoomCatalog.length?'Add a room':'No rooms in the catalogue');
+  $('evRoomBox').value='';
+  showEventPicks('evRoomSelected',evRoomPicks,name=>{
+    evRoomPicks=evRoomPicks.filter(value=>value!==name); renderRoomPicker();
+  });
+}
+function pickEventRoom(name){
+  if(!name) return;
+  evRoomPicks=[...new Set([...evRoomPicks,name])];
+  renderRoomPicker();
 }
 async function loadEventPickers(){
   const sc = $('evSchool').value || defaultSchool();
-  try { if(!allUsers) allUsers = (await api('GET','users')).users || []; } catch(e){ allUsers = allUsers || []; }
+  try { allUsers = (await api('GET','users')).users || []; } catch(e){ allUsers = allUsers || []; }
   try {
     const d = await api('GET','search?school='+encodeURIComponent(sc)+'&type=ROOM&limit=2000');
-    const rooms = {};
-    for(const r of (d.results||[])) if(r.name) rooms[r.name] = 1;
-    evRoomCatalog = Object.keys(rooms).sort();
-  } catch(e){ evRoomCatalog = []; }
+    if(sc !== ($("evSchool").value || defaultSchool())) return;
+    evRoomCatalog = [...new Set((d.results||[]).map(room=>room.name).filter(Boolean))].sort();
+  } catch(e){ if(sc !== ($("evSchool").value || defaultSchool())) return; evRoomCatalog = []; }
   renderStudentPicker(); renderRoomPicker();
 }
 async function loadEvents(){
   const user = ($('evUser').value||'').trim() || evStudentPicks[0] || '';
   if(!user){ log('pick or enter a student first'); return; }
+  const school=$('evSchool').value || defaultSchool();
   try {
     const d = await eventApi('GET','?username='+encodeURIComponent(user));
+    if(school!==($('evSchool').value || defaultSchool())) return;
     const tb = $('events').querySelector('tbody'); tb.innerHTML = '';
     evRows = {};
     for(const e of (d.events||[])){
@@ -1999,6 +2018,162 @@ async function importEvents(){
   } catch(e){ evImportNote('import failed: '+e.message); }
 }
 
+let csvDestination='', csvSchool='', csvFields=[], csvSource='', csvReviewed='';
+const csvEventFields=[
+  ['student','Student username or display name'],['date','Date'],['start','Start time'],
+  ['end','End time'],['title','Title'],['room','Room'],['subject','Subject'],
+  ['teacher','Teacher'],['description','Description']
+];
+const csvAbsenceFields=[
+  ['student','Student username or display name'],['date','Date'],['title','Event title'],
+  ['appointment','Appointment key (alternative to title)'],['room','Event room'],
+  ['eventStart','Event start (distinguishes same-title events)'],
+  ['start','Absence start (defaults to event start)'],['end','Absence end (defaults to event end)']
+];
+function csvCurrentSchool(){
+  return $(csvDestination==='events'?'evSchool':'abSchool').value || defaultSchool();
+}
+function csvInvalidate(){
+  csvReviewed='';
+  $('csvApplyButton').disabled=true;
+  $('csvPreview').innerHTML='';
+}
+function closeCSVImport(){
+  csvDestination='';
+  csvInvalidate();
+  $('csvImport').hidden=true;
+}
+async function readCSVFile(file){
+  if(file.size>700000) throw new Error('Use a CSV file smaller than 700 KB.');
+  const bytes=await file.arrayBuffer();
+  try { return new TextDecoder('utf-8',{fatal:true}).decode(bytes); }
+  catch { return new TextDecoder('windows-1252').decode(bytes); }
+}
+async function openCSVImport(destination){
+  csvDestination=destination;
+  csvSchool=csvCurrentSchool();
+  csvFields=destination==='events'?csvEventFields:csvAbsenceFields;
+  csvSource='';
+  csvInvalidate();
+  $('csvMappings').innerHTML='';
+  $('csvPreviewButton').disabled=true;
+  $('csvFile').value='';
+  $('csvText').value='';
+  $('csvHeader').value='1';
+  $('csvFirst').value='2';
+  $('csvDateFormat').value='';
+  $('csvDelimiter').value=',';
+  $('csvTitle').textContent=destination==='events'?'Import student events':'Import event absences';
+  $('csvStatus').textContent='School: '+csvSchool+'. '+(destination==='absences'?
+    'Each row marks one student absent from an existing local appointment.' :
+    'Each row creates one event for one student. Existing slots are skipped.');
+  $(destination==='events'?'csvEventsAnchor':'csvAbsencesAnchor').appendChild($('csvImport'));
+  $('csvImport').hidden=false;
+  $('csvText').focus();
+  if(destination==='events'){
+    try {
+      const file=$('evImportFile').files[0];
+      const initial=file?await readCSVFile(file):$('evImport').value;
+      if(csvDestination!==destination) return;
+      $('csvText').value=initial;
+      const heading=initial.split(/\r?\n/,1)[0];
+      if(heading.includes('\t')) $('csvDelimiter').value='tab';
+      else if(heading.includes(';')) $('csvDelimiter').value=';';
+      else if(heading.includes('|') && !heading.includes(',')) $('csvDelimiter').value='|';
+      if(initial.trim()) await inspectCSV();
+    } catch(e){ $('csvStatus').textContent=e.message; }
+  }
+}
+function csvRequest(){
+  const text=$('csvText').value;
+  if(text.length>700000) throw new Error('Use a smaller CSV.');
+  const delimiter=$('csvDelimiter').value;
+  return {text, delimiter:delimiter==='tab'?'\t':delimiter,
+    header:Number($('csvHeader').value),first:Number($('csvFirst').value),dateFormat:$('csvDateFormat').value};
+}
+async function sendCSV(phase,body){
+  if(csvCurrentSchool()!==csvSchool) throw new Error('The school changed. Reopen the import for this school.');
+  const query=new URLSearchParams({format:'mapped-csv',destination:csvDestination,school:csvSchool,phase});
+  const response=await fetch('/api/admin/events/import?'+query,{method:'POST',headers:{'Content-Type':'application/json'},body});
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok) throw new Error(data.error||('HTTP '+response.status));
+  return data;
+}
+async function inspectCSV(){
+  csvInvalidate();
+  $('csvMappings').innerHTML='';
+  $('csvPreviewButton').disabled=true;
+  try {
+    if($('csvFile').files[0]){
+      $('csvText').value=await readCSVFile($('csvFile').files[0]);
+      $('csvFile').value='';
+    }
+    const req=csvRequest(), source=JSON.stringify(req), destination=csvDestination;
+    const data=await sendCSV('columns',source);
+    if(csvDestination!==destination || source!==JSON.stringify(csvRequest())) return;
+    csvSource=source;
+    for(const [field,label] of csvFields){
+      const wrapper=document.createElement('label');
+      wrapper.className='field';
+      wrapper.innerHTML=esc(label)+'<select id="csvMap_'+field+'"><option value="">Unmapped</option>'+
+        '<option value="fixed">Fixed value</option>'+data.columns.map((name,i)=>
+          '<option value="'+(i+1)+'">'+esc(name+(data.sample[i]?' — '+data.sample[i].slice(0,80):''))+'</option>').join('')+
+        '</select><input id="csvValue_'+field+'" placeholder="Fixed value" hidden>';
+      $('csvMappings').appendChild(wrapper);
+      const select=$('csvMap_'+field), input=$('csvValue_'+field);
+      select.onchange=()=>{ input.hidden=select.value!=='fixed'; csvInvalidate(); };
+      input.oninput=csvInvalidate;
+    }
+    $('csvStatus').textContent='Choose fields for '+csvSchool+'. Column labels include a sample from the first data record.';
+    $('csvPreviewButton').disabled=false;
+  } catch(e){ $('csvStatus').textContent=e.message; }
+}
+function csvMappedBody(){
+  const req=csvRequest();
+  // Changing date interpretation does not change the available columns.
+  const inspected=JSON.parse(csvSource||'{}');
+  inspected.dateFormat=req.dateFormat;
+  if(JSON.stringify(inspected)!==JSON.stringify(req) || $('csvFile').files[0]) throw new Error('Read columns again after changing the CSV or record settings.');
+  req.fields={};
+  for(const [field] of csvFields){
+    const pick=$('csvMap_'+field).value;
+    if(pick) req.fields[field]=pick==='fixed'?{value:$('csvValue_'+field).value}:{column:Number(pick)};
+  }
+  return JSON.stringify(req);
+}
+async function previewCSV(){
+  csvInvalidate();
+  try {
+    const body=csvMappedBody(), destination=csvDestination;
+    const data=await sendCSV('preview',body);
+    if(csvDestination!==destination || body!==csvMappedBody()) return;
+    const optional=csvDestination==='events'?['subject','teacher','description']:[];
+    const headers=['CSV line','Student','Date','Start','End','Title','Room',...optional,'Result'];
+    $('csvPreview').innerHTML='<table><thead><tr>'+headers.map(h=>'<th>'+esc(h)+'</th>').join('')+
+      '</tr></thead><tbody>'+data.rows.map(row=>'<tr>'+
+        [row.line,row.student,row.date,row.start,row.end,row.title,row.room,...optional.map(key=>row[key]),row.error||'Ready']
+          .map(cell=>'<td>'+esc(cell)+'</td>').join('')+'</tr>').join('')+'</tbody></table>';
+    $('csvStatus').textContent=data.errors ?
+      data.errors+' rows need attention. Fix the CSV or change the mapping, then preview again.' :
+      data.rows.length+' rows ready for '+csvSchool+'.';
+    if(!data.errors){ csvReviewed=body; $('csvApplyButton').disabled=false; }
+  } catch(e){ $('csvStatus').textContent=e.message; }
+}
+async function applyCSV(){
+  try {
+    const body=csvMappedBody(), destination=csvDestination;
+    if(body!==csvReviewed) throw new Error('Preview the current mapping before saving.');
+    $('csvApplyButton').disabled=true;
+    csvReviewed='';
+    const data=await sendCSV('apply',body);
+    const message=data.changed+' saved'+(data.skipped?', '+data.skipped+' already present':'')+'.';
+    if(csvDestination===destination) $('csvStatus').textContent=message;
+    evImportNote(message);
+    if(destination==='events' && $('evUser').value) await loadEvents();
+    if(destination==='absences') await loadEventAbsences();
+  } catch(e){ $('csvStatus').textContent=e.message; }
+}
+
 // absences
 let abAppts = [];
 let abEditing = {key:'', date:'', username:''};
@@ -2013,27 +2188,41 @@ async function loadEventAbsences(){
   try {
     const r = await fetch('/api/admin/events/absences' + (qs ? ('?'+qs) : ''));
     const d = await r.json();
+    if(qs!==abQuery()) return;
+    if(!r.ok) throw new Error(d.error || ('HTTP '+r.status));
     abAppts = d.appointments || [];
+    const rooms=[...new Set(abAppts.map(a=>a.room).filter(Boolean))].sort();
+    const students=new Map(abAppts.flatMap(a=>(a.roster||[]).map(m=>[m.username,m.displayName||m.username])));
+    fillEventSelect($('abRoom'),rooms.map(room=>[room,room]),'All rooms');
+    fillEventSelect($('abStudent'),[...students].sort((a,b)=>a[1].localeCompare(b[1])),'All students');
+    renderEventAbsences();
+  } catch(e){ log('could not load event absences: '+e.message); }
+  loadEventAbsenceLog();
+}
+function renderEventAbsences(){
+    const room=$('abRoom').value, student=$('abStudent').value;
     const tb = $('eventAbsences').querySelector('tbody'); tb.innerHTML = '';
+    let shown=0;
     abAppts.forEach(function(a, gi){
+      if(room && a.room!==room || student && !(a.roster||[]).some(member=>member.username===student)) return;
+      shown++;
       const who = (a.roster||[]).map(function(m, mi){
+        if(student && m.username!==student) return '';
         const name = esc(m.displayName || m.username);
         if(m.absent){
           const when = m.startTime ? (' '+esc(String(m.startTime||'').replace(/^T/,''))+'–'+esc(String(m.endTime||'').replace(/^T/,''))) : '';
           return '<span style="color:#ff9a9a">absent: '+name+when+' <button class="mini secondary" onclick="editAbsence('+gi+','+mi+')">Edit</button></span>';
         }
         return '<span class="muted">present: '+name+'</span>';
-      }).join('<br>') || '<span class="muted">no students</span>';
+      }).filter(Boolean).join('<br>') || '<span class="muted">no students</span>';
       const tr = document.createElement('tr');
       tr.innerHTML = '<td>'+esc(a.date)+'</td><td>'+esc((a.startTime||'')+'–'+(a.endTime||''))+'</td>'+
-        '<td>'+esc(a.title||'')+'</td><td>'+who+'</td><td>'+(a.checked?'yes':'no')+'</td>'+
+        '<td>'+esc(a.title||'')+(a.room?'<br><span class="muted">'+esc(a.room)+'</span>':'')+'</td><td>'+who+'</td><td>'+(a.checked?'yes':'no')+'</td>'+
         '<td><button class="mini secondary" onclick="loadEventAbsences()">Refresh</button></td>';
       tb.appendChild(tr);
     });
-    if(!abAppts.length){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="6" class="empty">No appointments with a register in this window.</td>'; tb.appendChild(tr); }
+    if(!shown){ const tr=document.createElement('tr'); tr.innerHTML='<td colspan="6" class="empty">No appointments with a register in this window.</td>'; tb.appendChild(tr); }
     cancelAbsenceEdit();
-  } catch(e){ log('could not load event absences: '+e.message); }
-  loadEventAbsenceLog();
 }
 async function loadEventAbsenceLog(){
   const el = $('eventAbsenceLog'); if(!el) return;

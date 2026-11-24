@@ -45,8 +45,12 @@ type EventAbsence struct {
 // SetEventAbsence upserts one student's absence on an appointment and returns the
 // time it was written. Marking a student absent twice converges on one row.
 func (s *Store) SetEventAbsence(school, appointmentKey, date, username, start, end, by string) (time.Time, error) {
+	return setEventAbsence(s.db, school, appointmentKey, date, username, start, end, by)
+}
+
+func setEventAbsence(db outboxInserter, school, appointmentKey, date, username, start, end, by string) (time.Time, error) {
 	now := time.Now().Truncate(time.Second)
-	_, err := s.db.Exec(`INSERT INTO event_absences
+	_, err := db.Exec(`INSERT INTO event_absences
 		(school, appointment_key, date, username, start_time, end_time, created_by, created_at, updated_at)
 		VALUES (?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(school, appointment_key, username) DO UPDATE SET
@@ -54,6 +58,39 @@ func (s *Store) SetEventAbsence(school, appointmentKey, date, username, start, e
 			created_by=excluded.created_by, updated_at=excluded.updated_at`,
 		school, appointmentKey, date, eventKey(username), start, end, norm(by), now.Unix(), now.Unix())
 	return now, err
+}
+
+// ImportEventAbsence saves the register change and its audit entry together.
+func (s *Store) ImportEventAbsence(school, key, date, username, start, end, actor, detail string) (bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var oldStart, oldEnd string
+	action := EventAbsenceActionCreated
+	err = tx.QueryRow(`SELECT start_time,end_time FROM event_absences WHERE school=? AND appointment_key=? AND username=?`,
+		school, key, eventKey(username)).Scan(&oldStart, &oldEnd)
+	switch err {
+	case nil:
+		if oldStart == start && oldEnd == end {
+			return false, nil
+		}
+		action = EventAbsenceActionEdited
+	case sql.ErrNoRows:
+	default:
+		return false, err
+	}
+	if _, err = setEventAbsence(tx, school, key, date, username, start, end, actor); err != nil {
+		return false, err
+	}
+	if err = logEventAbsenceChange(tx, school, key, date, username, action, detail, actor); err != nil {
+		return false, err
+	}
+	if err = tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // DeleteEventAbsence removes one student's absence from an appointment. Deleting a

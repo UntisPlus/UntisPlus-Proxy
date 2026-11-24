@@ -70,6 +70,10 @@ func (p *Proxy) handleStudentEventImport(w http.ResponseWriter, r *http.Request)
 	if school == "" {
 		school = p.opts.School
 	}
+	if r.URL.Query().Get("format") == "mapped-csv" {
+		p.handleMappedCSV(w, r, u, school)
+		return
+	}
 	if !p.technikAllowed(u, school, access.CapEventsTechnikImport) {
 		p.forbidden(w)
 		return
