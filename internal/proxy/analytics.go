@@ -183,14 +183,22 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	// Validate and authorize every target before issuing the first upstream call.
+	windowDays, maxWindows := 31, 32
+	if q.Mode == "personal" {
+		windowDays, maxWindows = 7, 53
+	}
 	windows := []analyticsTarget{}
 	for _, target := range targets {
 		a, _ := time.Parse("2006-01-02", target.From)
 		b, _ := time.Parse("2006-01-02", target.To)
 		for !a.After(b) {
-			end := a.AddDate(0, 0, 30)
+			end := a.AddDate(0, 0, windowDays-1)
 			if end.After(b) {
 				end = b
+			} else if windowDays == 7 && end.AddDate(0, 0, 1).Equal(b) {
+				// Keep the final window at least two days so it stays inside
+				// the requested range without the single-day padding.
+				end = end.AddDate(0, 0, -1)
 			}
 			part := target
 			part.From = a.Format("2006-01-02")
@@ -199,7 +207,7 @@ func (p *Proxy) handleCancellationAnalytics(w http.ResponseWriter, r *http.Reque
 			a = end.AddDate(0, 0, 1)
 		}
 	}
-	if len(windows) > 32 {
+	if len(windows) > maxWindows {
 		badRequest(w, "too many history windows; request a smaller range")
 		return
 	}

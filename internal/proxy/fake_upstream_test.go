@@ -46,6 +46,7 @@ type fakeUpstream struct {
 	// of concurrent requests while the one upstream flight is still in progress.
 	timetableDelay           time.Duration
 	rejectSingleDayTimetable bool
+	rejectTimetableFrom      string
 
 	// restBody / restStatus are the canned answer served for /WebUntis/api/*.
 	restBody   string
@@ -100,17 +101,21 @@ func (f *fakeUpstream) handler() http.Handler {
 			reply := f.internReply
 			delay := f.timetableDelay
 			rejectSingleDay := f.rejectSingleDayTimetable
+			rejectFrom := f.rejectTimetableFrom
 			f.mu.Unlock()
 			if req.Method == "getTimetable2017" && delay > 0 {
 				time.Sleep(delay)
 			}
-			if req.Method == "getTimetable2017" && rejectSingleDay {
+			if req.Method == "getTimetable2017" && (rejectSingleDay || rejectFrom != "") {
 				var call struct {
 					Params []struct{ StartDate, EndDate string }
 				}
-				if json.Unmarshal(body, &call) == nil && len(call.Params) == 1 && call.Params[0].StartDate == call.Params[0].EndDate {
-					_, _ = w.Write([]byte(`{"error":{"code":-8998,"message":"date window rejected"}}`))
-					return
+				if json.Unmarshal(body, &call) == nil && len(call.Params) == 1 {
+					dates := call.Params[0]
+					if (rejectSingleDay && dates.StartDate == dates.EndDate) || (rejectFrom != "" && dates.StartDate == rejectFrom) {
+						_, _ = w.Write([]byte(`{"error":{"code":-8998,"message":"date window rejected"}}`))
+						return
+					}
 				}
 			}
 			if req.Method == "getTimetable2017" && tstat != 0 {

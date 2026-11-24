@@ -108,8 +108,10 @@ importer.
   without saving or returning it. Normal session and capability checks still
   apply. Omit it to use saved source credentials.
 
-Dates are inclusive; the current-day/future cutoff uses UTC. A request covers at most 366 days and 32 source windows;
-upstream requests are split into at most 31-day chunks. A one-day personal query
+Dates are inclusive. The current-day and future cutoff uses UTC. A request
+covers at most 366 days. Personal reports use up to 53 upstream windows of
+at most seven days each. Teacher and class-history reports use up to 32
+upstream windows of at most 31 days each. A one-day personal query
 reads up to seven nearby dates from the same timetable in a single upstream
 request and reports only the requested date. Personal history has no
 proxy retention cutoff back to practical historical dates (1900 or later), but
