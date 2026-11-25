@@ -133,6 +133,11 @@ const (
 	CapGroupEditor         = "v2.editor"
 	CapGroupTechniker      = "v2.techniker"
 	CapGroupDefaultNewUser = "v2.default_new_user"
+	CapGroupNotifications  = "v2.notifications"
+	CapGroupAttendance     = "v2.attendance_tracker"
+	CapGroupPool           = "v2.pool"
+	CapGroupReconTeachers  = "v2.recon_teachers"
+	CapGroupReconRooms     = "v2.recon_rooms"
 )
 
 func (s *Store) ensureBuiltinCapGroups() error {
@@ -146,6 +151,27 @@ func (s *Store) ensureBuiltinCapGroups() error {
 			{Capability: access.CapTimetableClassUpstreamView, Allow: true},
 			{Capability: access.CapTimetableStudentPersonalUpstreamView, Allow: true},
 			{Capability: access.CapAbsenceOwnRead, Allow: true},
+		}},
+		{name: CapGroupNotifications, desc: "Manage your own ntfy subscriptions and webhooks, and receive in-app updates for accessible classes.", grants: []access.Grant{
+			{Capability: access.CapNotifyNtfyCreate, Allow: true},
+			{Capability: access.CapNotifyNtfyManageOwn, Allow: true},
+			{Capability: access.CapNotifyWebhookCreate, Allow: true},
+			{Capability: access.CapNotifyWebhookManageOwn, Allow: true},
+			{Capability: access.CapChangesClassView, Allow: true},
+			{Capability: access.CapChangesClassStream, Allow: true},
+		}},
+		{name: CapGroupAttendance, desc: "Run cancellation reports on your own timetable.", grants: []access.Grant{
+			{Capability: access.CapAnalyticsPersonal, Allow: true},
+		}},
+		{name: CapGroupPool, desc: "Browse the pool and read accessible shared class timetables. Sharing your own timetable is separate.", grants: []access.Grant{
+			{Capability: access.CapPoolClassView, Allow: true},
+			{Capability: access.CapTimetableClassPooledView, Allow: true},
+		}},
+		{name: CapGroupReconTeachers, desc: "Reconstruct teacher timetables from accessible shared class timetables.", grants: []access.Grant{
+			{Capability: access.CapTimetableTeacherReconstructedView, Allow: true},
+		}},
+		{name: CapGroupReconRooms, desc: "Reconstruct room timetables from accessible shared class timetables.", grants: []access.Grant{
+			{Capability: access.CapTimetableRoomReconstructedView, Allow: true},
 		}},
 		{name: CapGroupStudentBase, desc: "Baseline capabilities for authenticated real student accounts", grants: []access.Grant{
 			{Capability: access.CapHomeworkOwnManage, Allow: true},

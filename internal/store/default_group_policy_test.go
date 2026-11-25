@@ -6,6 +6,65 @@ import (
 	"untis-proxy/internal/access"
 )
 
+func TestStarterPresetsStackOnBasic(t *testing.T) {
+	st := openTestStore(t)
+	const school, username = "school", "preset-user"
+	if err := st.SetFeatureEnabled("", "analytics", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpsertUser(&User{Username: username, School: school, PersonType: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ApplyUpstreamBasic(school, username); err != nil {
+		t.Fatal(err)
+	}
+	for _, preset := range []struct {
+		name string
+		caps []access.Capability
+	}{
+		{CapGroupNotifications, []access.Capability{
+			access.CapNotifyNtfyCreate, access.CapNotifyNtfyManageOwn, access.CapNotifyWebhookCreate,
+			access.CapNotifyWebhookManageOwn, access.CapChangesClassView, access.CapChangesClassStream,
+		}},
+		{CapGroupAttendance, []access.Capability{access.CapAnalyticsPersonal}},
+		{CapGroupPool, []access.Capability{access.CapPoolClassView, access.CapTimetableClassPooledView}},
+		{CapGroupReconTeachers, []access.Capability{access.CapTimetableTeacherReconstructedView}},
+		{CapGroupReconRooms, []access.Capability{access.CapTimetableRoomReconstructedView}},
+	} {
+		t.Run(preset.name, func(t *testing.T) {
+			id, found, err := st.groupIDByName("", preset.name)
+			if err != nil || !found {
+				t.Fatalf("missing built-in preset: %v", err)
+			}
+			_, grants, err := st.GetCapGroup(id)
+			if err != nil || len(grants) != len(preset.caps) {
+				t.Fatalf("unexpected preset grants: %v (%v)", grants, err)
+			}
+			if err := st.AssignUserCapGroup(school, username, id); err != nil {
+				t.Fatal(err)
+			}
+			u, err := st.GetUser(username)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := st.ResolveEffective(school, u)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, cap := range preset.caps {
+				if !result.Decisions[cap].Effective {
+					t.Errorf("stacked preset did not enable %s", cap)
+				}
+			}
+			if !result.Decisions[access.CapTimetableUpstreamView].Effective ||
+				result.Decisions[access.CapPoolTimetableShare].Effective ||
+				result.Decisions[access.CapAnalyticsTeacher].Effective {
+				t.Fatal("stacking changed Basic or enabled extra sharing or analytics")
+			}
+		})
+	}
+}
+
 func TestUpstreamBasicResetAndStackedExtras(t *testing.T) {
 	st := openTestStore(t)
 	st.UpsertUser(&User{Username: "a", School: "school", PersonType: 5, Admin: true})

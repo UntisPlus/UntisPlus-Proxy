@@ -40,6 +40,24 @@ API: `POST /admin/access/apply-basic?school=NAME&user=USERNAME`.
 This is an explicit permission reset, not a preview. Dashboard-admin management
 powers remain separate from the person's capability baseline.
 
+## Stackable permission presets
+
+The built-in presets are available under **Permissions**. Assign them to an
+individual or choose an account-type default. Use **Use as starting point** to customise
+a preset's rules. The five new presets do not alter existing assignments.
+
+| Preset | Access it adds |
+| --- | --- |
+| **Notifications** | Create and manage your own ntfy subscriptions and webhooks. Read and receive in-app timetable updates for accessible classes. |
+| **Attendance Tracker** | Run cancellation reports on your own timetable. Other targets, older history, and exports have separate permissions. The analytics feature switch must be enabled. |
+| **Pool** | Browse and read accessible shared class timetables. Sharing your own timetable requires its own grant. |
+| **Recon Teachers** | Read teacher timetables reconstructed from accessible shared classes. Combine with Pool for shared class access. |
+| **Recon Rooms** | Read room timetables reconstructed from accessible shared classes. Combine with Pool for shared class access. |
+
+**Extended timetable access** retains the existing permissions for reading
+additional timetables through an eligible saved teacher account. The existing
+combined **Reconstructed timetables** group also remains available.
+
 Private additions now have independent capabilities:
 
 | Capability | Proxy-local feature |
